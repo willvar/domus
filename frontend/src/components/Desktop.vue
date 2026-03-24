@@ -75,7 +75,7 @@ function appTouch(app) {
         @touchmove="appTouch(app).onTouchMove"
         @touchend="appTouch(app).onTouchEnd"
       >
-        <div class="desktop-icon-img" v-html="app.icon" />
+        <div class="desktop-icon-img"><component :is="app.icon" width="40" height="40" /></div>
         <span class="desktop-icon-label">{{ app.label }}</span>
       </div>
     </div>
@@ -131,10 +131,6 @@ function appTouch(app) {
   align-items: center;
   justify-content: center;
   color: var(--breeze-accent);
-}
-.desktop-icon-img :deep(svg) {
-  width: 40px;
-  height: 40px;
 }
 
 .desktop-icon-label {

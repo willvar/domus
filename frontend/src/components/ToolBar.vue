@@ -1,6 +1,12 @@
 <script setup>
 import { ref, watch, nextTick } from 'vue'
 import { NButton, NButtonGroup, NInput, NTooltip, NDropdown } from 'naive-ui'
+import IconChevronLeft from '~icons/mdi/chevron-left'
+import IconChevronRight from '~icons/mdi/chevron-right'
+import IconViewGrid from '~icons/mdi/view-grid-outline'
+import IconViewList from '~icons/mdi/view-list-outline'
+import IconUpload from '~icons/mdi/upload'
+import IconSearch from '~icons/mdi/magnify'
 import { useFileSystemStore } from '../stores/fileSystem'
 import { useUploadStore } from '../stores/upload'
 import { useAuthStore } from '../stores/auth'
@@ -52,7 +58,7 @@ function handleFileSelect(e) {
         <NTooltip>
           <template #trigger>
             <NButton :disabled="!fs.canGoBack" quaternary class="nav-btn" @click="fs.goBack">
-              <svg width="16" height="16" viewBox="0 0 16 16"><path d="M10 3L5 8l5 5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              <IconChevronLeft width="16" height="16" />
             </NButton>
           </template>
           {{ t('toolbar.back') }}
@@ -60,7 +66,7 @@ function handleFileSelect(e) {
         <NTooltip>
           <template #trigger>
             <NButton :disabled="!fs.canGoForward" quaternary class="nav-btn" @click="fs.goForward">
-              <svg width="16" height="16" viewBox="0 0 16 16"><path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              <IconChevronRight width="16" height="16" />
             </NButton>
           </template>
           {{ t('toolbar.forward') }}
@@ -69,8 +75,7 @@ function handleFileSelect(e) {
 
       <NDropdown :options="viewOptions" trigger="click" @select="handleViewSelect">
         <NButton size="small" quaternary class="nav-btn">
-          <svg v-if="fs.viewMode === 'icons'" width="16" height="16" viewBox="0 0 16 16"><rect x="1" y="1" width="6" height="6" rx="1" fill="currentColor" /><rect x="9" y="1" width="6" height="6" rx="1" fill="currentColor" /><rect x="1" y="9" width="6" height="6" rx="1" fill="currentColor" /><rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" /></svg>
-          <svg v-else width="16" height="16" viewBox="0 0 16 16"><path d="M2 3h12M2 6.5h12M2 10h12M2 13.5h12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
+          <component :is="fs.viewMode === 'icons' ? IconViewGrid : IconViewList" width="16" height="16" />
         </NButton>
       </NDropdown>
 
@@ -80,7 +85,7 @@ function handleFileSelect(e) {
         <NTooltip>
           <template #trigger>
             <NButton size="small" quaternary class="nav-btn" @click="triggerUpload">
-              <svg width="16" height="16" viewBox="0 0 16 16"><path d="M8 2v9M4 5l4-3 4 3M3 11v2h10v-2" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round" /></svg>
+              <IconUpload width="16" height="16" />
             </NButton>
           </template>
           {{ t('toolbar.upload') }}
@@ -105,7 +110,7 @@ function handleFileSelect(e) {
         class="search-input"
       >
         <template #prefix>
-          <svg width="14" height="14" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.5" stroke="currentColor" stroke-width="1.5" fill="none" /><path d="M10.5 10.5L14 14" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" /></svg>
+          <IconSearch width="14" height="14" />
         </template>
       </NInput>
     </div>

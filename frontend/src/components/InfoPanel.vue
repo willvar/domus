@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import { NDescriptions, NDescriptionsItem } from 'naive-ui'
 import { useFileSystemStore } from '../stores/fileSystem'
 import { useI18n } from '../composables/useI18n'
-import { getFileIconSvg } from '../composables/useFileIcon'
+import { getFileIcon } from '../composables/useFileIcon'
 import dayjs from 'dayjs'
 
 const fs = useFileSystemStore()
@@ -21,9 +21,9 @@ function formatSize(bytes) {
   return `${size.toFixed(1)} ${units[i]}`
 }
 
-const iconSvg = computed(() => {
-  if (!file.value) return getFileIconSvg('', true, 64)
-  return getFileIconSvg(file.value.name, file.value.is_dir, 64)
+const iconName = computed(() => {
+  if (!file.value) return getFileIcon('', true)
+  return getFileIcon(file.value.name, file.value.is_dir)
 })
 </script>
 
@@ -31,7 +31,7 @@ const iconSvg = computed(() => {
   <div class="info-panel">
     <template v-if="file">
       <div class="info-preview">
-        <div class="info-icon" v-html="iconSvg" />
+        <div class="info-icon"><component :is="iconName" width="64" height="64" /></div>
         <div class="info-name">{{ file.name }}</div>
       </div>
       <NDescriptions :column="1" size="small" label-placement="left" class="info-details">
@@ -48,13 +48,13 @@ const iconSvg = computed(() => {
     </template>
     <template v-else-if="fs.selectedFiles.length > 1">
       <div class="info-preview">
-        <div class="info-icon" v-html="getFileIconSvg('', true, 64)" />
+        <div class="info-icon"><component :is="iconName" width="64" height="64" /></div>
         <div class="info-name">{{ t('info.items_selected', { n: fs.selectedFiles.length }) }}</div>
       </div>
     </template>
     <template v-else>
       <div class="info-preview">
-        <div class="info-icon" v-html="getFileIconSvg('', true, 64)" />
+        <div class="info-icon"><component :is="iconName" width="64" height="64" /></div>
         <div class="info-name">{{ t('info.items_count', { n: fs.sortedFiles.length }) }}</div>
       </div>
     </template>

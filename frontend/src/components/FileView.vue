@@ -5,7 +5,11 @@ import { useFileSystemStore } from '../stores/fileSystem'
 import { useUploadStore } from '../stores/upload'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
-import { getFileIconSvg } from '../composables/useFileIcon'
+import { getFileIcon } from '../composables/useFileIcon'
+import IconCopy from '~icons/mdi/content-copy'
+import IconCut from '~icons/mdi/content-cut'
+import IconDelete from '~icons/mdi/delete-outline'
+import IconClose from '~icons/mdi/close'
 import { openContextMenu } from '../composables/useContextMenu'
 import { useTouchHandlers } from '../composables/useTouch'
 import FileItem from './FileItem.vue'
@@ -141,10 +145,10 @@ const columns = computed(() => [
     key: 'name',
     sorter: true,
     render(row) {
-      const iconHtml = getFileIconSvg(row.name, row.is_dir, fs.iconSize)
+      const iconComp = getFileIcon(row.name, row.is_dir)
       const isRenaming = fs.renamingFile === row.path
       return h('div', { class: 'detail-name' }, [
-        h('span', { class: 'detail-icon', innerHTML: iconHtml }),
+        h(iconComp, { width: fs.iconSize, height: fs.iconSize, class: 'detail-icon' }),
         isRenaming
           ? h(RenameInput, { file: row })
           : h('span', { class: 'truncate' }, row.name),
@@ -303,19 +307,19 @@ function handleContextMenu(e) {
       <span class="select-count">{{ fs.selectedFiles.length }}</span>
       <div class="select-actions">
         <button class="select-action-btn" @click="fs.copySelected(); fs.exitSelectMode()">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          <IconCopy width="20" height="20" />
           <span>{{ t('menu.copy') }}</span>
         </button>
         <button class="select-action-btn" @click="fs.cutSelected(); fs.exitSelectMode()">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><line x1="20" y1="4" x2="8.12" y2="15.88"/><line x1="14.47" y1="14.48" x2="20" y2="20"/><line x1="8.12" y1="8.12" x2="12" y2="12"/></svg>
+          <IconCut width="20" height="20" />
           <span>{{ t('menu.cut') }}</span>
         </button>
         <button class="select-action-btn danger" @click="fs.deleteSelected(); fs.exitSelectMode()">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
+          <IconDelete width="20" height="20" />
           <span>{{ t('menu.delete') }}</span>
         </button>
         <button class="select-action-btn" @click="fs.exitSelectMode()">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <IconClose width="20" height="20" />
         </button>
       </div>
     </div>

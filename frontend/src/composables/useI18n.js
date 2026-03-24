@@ -232,6 +232,10 @@ const messages = {
     'account.otp_enabled': 'OTP 已启用',
     'account.otp_disabled': 'OTP 已关闭',
     'account.otp_confirm_disable': '确定关闭 OTP 吗？',
+    'account.window_title': '窗口设置',
+    'account.always_center': '窗口始终居中',
+    'account.default_width': '默认宽度',
+    'account.default_height': '默认高度',
 
     // API error keys (backend returns these, frontend maps to localized text)
     'error.invalid_credentials': '用户名或密码错误',
@@ -537,6 +541,10 @@ const messages = {
     'account.otp_enabled': 'OTP Enabled',
     'account.otp_disabled': 'OTP Disabled',
     'account.otp_confirm_disable': 'Disable OTP verification?',
+    'account.window_title': 'Window Settings',
+    'account.always_center': 'Always center windows',
+    'account.default_width': 'Default width',
+    'account.default_height': 'Default height',
 
     // API error keys
     'error.invalid_credentials': 'Invalid username or password',

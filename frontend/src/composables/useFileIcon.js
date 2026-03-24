@@ -1,52 +1,51 @@
-// Papirus icon theme (GPLv3) — imported as raw SVG strings
-import iconFolder from '../assets/icons/folder.svg?raw'
-import iconFile from '../assets/icons/text-x-generic.svg?raw'
-import iconText from '../assets/icons/text-x-generic.svg?raw'
-import iconCode from '../assets/icons/text-x-script.svg?raw'
-import iconImage from '../assets/icons/image-x-generic.svg?raw'
-import iconVideo from '../assets/icons/video-x-generic.svg?raw'
-import iconAudio from '../assets/icons/audio-x-generic.svg?raw'
-import iconArchive from '../assets/icons/application-zip.svg?raw'
-import iconPdf from '../assets/icons/application-pdf.svg?raw'
-import iconSpreadsheet from '../assets/icons/x-office-spreadsheet.svg?raw'
-import iconDocument from '../assets/icons/x-office-document.svg?raw'
-import iconPresentation from '../assets/icons/x-office-presentation.svg?raw'
-import iconConfig from '../assets/icons/application-json.svg?raw'
-import iconExec from '../assets/icons/application-x-executable.svg?raw'
-import iconWeb from '../assets/icons/text-html.svg?raw'
-import iconDatabase from '../assets/icons/application-database.svg?raw'
-import iconMarkdown from '../assets/icons/text-markdown.svg?raw'
-import iconPython from '../assets/icons/text-x-python.svg?raw'
-import iconJs from '../assets/icons/application-javascript.svg?raw'
-import iconCss from '../assets/icons/text-css.svg?raw'
-import iconShell from '../assets/icons/application-x-shellscript.svg?raw'
-import iconSql from '../assets/icons/application-sql.svg?raw'
-import iconCpp from '../assets/icons/text-x-csrc.svg?raw'
+import IconFolder from '~icons/mdi/folder'
+import IconFile from '~icons/mdi/file-outline'
+import IconText from '~icons/mdi/file-document-outline'
+import IconCode from '~icons/mdi/code-tags'
+import IconImage from '~icons/mdi/file-image-outline'
+import IconVideo from '~icons/mdi/file-video-outline'
+import IconAudio from '~icons/mdi/file-music-outline'
+import IconArchive from '~icons/mdi/zip-box-outline'
+import IconPdf from '~icons/mdi/file-pdf-box'
+import IconSpreadsheet from '~icons/mdi/file-table-outline'
+import IconDocument from '~icons/mdi/file-word-outline'
+import IconPresentation from '~icons/mdi/file-presentation-box'
+import IconConfig from '~icons/mdi/code-json'
+import IconExec from '~icons/mdi/application-cog-outline'
+import IconWeb from '~icons/mdi/language-html5'
+import IconDatabase from '~icons/mdi/database-outline'
+import IconMarkdown from '~icons/mdi/language-markdown-outline'
+import IconPython from '~icons/mdi/language-python'
+import IconJs from '~icons/mdi/language-javascript'
+import IconCss from '~icons/mdi/language-css3'
+import IconShell from '~icons/mdi/console'
+import IconSql from '~icons/mdi/database-search-outline'
+import IconCpp from '~icons/mdi/language-cpp'
 
 const ICONS = {
-  folder: iconFolder,
-  file: iconFile,
-  text: iconText,
-  code: iconCode,
-  image: iconImage,
-  video: iconVideo,
-  audio: iconAudio,
-  archive: iconArchive,
-  pdf: iconPdf,
-  spreadsheet: iconSpreadsheet,
-  document: iconDocument,
-  presentation: iconPresentation,
-  config: iconConfig,
-  exec: iconExec,
-  web: iconWeb,
-  database: iconDatabase,
-  markdown: iconMarkdown,
-  python: iconPython,
-  javascript: iconJs,
-  css: iconCss,
-  shell: iconShell,
-  sql: iconSql,
-  cpp: iconCpp,
+  folder: IconFolder,
+  file: IconFile,
+  text: IconText,
+  code: IconCode,
+  image: IconImage,
+  video: IconVideo,
+  audio: IconAudio,
+  archive: IconArchive,
+  pdf: IconPdf,
+  spreadsheet: IconSpreadsheet,
+  document: IconDocument,
+  presentation: IconPresentation,
+  config: IconConfig,
+  exec: IconExec,
+  web: IconWeb,
+  database: IconDatabase,
+  markdown: IconMarkdown,
+  python: IconPython,
+  javascript: IconJs,
+  css: IconCss,
+  shell: IconShell,
+  sql: IconSql,
+  cpp: IconCpp,
 }
 
 // Map file extensions to icon types
@@ -108,20 +107,11 @@ const EXT_MAP = {
   ipynb: 'code',
 }
 
-function sizeIcon(svgStr, size) {
-  // Replace width/height in the SVG root tag
-  return svgStr
-    .replace(/width="[^"]*"/, `width="${size}"`)
-    .replace(/height="[^"]*"/, `height="${size}"`)
-}
-
-export function getFileIconSvg(fileName, isDir, size = 48) {
-  if (isDir) return sizeIcon(ICONS.folder, size)
-
+export function getFileIcon(fileName, isDir) {
+  if (isDir) return ICONS.folder
   const ext = fileName.split('.').pop()?.toLowerCase() || ''
   const iconType = EXT_MAP[ext] || 'file'
-  const icon = ICONS[iconType] || ICONS.file
-  return sizeIcon(icon, size)
+  return ICONS[iconType] || ICONS.file
 }
 
 export function getFileIconType(fileName, isDir) {
@@ -130,5 +120,4 @@ export function getFileIconType(fileName, isDir) {
   return EXT_MAP[ext] || 'file'
 }
 
-// Export raw icons for use in stores/components
 export { ICONS }
