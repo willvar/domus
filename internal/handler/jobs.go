@@ -32,6 +32,26 @@ func jobToResponse(j model.Job) JobResponse {
 	}
 }
 
+// handleJobDispatch routes POST /job to the appropriate handler based on job type.
+func (h *Handler) handleJobDispatch(c *fiber.Ctx) error {
+	var peek struct {
+		Type string `json:"type"`
+	}
+	if err := c.BodyParser(&peek); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	}
+	switch peek.Type {
+	case "transcode":
+		session := c.Locals("session").(*model.Session)
+		if session.Role != "admin" && session.Permissions&model.PermEdit != model.PermEdit {
+			return c.Status(403).JSON(fiber.Map{"error": "forbidden"})
+		}
+		return h.handleTranscodeStart(c)
+	default:
+		return c.Status(400).JSON(fiber.Map{"error": "unknown_job_type"})
+	}
+}
+
 func (h *Handler) handleListJobs(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
 	jobs, err := model.ListRecentJobs(session.UserID)

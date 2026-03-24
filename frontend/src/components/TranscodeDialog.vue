@@ -1,6 +1,6 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { NModal, NForm, NFormItem, NSelect, NInput, NSwitch, NButton, NSpace, useMessage } from 'naive-ui'
+import { NModal, NForm, NFormItem, NSelect, NSwitch, NButton, NSpace, useMessage } from 'naive-ui'
 import api from '../composables/useApi'
 import { useI18n } from '../composables/useI18n'
 import { useJobsStore } from '../stores/jobs'
@@ -88,7 +88,8 @@ function close() {
 async function startTranscode() {
   loading.value = true
   try {
-    const res = await api.post('/transcode/start', {
+    const res = await api.post('/job', {
+      type: 'transcode',
       path: filePath.value,
       preset: preset.value,
       output_format: outputFormat.value,

@@ -72,7 +72,7 @@ export const useUploadStore = defineStore('upload', () => {
     const names = allFiles.map(f => f.name)
     let conflictMap = new Map()
     try {
-      const res = await api.post('/upload/check-conflicts', { path: targetPath, names })
+      const res = await api.post('/file/upload', { path: targetPath, names })
       for (const c of res.data.conflicts || []) {
         conflictMap.set(c.name, c)
       }
@@ -166,7 +166,7 @@ export const useUploadStore = defineStore('upload', () => {
         initPayload.conflict_strategy = conflictStrategy
       }
 
-      const initRes = await api.post('/upload/init', initPayload)
+      const initRes = await api.post('/file/upload', initPayload)
 
       // Backend may have renamed the file (conflict_strategy = 'rename')
       if (initRes.data.file_name && initRes.data.file_name !== file.name) {
@@ -237,7 +237,7 @@ export const useUploadStore = defineStore('upload', () => {
       formData.append('chunk', chunk)
 
       const partStart = Date.now()
-      const res = await api.put('/upload/part', formData, {
+      const res = await api.put('/file/upload/part', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
         timeout: 300000,
       })
@@ -264,7 +264,7 @@ export const useUploadStore = defineStore('upload', () => {
 
   async function completeUpload(upload, storageKey) {
     upload.etags.sort((a, b) => a.partNumber - b.partNumber)
-    await api.post('/upload/complete', {
+    await api.post('/file/upload', {
       upload_id: upload.uploadId,
       parts: upload.etags.map(p => ({ part_number: p.partNumber, etag: p.etag })),
     })
@@ -314,7 +314,7 @@ export const useUploadStore = defineStore('upload', () => {
     }
     if (upload.uploadId) {
       try {
-        await api.delete('/upload/abort', { params: { upload_id: upload.uploadId } })
+        await api.delete('/file/upload', { params: { upload_id: upload.uploadId } })
       } catch { /* best-effort abort */ }
     }
   }
@@ -334,7 +334,7 @@ export const useUploadStore = defineStore('upload', () => {
     }
 
     try {
-      const res = await api.get('/upload/status', { params: { upload_id: u.uploadId } })
+      const res = await api.get('/file/upload', { params: { upload_id: u.uploadId } })
       const { chunk_size, status, parts } = res.data
 
       if (status !== 'active') {
@@ -376,7 +376,7 @@ export const useUploadStore = defineStore('upload', () => {
     const u = uploads.value.find(u => u.id === id)
     if (!u || u.status !== 'interrupted') return
     if (u.uploadId) {
-      api.delete('/upload/abort', { params: { upload_id: u.uploadId } }).catch(() => { /* best-effort */ })
+      api.delete('/file/upload', { params: { upload_id: u.uploadId } }).catch(() => { /* best-effort */ })
     }
     uploads.value = uploads.value.filter(x => x.id !== id)
     if (uploads.value.length === 0) showPanel.value = false

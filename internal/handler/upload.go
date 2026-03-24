@@ -24,6 +24,20 @@ import (
 	"zephyr/internal/store"
 )
 
+// handleUploadDispatch routes POST /file/upload to init or complete based on upload_id presence.
+func (h *Handler) handleUploadDispatch(c *fiber.Ctx) error {
+	var peek struct {
+		UploadID string `json:"upload_id"`
+	}
+	if err := c.BodyParser(&peek); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	}
+	if peek.UploadID != "" {
+		return h.handleUploadComplete(c)
+	}
+	return h.handleUploadInit(c)
+}
+
 // hashFile computes the SHA-256 hex digest of a file.
 func hashFile(path string) (string, error) {
 	f, err := os.Open(path)
@@ -44,62 +58,6 @@ var uploadMu sync.Map // map[string]*sync.Mutex
 func getUploadMutex(uploadID string) *sync.Mutex {
 	v, _ := uploadMu.LoadOrStore(uploadID, &sync.Mutex{})
 	return v.(*sync.Mutex)
-}
-
-func (h *Handler) handleCheckConflicts(c *fiber.Ctx) error {
-	var body struct {
-		Path  string   `json:"path"`
-		Names []string `json:"names"`
-	}
-	if err := c.BodyParser(&body); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
-	}
-	if len(body.Names) == 0 {
-		return c.JSON(fiber.Map{"conflicts": []fiber.Map{}})
-	}
-
-	dirPath := body.Path
-	if dirPath != "" && !strings.HasSuffix(dirPath, "/") {
-		dirPath += "/"
-	}
-	resolvedDir, err := middleware.ResolvePath(c, dirPath)
-	if err != nil {
-		return err
-	}
-
-	// List all objects in the target directory
-	nameSet := make(map[string]struct{}, len(body.Names))
-	for _, n := range body.Names {
-		nameSet[n] = struct{}{}
-	}
-
-	var conflicts []fiber.Map
-	marker := ""
-	for {
-		result, err := h.Store.ListObjects(resolvedDir, marker, 1000)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "list_failed"})
-		}
-		for _, f := range result.Files {
-			if _, ok := nameSet[f.Name]; ok {
-				conflicts = append(conflicts, fiber.Map{
-					"name":          f.Name,
-					"size":          f.Size,
-					"is_dir":        f.IsDir,
-					"last_modified": f.LastModified,
-				})
-			}
-		}
-		if !result.IsTruncated {
-			break
-		}
-		marker = result.NextMarker
-	}
-
-	if conflicts == nil {
-		conflicts = []fiber.Map{}
-	}
-	return c.JSON(fiber.Map{"conflicts": conflicts})
 }
 
 // nextAvailableName generates a conflict-free filename like "file (1).txt"

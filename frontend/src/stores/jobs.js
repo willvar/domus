@@ -29,7 +29,7 @@ export const useJobsStore = defineStore('jobs', () => {
   }
 
   async function fetchJobs() {
-    const res = await api.get('/jobs')
+    const res = await api.get('/job')
     jobs.value = Array.isArray(res.data) ? res.data : []
     for (const job of activeJobs.value) {
       if (!sseConnections.has(job.job_id)) {
@@ -41,7 +41,7 @@ export const useJobsStore = defineStore('jobs', () => {
   function watchJob(jobId) {
     if (sseConnections.has(jobId)) return
 
-    const evtSource = new EventSource(`${API_BASE}/jobs/${jobId}/status`, { withCredentials: true })
+    const evtSource = new EventSource(`${API_BASE}/job/${jobId}/status`, { withCredentials: true })
     sseConnections.set(jobId, evtSource)
 
     evtSource.onmessage = (event) => {
@@ -71,7 +71,7 @@ export const useJobsStore = defineStore('jobs', () => {
   }
 
   async function cancelJob(jobId) {
-    await api.delete(`/jobs/${jobId}`)
+    await api.delete(`/job/${jobId}`)
     const idx = jobs.value.findIndex(j => j.job_id === jobId)
     if (idx >= 0) {
       jobs.value[idx].status = 'aborted'
@@ -89,7 +89,7 @@ export const useJobsStore = defineStore('jobs', () => {
   }
 
   async function clearCompleted() {
-    await api.delete('/jobs')
+    await api.delete('/job/done')
     await fetchJobs()
   }
 

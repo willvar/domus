@@ -58,8 +58,8 @@ func (h *Handler) handleTranscodeStart(c *fiber.Ctx) error {
 		return err
 	}
 
-	// Get file info
-	info, err := h.Store.GetObjectInfo(resolvedPath)
+	// Verify file exists in DB
+	fileRecord, err := model.GetFile(session.UserID, resolvedPath)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "file_not_found"})
 	}
@@ -109,7 +109,7 @@ func (h *Handler) handleTranscodeStart(c *fiber.Ctx) error {
 		Replace:      body.Replace,
 		OriginalName: originalName,
 		OutputName:   outputName,
-		FileSize:     info.Size,
+		FileSize:     fileRecord.Size,
 		TempDir:      tempDir,
 	}
 	paramsJSON, _ := json.Marshal(params)

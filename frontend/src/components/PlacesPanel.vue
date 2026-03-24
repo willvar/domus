@@ -1,6 +1,9 @@
 <script setup>
 import { ref, computed, onMounted, h } from 'vue'
 import { NMenu } from 'naive-ui'
+import IconHome from '~icons/mdi/home-outline'
+import IconTrash from '~icons/mdi/delete-outline'
+import IconFolderOutline from '~icons/mdi/folder-outline'
 import { useFileSystemStore } from '../stores/fileSystem'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
@@ -14,21 +17,18 @@ const bookmarks = ref([])
 
 onMounted(async () => {
   try {
-    const res = await api.get('/bookmarks')
+    const res = await api.get('/user/bookmark')
     bookmarks.value = res.data
   } catch { /* bookmarks stay empty on error */ }
 })
 
-function icon(svg) {
-  return () => h('span', {
-    innerHTML: svg,
-    style: 'display:inline-flex;align-items:center;margin-right:8px;opacity:0.7;',
+function icon(comp) {
+  return () => h(comp, {
+    width: 16,
+    height: 16,
+    style: 'margin-right:8px;opacity:0.7;',
   })
 }
-
-const homeIcon = `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 8l6-5 6 5v5.5a.5.5 0 01-.5.5h-3v-4H5.5v4h-3a.5.5 0 01-.5-.5V8z" fill="currentColor"/></svg>`
-const trashIcon = `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M5 2V1h6v1h3v1.5H2V2h3zM3 5h10l-.8 9H3.8L3 5z" fill="currentColor"/></svg>`
-const folderIcon = `<svg width="16" height="16" viewBox="0 0 16 16"><path d="M2 4c0-.6.4-1 1-1h3l1.5 1.5H13c.6 0 1 .4 1 1V12c0 .6-.4 1-1 1H3c-.6 0-1-.4-1-1V4z" fill="#4d9de8"/></svg>`
 
 const menuOptions = computed(() => [
   {
@@ -36,8 +36,8 @@ const menuOptions = computed(() => [
     key: 'places-header',
     type: 'group',
     children: [
-      { label: t('places.home'), key: 'home', icon: icon(homeIcon) },
-      { label: t('places.trash'), key: 'trash', icon: icon(trashIcon) },
+      { label: t('places.home'), key: 'home', icon: icon(IconHome) },
+      { label: t('places.trash'), key: 'trash', icon: icon(IconTrash) },
     ],
   },
 ])
@@ -65,7 +65,7 @@ function handleSelect(key) {
     <template v-if="bookmarks.length > 0">
       <div class="section-header">{{ t('places.bookmarks') }}</div>
       <NMenu
-        :options="bookmarks.map(b => ({ label: b.name, key: String(b.id), icon: icon(folderIcon) }))"
+        :options="bookmarks.map(b => ({ label: b.name, key: String(b.id), icon: icon(IconFolderOutline) }))"
         :root-indent="12"
         @update:value="handleSelect"
       />

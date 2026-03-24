@@ -106,7 +106,7 @@ function openEdit(user) {
 async function loadUsers() {
   loading.value = true
   try {
-    const res = await api.get('/admin/users')
+    const res = await api.get('/audit/user')
     users.value = Array.isArray(res.data) ? res.data : []
   } catch {
     message.error('Failed to load users')
@@ -117,7 +117,7 @@ async function loadUsers() {
 
 async function createUser() {
   try {
-    await api.post('/admin/users', newUser.value)
+    await api.post('/audit/user', newUser.value)
     message.success(t('admin.user_created'))
     showCreate.value = false
     newUser.value = { username: '', password: '', role: 'user', permissions: 15 }
@@ -130,7 +130,7 @@ async function createUser() {
 async function saveEdit() {
   if (!editingUser.value) return
   try {
-    await api.put(`/admin/users/${editingUser.value.id}`, {
+    await api.put(`/audit/user/${editingUser.value.id}`, {
       role: editingUser.value.role,
       permissions: editingUser.value.permissions,
     })
@@ -147,7 +147,7 @@ async function resetPassword(user) {
   const password = await showPrompt(t('admin.new_password', { name: user.username }))
   if (!password) return
   try {
-    await api.put(`/admin/users/${user.id}`, { password })
+    await api.put(`/audit/user/${user.id}`, { password })
     message.success(t('admin.pwd_updated'))
   } catch {
     message.error('Failed to reset password')
@@ -157,7 +157,7 @@ async function resetPassword(user) {
 async function deleteUser(user) {
   if (!await showConfirm(t('admin.confirm_delete', { name: user.username }))) return
   try {
-    await api.delete(`/admin/users/${user.id}`)
+    await api.delete(`/audit/user/${user.id}`)
     message.success(t('admin.user_deleted'))
     await loadUsers()
   } catch (e) {
@@ -168,7 +168,7 @@ async function deleteUser(user) {
 async function resetOTP(user) {
   if (!await showConfirm(t('admin.confirm_reset_otp', { name: user.username }))) return
   try {
-    await api.delete(`/admin/users/${user.id}/otp`)
+    await api.delete(`/audit/user/${user.id}/otp`)
     message.success(t('admin.otp_reset'))
     await loadUsers()
   } catch {
@@ -179,7 +179,7 @@ async function resetOTP(user) {
 async function resetEmail(user) {
   if (!await showConfirm(t('admin.confirm_reset_email', { name: user.username }))) return
   try {
-    await api.delete(`/admin/users/${user.id}/email`)
+    await api.delete(`/audit/user/${user.id}/email`)
     message.success(t('admin.email_reset'))
     await loadUsers()
   } catch {
