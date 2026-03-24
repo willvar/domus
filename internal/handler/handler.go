@@ -31,80 +31,73 @@ type Handler struct {
 
 // RegisterRoutes registers all API routes on the Fiber app.
 func (h *Handler) RegisterRoutes(app *fiber.App) {
-	// Auth routes (public)
-	app.Get("/auth/config", h.handleAuthConfig)
+	// /auth (public)
+	app.Get("/auth", h.handleAuthConfig)
+	app.Post("/auth", h.handleLogin)
 	app.Post("/auth/verify", h.handleVerify)
-	app.Post("/auth/login", h.handleLogin)
 
-	// Auth routes (authenticated)
 	authed := app.Group("", h.Mid.AuthRequired())
-	authed.Post("/auth/logout", h.handleLogout)
-	authed.Get("/auth/me", h.handleMe)
+	authed.Delete("/auth", h.handleLogout)
 
-	// Account security routes
-	authed.Get("/account/security", h.handleSecurityStatus)
-	authed.Post("/account/email/bind", h.handleBindEmail)
-	authed.Post("/account/email/verify", h.handleVerifyBindEmail)
-	authed.Delete("/account/email", h.handleUnbindEmail)
-	authed.Post("/account/otp/setup", h.handleOTPSetup)
-	authed.Post("/account/otp/enable", h.handleOTPEnable)
-	authed.Delete("/account/otp", h.handleOTPDisable)
-	authed.Put("/account/password", h.handleChangePassword)
+	// /user
+	user := authed.Group("/user")
+	user.Get("/", h.handleMe)
+	user.Get("/security", h.handleSecurityStatus)
+	user.Put("/security/password", h.handleChangePassword)
+	user.Post("/security/email/bind", h.handleBindEmail)
+	user.Post("/security/email/verify", h.handleVerifyBindEmail)
+	user.Delete("/security/email", h.handleUnbindEmail)
+	user.Post("/security/otp/setup", h.handleOTPSetup)
+	user.Post("/security/otp/enable", h.handleOTPEnable)
+	user.Delete("/security/otp", h.handleOTPDisable)
+	user.Get("/bookmark", h.handleListBookmarks)
+	user.Post("/bookmark", h.handleCreateBookmark)
+	user.Put("/bookmark/:id", h.handleUpdateBookmark)
+	user.Delete("/bookmark/:id", h.handleDeleteBookmark)
 
-	// Admin routes
-	admin := authed.Group("/admin", middleware.AdminRequired())
-	admin.Get("/users", h.handleListUsers)
-	admin.Post("/users", h.handleCreateUser)
-	admin.Put("/users/:id", h.handleUpdateUser)
-	admin.Delete("/users/:id", h.handleDeleteUser)
-	admin.Delete("/users/:id/otp", h.handleResetUserOTP)
-	admin.Delete("/users/:id/email", h.handleResetUserEmail)
-	admin.Get("/audit", h.handleListAuditLogs)
+	// /audit
+	audit := authed.Group("/audit")
+	audit.Get("/", middleware.AdminRequired(), h.handleListAuditLogs)
+	audit.Post("/", h.handleAuditPreview)
+	auditUser := audit.Group("/user", middleware.AdminRequired())
+	auditUser.Get("/", h.handleListUsers)
+	auditUser.Post("/", h.handleCreateUser)
+	auditUser.Put("/:id", h.handleUpdateUser)
+	auditUser.Delete("/:id", h.handleDeleteUser)
+	auditUser.Delete("/:id/otp", h.handleResetUserOTP)
+	auditUser.Delete("/:id/email", h.handleResetUserEmail)
 
-	// Audit preview
-	authed.Post("/audit/preview", h.handleAuditPreview)
+	// /file
+	file := authed.Group("/file")
+	file.Get("/", middleware.PermissionRequired(model.PermRead), h.handleList)
+	file.Get("/download", middleware.PermissionRequired(model.PermRead), h.handleDownload)
+	file.Get("/content/raw", middleware.PermissionRequired(model.PermRead), h.handleRawFile)
+	file.Put("/content/diff", middleware.PermissionRequired(model.PermEdit), h.handlePatchContent)
+	file.Post("/mkdir", middleware.PermissionRequired(model.PermUpload), h.handleMkdir)
+	file.Post("/rename", middleware.PermissionRequired(model.PermEdit), h.handleRename)
+	file.Post("/copy", middleware.PermissionRequired(model.PermEdit), h.handleCopy)
+	file.Post("/move", middleware.PermissionRequired(model.PermEdit), h.handleMove)
+	file.Delete("/delete", middleware.PermissionRequired(model.PermDelete), h.handleDelete)
 
-	// Bookmarks
-	authed.Get("/bookmarks", h.handleListBookmarks)
-	authed.Post("/bookmarks", h.handleCreateBookmark)
-	authed.Put("/bookmarks/:id", h.handleUpdateBookmark)
-	authed.Delete("/bookmarks/:id", h.handleDeleteBookmark)
+	fileUpload := file.Group("/upload")
+	fileUpload.Get("/", middleware.PermissionRequired(model.PermRead), h.handleUploadStatus)
+	fileUpload.Post("/", middleware.PermissionRequired(model.PermUpload), h.handleUploadDispatch)
+	fileUpload.Put("/part", middleware.PermissionRequired(model.PermUpload), h.handleUploadPart)
+	fileUpload.Delete("/", middleware.PermissionRequired(model.PermUpload), h.handleUploadAbort)
 
-	// File operations
-	authed.Get("/list", middleware.PermissionRequired(model.PermRead), h.handleList)
-	authed.Get("/info", middleware.PermissionRequired(model.PermRead), h.handleInfo)
-	authed.Get("/download", middleware.PermissionRequired(model.PermRead), h.handleDownload)
-	authed.Get("/raw", middleware.PermissionRequired(model.PermRead), h.handleRawFile)
-	authed.Get("/content", middleware.PermissionRequired(model.PermRead), h.handleGetContent)
-	authed.Get("/trash", middleware.PermissionRequired(model.PermRead), h.handleListTrash)
-	authed.Get("/upload/status", middleware.PermissionRequired(model.PermRead), h.handleUploadStatus)
+	fileTrash := file.Group("/trash")
+	fileTrash.Get("/", middleware.PermissionRequired(model.PermRead), h.handleListTrash)
+	fileTrash.Post("/restore", middleware.PermissionRequired(model.PermDelete), h.handleRestoreTrash)
+	fileTrash.Delete("/:id", middleware.PermissionRequired(model.PermDelete), h.handleDeleteTrashItem)
+	fileTrash.Delete("/", middleware.PermissionRequired(model.PermDelete), h.handleClearTrash)
 
-	authed.Post("/upload/check-conflicts", middleware.PermissionRequired(model.PermUpload), h.handleCheckConflicts)
-	authed.Post("/upload/init", middleware.PermissionRequired(model.PermUpload), h.handleUploadInit)
-	authed.Put("/upload/part", middleware.PermissionRequired(model.PermUpload), h.handleUploadPart)
-	authed.Post("/upload/complete", middleware.PermissionRequired(model.PermUpload), h.handleUploadComplete)
-	authed.Delete("/upload/abort", middleware.PermissionRequired(model.PermUpload), h.handleUploadAbort)
-	authed.Post("/mkdir", middleware.PermissionRequired(model.PermUpload), h.handleMkdir)
-
-	authed.Put("/content", middleware.PermissionRequired(model.PermEdit), h.handlePutContent)
-	authed.Put("/content/diff", middleware.PermissionRequired(model.PermEdit), h.handlePatchContent)
-	authed.Post("/rename", middleware.PermissionRequired(model.PermEdit), h.handleRename)
-	authed.Post("/copy", middleware.PermissionRequired(model.PermEdit), h.handleCopy)
-	authed.Post("/move", middleware.PermissionRequired(model.PermEdit), h.handleMove)
-
-	authed.Delete("/delete", middleware.PermissionRequired(model.PermDelete), h.handleDelete)
-	authed.Post("/trash/restore", middleware.PermissionRequired(model.PermDelete), h.handleRestoreTrash)
-	authed.Delete("/trash/:id", middleware.PermissionRequired(model.PermDelete), h.handleDeleteTrashItem)
-	authed.Delete("/trash", middleware.PermissionRequired(model.PermDelete), h.handleClearTrash)
-
-	// Jobs
-	authed.Get("/jobs", h.handleListJobs)
-	authed.Delete("/jobs", h.handleClearJobs)
-	authed.Get("/jobs/:id/status", h.handleJobStatus)
-	authed.Delete("/jobs/:id", h.handleCancelJob)
-
-	// Transcode
-	authed.Post("/transcode/start", middleware.PermissionRequired(model.PermEdit), h.handleTranscodeStart)
+	// /job
+	job := authed.Group("/job")
+	job.Get("/", h.handleListJobs)
+	job.Post("/", h.handleJobDispatch)
+	job.Delete("/done", h.handleClearJobs)
+	job.Get("/:id/status", h.handleJobStatus)
+	job.Delete("/:id", h.handleCancelJob)
 }
 
 // getFileEncryptionKey resolves the correct encryption key for the given file path.

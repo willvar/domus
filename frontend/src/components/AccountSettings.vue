@@ -1,13 +1,15 @@
 <script setup>
 import { ref, watch } from 'vue'
-import { NDrawer, NDrawerContent, NCard, NForm, NFormItem, NInput, NInputNumber, NButton, NSpace, NTag, useMessage } from 'naive-ui'
+import { NDrawer, NDrawerContent, NCard, NForm, NFormItem, NInput, NInputNumber, NButton, NSpace, NSwitch, NTag, useMessage } from 'naive-ui'
 import api from '../composables/useApi'
 import { useI18n } from '../composables/useI18n'
 import { showConfirm } from '../composables/useNativeDialog'
+import { useWindowManagerStore } from '../stores/windowManager'
 import QRCode from 'qrcode'
 
 const { t, te } = useI18n()
 const message = useMessage()
+const wm = useWindowManagerStore()
 
 const props = defineProps({ show: Boolean })
 const emit = defineEmits(['update:show'])
@@ -50,7 +52,7 @@ const otpLoading = ref(false)
 
 async function loadStatus() {
   try {
-    const res = await api.get('/account/security')
+    const res = await api.get('/user/security')
     status.value = res.data
   } catch (e) {
     message.error(te(e, 'account.load_failed'))
@@ -66,7 +68,7 @@ async function changePassword() {
   if (!oldPwd.value || !newPwd.value) return
   pwdLoading.value = true
   try {
-    await api.put('/account/password', { old_password: oldPwd.value, new_password: newPwd.value })
+    await api.put('/user/security/password', { old_password: oldPwd.value, new_password: newPwd.value })
     message.success(t('account.password_changed'))
     oldPwd.value = ''
     newPwd.value = ''
@@ -82,7 +84,7 @@ async function sendBindCode() {
   if (!bindEmail.value) return
   emailLoading.value = true
   try {
-    await api.post('/account/email/bind', { email: bindEmail.value })
+    await api.post('/user/security/email/bind', { email: bindEmail.value })
     emailStep.value = 'code_sent'
     message.success(t('login.code_sent'))
   } catch (e) {
@@ -96,7 +98,7 @@ async function verifyBindCode() {
   if (!bindCode.value) return
   emailLoading.value = true
   try {
-    await api.post('/account/email/verify', { email: bindEmail.value, code: bindCode.value })
+    await api.post('/user/security/email/verify', { email: bindEmail.value, code: bindCode.value })
     message.success(t('account.email_bound'))
     emailStep.value = 'idle'
     bindEmail.value = ''
@@ -112,7 +114,7 @@ async function verifyBindCode() {
 async function unbindEmail() {
   if (!await showConfirm(t('account.email_unbind') + '?')) return
   try {
-    await api.delete('/account/email')
+    await api.delete('/user/security/email')
     message.success(t('account.email_unbound'))
     await loadStatus()
   } catch (e) {
@@ -124,7 +126,7 @@ async function unbindEmail() {
 async function setupOTP() {
   otpLoading.value = true
   try {
-    const res = await api.post('/account/otp/setup')
+    const res = await api.post('/user/security/otp/setup')
     otpSecret.value = res.data.secret
     otpQR.value = await QRCode.toDataURL(res.data.uri, { width: 200, margin: 2 })
     otpStep.value = 'setup'
@@ -140,7 +142,7 @@ async function enableOTP() {
   if (!otpCode.value) return
   otpLoading.value = true
   try {
-    await api.post('/account/otp/enable', { code: otpCode.value })
+    await api.post('/user/security/otp/enable', { code: otpCode.value })
     message.success(t('account.otp_enabled'))
     otpStep.value = 'idle'
     otpSecret.value = ''
@@ -157,7 +159,7 @@ async function enableOTP() {
 async function disableOTP() {
   if (!await showConfirm(t('account.otp_confirm_disable'))) return
   try {
-    await api.delete('/account/otp')
+    await api.delete('/user/security/otp')
     message.success(t('account.otp_disabled'))
     await loadStatus()
   } catch (e) {
@@ -183,6 +185,42 @@ async function disableOTP() {
             <template #suffix>MB</template>
           </NInputNumber>
         </NFormItem>
+      </NCard>
+
+      <!-- Window Settings -->
+      <NCard :title="t('account.window_title')" size="small" style="margin-bottom: 16px">
+        <NFormItem :label="t('account.always_center')">
+          <NSwitch
+            :value="wm.alwaysCenter"
+            @update:value="v => wm.updatePrefs({ alwaysCenter: v })"
+          />
+        </NFormItem>
+        <template v-if="wm.alwaysCenter">
+          <NFormItem :label="t('account.default_width')">
+            <NInputNumber
+              :value="wm.defaultWidth"
+              :min="400"
+              :max="3840"
+              :step="50"
+              style="width: 100%"
+              @update:value="v => wm.updatePrefs({ defaultWidth: v })"
+            >
+              <template #suffix>px</template>
+            </NInputNumber>
+          </NFormItem>
+          <NFormItem :label="t('account.default_height')">
+            <NInputNumber
+              :value="wm.defaultHeight"
+              :min="300"
+              :max="2160"
+              :step="50"
+              style="width: 100%"
+              @update:value="v => wm.updatePrefs({ defaultHeight: v })"
+            >
+              <template #suffix>px</template>
+            </NInputNumber>
+          </NFormItem>
+        </template>
       </NCard>
 
       <!-- Password Change -->

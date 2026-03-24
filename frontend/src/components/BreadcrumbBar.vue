@@ -42,7 +42,7 @@ function cancelEdit() {
 
 async function loadSubDirs(parentPath) {
   try {
-    const res = await api.get('/list', { params: { path: parentPath } })
+    const res = await api.get('/file', { params: { path: parentPath } })
     const dirs = (res.data.files || []).filter(f => f.is_dir)
     subDirs.value = dirs.map(d => ({ label: d.name, key: d.path }))
   } catch {

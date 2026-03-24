@@ -32,7 +32,7 @@ function nextTabId() {
 
 async function fetchTextChunk(path, byteStart, totalSize) {
   const byteEnd = Math.min(byteStart + TEXT_CHUNK_SIZE - 1, totalSize - 1)
-  const res = await api.get('/raw', {
+  const res = await api.get('/file/content/raw', {
     params: { path },
     headers: { Range: `bytes=${byteStart}-${byteEnd}` },
     responseType: 'arraybuffer',
@@ -286,7 +286,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   async function fetchFiles(path) {
     if (path === '__trash__/') {
-      const res = await api.get('/trash')
+      const res = await api.get('/file/trash')
       const items = res.data || []
       return items.map(item => ({
         name: item.original_path.replace(/\/$/, '').split('/').pop(),
@@ -298,7 +298,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         _originalPath: item.original_path,
       }))
     }
-    const res = await api.get('/list', { params: { path } })
+    const res = await api.get('/file', { params: { path } })
     return res.data.files || []
   }
 
@@ -427,7 +427,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
     const promises = clipboard.value.items.map(item => {
       const dstPath = currentPath.value + item.name + (item.is_dir ? '/' : '')
-      const url = mode === 'copy' ? '/copy' : '/move'
+      const url = mode === 'copy' ? '/file/copy' : '/file/move'
       const body = { src_path: item.path, dst_path: dstPath, is_dir: item.is_dir }
       const desc = `${mode === 'copy' ? 'Copy' : 'Move'} ${item.name}`
       return ops.runSSEOperation(url, body, mode, desc)
@@ -449,7 +449,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     if (!name) return
 
     try {
-      await api.post('/mkdir', { path: currentPath.value + name })
+      await api.post('/file/mkdir', { path: currentPath.value + name })
       await reloadCurrentDir()
     } catch (e) {
       console.error('Create folder failed:', e)
@@ -460,7 +460,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
           description: `${t('pending.type_mkdir')}: ${name}`,
           username: auth.username,
           apiMethod: 'post',
-          apiUrl: '/mkdir',
+          apiUrl: '/file/mkdir',
           apiData: { path: currentPath.value + name },
         })
       }
@@ -484,7 +484,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const newPath = parts.join('/') + (isDir ? '/' : '')
 
     try {
-      await api.post('/rename', {
+      await api.post('/file/rename', {
         old_path: oldPath,
         new_path: newPath,
         is_dir: isDir,
@@ -501,7 +501,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
           description: `${t('pending.type_rename')}: ${oldName} → ${newName}`,
           username: auth.username,
           apiMethod: 'post',
-          apiUrl: '/rename',
+          apiUrl: '/file/rename',
           apiData: { old_path: oldPath, new_path: newPath, is_dir: isDir },
         })
       }
@@ -521,7 +521,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         const file = getFileByPath(path)
         if (!file?._trashId) continue
         try {
-          await api.delete(`/trash/${file._trashId}`)
+          await api.delete(`/file/trash/${file._trashId}`)
         } catch (e) {
           console.error('Permanent delete failed:', e)
           const pending = usePendingOpsStore()
@@ -531,7 +531,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
               description: `${t('pending.type_deleteTrash')}: ${file.name}`,
               username: auth.username,
               apiMethod: 'delete',
-              apiUrl: `/trash/${file._trashId}`,
+              apiUrl: `/file/trash/${file._trashId}`,
               apiData: null,
             })
           }
@@ -541,7 +541,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       if (!await showConfirm(t('dialog.confirm_delete', { n: count }))) return
       const promises = selectedFiles.value.map(path => {
         const name = path.replace(/\/$/, '').split('/').pop()
-        return ops.runSSEOperation('/delete', null, 'delete', `Delete ${name}`, {
+        return ops.runSSEOperation('/file/delete', null, 'delete', `Delete ${name}`, {
           method: 'DELETE',
           params: { path },
         })
@@ -559,7 +559,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       const file = getFileByPath(path)
       if (!file?._trashId) continue
       try {
-        await api.post('/trash/restore', { id: file._trashId })
+        await api.post('/file/trash/restore', { id: file._trashId })
       } catch (e) {
         console.error('Restore failed:', e)
         const pending = usePendingOpsStore()
@@ -569,7 +569,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
             description: `${t('pending.type_restore')}: ${file.name}`,
             username: auth.username,
             apiMethod: 'post',
-            apiUrl: '/trash/restore',
+            apiUrl: '/file/trash/restore',
             apiData: { id: file._trashId },
           })
         }
@@ -582,7 +582,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   async function emptyTrash() {
     if (!await showConfirm(t('dialog.confirm_empty_trash'))) return
     try {
-      await ops.runSSEOperation('/trash', null, 'delete', t('menu.empty_trash'), {
+      await ops.runSSEOperation('/file/trash', null, 'delete', t('menu.empty_trash'), {
         method: 'DELETE',
       })
     } catch (e) {
@@ -771,7 +771,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
     if (blobTypes.includes(type)) {
       try {
-        const res = await api.get('/raw', {
+        const res = await api.get('/file/content/raw', {
           params: { path: file.path },
           responseType: 'blob',
         })
@@ -789,7 +789,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         // Notebook: JSON needs full parse
         state.chunked = false
         try {
-          const res = await api.get('/raw', {
+          const res = await api.get('/file/content/raw', {
             params: { path: file.path },
             responseType: 'text',
           })
@@ -835,7 +835,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     try {
       const newContent = state.content
       const newBytes = new TextEncoder().encode(newContent)
-      await api.put('/content/diff', {
+      await api.put('/file/content/diff', {
         path: state.file.path,
         base_size: state.baseSize,
         edits: [{ offset: 0, delete: state.baseSize, insert: newContent }],
@@ -853,7 +853,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
           description: `${t('pending.type_saveViewer')}: ${fileName}`,
           username: auth.username,
           apiMethod: 'put',
-          apiUrl: '/content/diff',
+          apiUrl: '/file/content/diff',
           apiData: {
             path: state.file.path,
             base_size: state.baseSize,
@@ -871,7 +871,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     if (state) {
       if (state.openedAt) {
         const duration = Date.now() - state.openedAt
-        navigator.sendBeacon(`${API_BASE}/audit/preview`, JSON.stringify({
+        navigator.sendBeacon(`${API_BASE}/audit`, JSON.stringify({
           path: state.file.path,
           duration_ms: duration,
           type: state.type,
@@ -888,7 +888,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   async function downloadFile(path) {
     try {
-      const res = await api.get('/download', { params: { path } })
+      const res = await api.get('/file/download', { params: { path } })
       window.open((API_BASE) + res.data.url, '_blank')
     } catch (e) {
       console.error('Download failed:', e)

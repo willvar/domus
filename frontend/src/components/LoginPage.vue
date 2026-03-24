@@ -27,7 +27,7 @@ const loading = ref(false)
 
 onMounted(async () => {
   try {
-    const res = await api.get('/auth/config')
+    const res = await api.get('/auth')
     smtpEnabled.value = res.data.smtp_enabled
   } catch { /* SMTP status defaults to disabled */ }
 })

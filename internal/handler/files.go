@@ -59,25 +59,6 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"files": files})
 }
 
-func (h *Handler) handleInfo(c *fiber.Ctx) error {
-	path := c.Query("path", "")
-	if path == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
-	}
-
-	resolvedPath, err := middleware.ResolvePath(c, path)
-	if err != nil {
-		return err
-	}
-
-	info, err := h.Store.GetObjectInfo(resolvedPath)
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
-	}
-
-	return c.JSON(info)
-}
-
 func (h *Handler) handleMkdir(c *fiber.Ctx) error {
 	var body struct {
 		Path string `json:"path"`
@@ -156,6 +137,19 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 		return err
 	}
 
+	// Verify source exists in DB
+	session := c.Locals("session").(*model.Session)
+	var srcSize int64
+	var srcContentHash string
+	if !body.IsDir {
+		srcRecord, err := model.GetFile(session.UserID, srcResolved)
+		if err != nil {
+			return c.Status(404).JSON(fiber.Map{"error": "source_not_found"})
+		}
+		srcSize = srcRecord.Size
+		srcContentHash = srcRecord.ContentHash
+	}
+
 	// Check if SSE is requested
 	if c.Get("Accept") == "text/event-stream" {
 		c.Set("Content-Type", "text/event-stream")
@@ -183,18 +177,12 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 				data, _ := json.Marshal(fiber.Map{"error": copyErr.Error()})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			} else {
-				session := c.Locals("session").(*model.Session)
 				if body.IsDir {
 					h.syncDirFiles(session.UserID, dstResolved)
 				} else {
 					dstName := filepath.Base(dstResolved)
 					ct := mime.TypeByExtension(filepath.Ext(dstResolved))
-					info, _ := h.Store.GetObjectInfo(dstResolved)
-					var size int64
-					if info != nil {
-						size = info.Size
-					}
-					_ = model.UpsertFile(session.UserID, dstResolved, dstName, false, size, ct, "")
+					_ = model.UpsertFile(session.UserID, dstResolved, dstName, false, srcSize, ct, srcContentHash)
 				}
 				data, _ := json.Marshal(fiber.Map{"done": true})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
@@ -205,7 +193,6 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 	}
 
 	// Non-SSE: simple copy
-	session := c.Locals("session").(*model.Session)
 	if body.IsDir {
 		if err := h.Store.RecursiveCopy(srcResolved, dstResolved, nil); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "copy_failed"})
@@ -217,12 +204,7 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 		}
 		dstName := filepath.Base(dstResolved)
 		ct := mime.TypeByExtension(filepath.Ext(dstResolved))
-		info, _ := h.Store.GetObjectInfo(dstResolved)
-		var size int64
-		if info != nil {
-			size = info.Size
-		}
-		_ = model.UpsertFile(session.UserID, dstResolved, dstName, false, size, ct, "")
+		_ = model.UpsertFile(session.UserID, dstResolved, dstName, false, srcSize, ct, srcContentHash)
 	}
 
 	h.Audit.LogFromCtx(c, "file_copy", body.SrcPath, body.DstPath, "success", 0)
@@ -321,18 +303,20 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
 	isDir := strings.HasSuffix(path, "/")
 
-	// Calculate size for quota update
+	// Calculate size from DB for quota update
 	var totalSize int64
 	if isDir {
-		size, _, sizeErr := h.Store.GetTotalSize(resolvedPath)
-		if sizeErr == nil {
-			totalSize = size
+		size, err := model.SumFileSizeByPrefix(session.UserID, resolvedPath)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 		}
+		totalSize = size
 	} else {
-		info, infoErr := h.Store.GetObjectInfo(resolvedPath)
-		if infoErr == nil {
-			totalSize = info.Size
+		fileRecord, err := model.GetFile(session.UserID, resolvedPath)
+		if err != nil {
+			return c.Status(404).JSON(fiber.Map{"error": "not_found"})
 		}
+		totalSize = fileRecord.Size
 	}
 
 	// Move to trash instead of permanent delete
@@ -434,7 +418,7 @@ func (h *Handler) handleDownload(c *fiber.Ctx) error {
 
 	h.Audit.LogFromCtx(c, "file_download", path, "", "success", 0)
 	return c.JSON(fiber.Map{
-		"url": "/raw?path=" + url.QueryEscape(path) + "&dl=1",
+		"url": "/file/content/raw?path=" + url.QueryEscape(path) + "&dl=1",
 	})
 }
 
@@ -524,16 +508,16 @@ func (h *Handler) handleRawFile(c *fiber.Ctx) error {
 	c.Set("Accept-Ranges", "bytes")
 
 	// Look up plaintext size from DB
-	var plaintextSize int64
 	var fileRecord model.FileRecord
-	if err := h.DB.Where("path = ?", resolvedPath).First(&fileRecord).Error; err == nil {
-		plaintextSize = fileRecord.Size
+	if err := h.DB.Where("path = ?", resolvedPath).First(&fileRecord).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
 	}
+	plaintextSize := fileRecord.Size
 
 	// Check for Range header
 	rangeHeader := c.Get("Range")
 	if rangeHeader == "" || plaintextSize <= 0 {
-		// Full file response (existing behavior)
+		// Full file response
 		reader, err := h.Store.GetObjectContent(resolvedPath)
 		if err != nil {
 			return c.Status(404).JSON(fiber.Map{"error": "not_found"})
@@ -567,6 +551,17 @@ func (h *Handler) handleRawFile(c *fiber.Ctx) error {
 
 	cipherStart := headerSz + startChunk*encChunkSz
 	cipherEnd := headerSz + (endChunk+1)*encChunkSz - 1
+
+	// Clamp cipherEnd to actual encrypted file size to avoid OSS returning full file
+	lastChunkPlain := plaintextSize % chunkSz
+	if lastChunkPlain == 0 && plaintextSize > 0 {
+		lastChunkPlain = chunkSz
+	}
+	totalChunks := (plaintextSize + chunkSz - 1) / chunkSz
+	cipherTotal := headerSz + (totalChunks-1)*encChunkSz + int64(auth.NonceSize) + lastChunkPlain + int64(auth.TagSize)
+	if cipherEnd >= cipherTotal {
+		cipherEnd = cipherTotal - 1
+	}
 
 	reader, err := h.Store.GetObjectContentRange(resolvedPath, cipherStart, cipherEnd)
 	if err != nil {

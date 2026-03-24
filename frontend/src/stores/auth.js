@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '../composables/useApi'
+import { useWindowManagerStore } from './windowManager'
 
 // Permission bitmask constants
 export const PERM_READ = 1
@@ -26,8 +27,9 @@ export const useAuthStore = defineStore('auth', () => {
   async function checkAuth() {
     loading.value = true
     try {
-      const res = await api.get('/auth/me')
+      const res = await api.get('/user')
       user.value = res.data
+      useWindowManagerStore().setUser(res.data.id)
     } catch {
       user.value = null
     } finally {
@@ -43,9 +45,10 @@ export const useAuthStore = defineStore('auth', () => {
 
   // POST /auth/login — exchanges token for session
   async function login(body) {
-    const res = await api.post('/auth/login', body)
+    const res = await api.post('/auth', body)
     if (res.data.user) {
       user.value = res.data.user
+      useWindowManagerStore().setUser(res.data.user.id)
       if (res.data.needs_setup) {
         needsSetup.value = true
       }
@@ -55,14 +58,16 @@ export const useAuthStore = defineStore('auth', () => {
 
   async function logout() {
     try {
-      await api.post('/auth/logout')
+      await api.delete('/auth')
     } finally {
+      useWindowManagerStore().clearUser()
       user.value = null
     }
   }
 
   // Listen for auth expiry events
   window.addEventListener('auth:expired', () => {
+    useWindowManagerStore().clearUser()
     user.value = null
   })
 
