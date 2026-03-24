@@ -7,7 +7,6 @@ import (
 	"mime"
 	"path/filepath"
 	"sort"
-	"time"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -15,91 +14,6 @@ import (
 	"zephyr/internal/middleware"
 	"zephyr/internal/model"
 )
-
-// handleGetContent is deprecated — use GET /raw with Range header instead.
-func (h *Handler) handleGetContent(c *fiber.Ctx) error {
-	start := time.Now()
-	path := c.Query("path", "")
-	if path == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
-	}
-
-	resolvedPath, err := middleware.ResolvePath(c, path)
-	if err != nil {
-		return err
-	}
-
-	// Check file size (max 1MB for text preview)
-	info, err := h.Store.GetObjectInfo(resolvedPath)
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
-	}
-	if info.Size > 1024*1024+1024 {
-		return c.Status(400).JSON(fiber.Map{"error": "file_too_large"})
-	}
-
-	reader, err := h.Store.GetObjectContent(resolvedPath)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "read_file_failed"})
-	}
-	defer func() { _ = reader.Close() }()
-
-	ciphertext, err := io.ReadAll(reader)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "read_content_failed"})
-	}
-
-	session := c.Locals("session").(*model.Session)
-	key, err := h.getFileEncryptionKey(session, resolvedPath)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-	}
-	content, err := auth.DecryptBytes(key, ciphertext)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "decrypt_failed"})
-	}
-
-	h.Audit.LogFromCtx(c, "file_read", path, "", "success", time.Since(start).Milliseconds())
-	return c.JSON(fiber.Map{"content": string(content)})
-}
-
-// handlePutContent is deprecated — use PUT /content/diff instead.
-func (h *Handler) handlePutContent(c *fiber.Ctx) error {
-	var body struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
-	}
-	if err := c.BodyParser(&body); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
-	}
-	if body.Path == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
-	}
-
-	resolvedPath, err := middleware.ResolvePath(c, body.Path)
-	if err != nil {
-		return err
-	}
-
-	session := c.Locals("session").(*model.Session)
-	key, err := h.getFileEncryptionKey(session, resolvedPath)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-	}
-	encData, err := auth.EncryptBytes(key, []byte(body.Content))
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "encryption_failed"})
-	}
-	if err := h.Store.PutObjectBytes(resolvedPath, encData); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "save_file_failed"})
-	}
-	fileName := filepath.Base(resolvedPath)
-	ct := mime.TypeByExtension(filepath.Ext(resolvedPath))
-	_ = model.UpsertFile(session.UserID, resolvedPath, fileName, false, int64(len(body.Content)), ct, "")
-
-	h.Audit.LogFromCtx(c, "file_write", body.Path, "", "success", 0)
-	return c.JSON(fiber.Map{"ok": true})
-}
 
 // Edit represents a single edit operation for diff-based content update.
 type Edit struct {

@@ -42,21 +42,30 @@ func (h *Handler) RunThumbnailJob(ctx context.Context, job *model.Job) error {
 		inputExt := filepath.Ext(params.FileName)
 		inputPath := filepath.Join(params.TempDir, "input"+inputExt)
 
-		if dlErr := h.Store.DownloadToFile(params.SourceKey, inputPath); dlErr == nil {
-			encKey, _ := auth.DeriveKey(h.Config.Server.EncryptionSecret, job.UserID)
-			decPath := inputPath + ".dec"
-			if decErr := auth.DecryptFile(encKey, inputPath, decPath); decErr == nil {
-				_ = os.Remove(inputPath)
-				_ = os.Rename(decPath, inputPath)
-				if probe, probeErr := transcoder.Probe(ctx, inputPath); probeErr == nil && probe != nil {
-					_ = model.UpdateFileThumbnail(job.UserID, params.SourceKey, params.ThumbnailKey, probe.Width, probe.Height, probe.Duration)
-					return nil
-				}
-			}
+		if err := h.Store.DownloadToFile(params.SourceKey, inputPath); err != nil {
+			return fmt.Errorf("download source for probe: %w", err)
 		}
-		// Fallback: update thumbnail key without media info
-		_ = model.UpdateFileThumbnail(job.UserID, params.SourceKey, params.ThumbnailKey, 0, 0, 0)
-		return nil
+		encKey, err := auth.DeriveKey(h.Config.Server.EncryptionSecret, job.UserID)
+		if err != nil {
+			return fmt.Errorf("derive key for probe: %w", err)
+		}
+		decPath := inputPath + ".dec"
+		if err := auth.DecryptFile(encKey, inputPath, decPath); err != nil {
+			return fmt.Errorf("decrypt source for probe: %w", err)
+		}
+		_ = os.Remove(inputPath)
+		if err := os.Rename(decPath, inputPath); err != nil {
+			return fmt.Errorf("rename decrypted for probe: %w", err)
+		}
+
+		var width, height int
+		var duration float64
+		if probe, probeErr := transcoder.Probe(ctx, inputPath); probeErr == nil && probe != nil {
+			width = probe.Width
+			height = probe.Height
+			duration = probe.Duration
+		}
+		return model.UpdateFileThumbnail(job.UserID, params.SourceKey, params.ThumbnailKey, width, height, duration)
 	}
 
 	// Phase 1: Download and decrypt source file
