@@ -1,0 +1,44 @@
+oss:
+  endpoint: "oss-cn-hangzhou.aliyuncs.com"
+  access_key_id: ""
+  access_key_secret: ""
+  bucket: ""
+  region: "cn-hangzhou"
+
+server:
+  port: 8080
+  pid_file: "zephyr.pid"
+  cors_origins: ""
+  # session_secret and encryption_secret are auto-generated on first startup
+
+log:
+  level: "info"
+  file: ""  # empty = stdout
+
+database:
+  host: "localhost"
+  port: 5432
+  user: "postgres"
+  password: ""
+  dbname: "zephyr"
+  sslmode: "disable"
+
+upload:
+  max_file_size: 10737418240  # 10GB
+
+transcode:
+  ffmpeg_path: "ffmpeg"
+  ffprobe_path: "ffprobe"
+
+jobs:
+  transcode_concurrency: 2
+  thumbnail_concurrency: 4
+  system_concurrency: 4
+
+# SMTP (optional, required for email verification)
+smtp:
+  host: ""
+  port: 465
+  username: ""
+  password: ""
+  from: ""

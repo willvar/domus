@@ -1,0 +1,1022 @@
+import { defineStore } from 'pinia'
+import { ref, reactive, computed } from 'vue'
+import api, { API_BASE } from '../composables/useApi'
+import { useAuthStore } from './auth'
+import { useOperationsStore } from './operations'
+import { useWindowManagerStore } from './windowManager'
+import { useI18n } from '../composables/useI18n'
+import { ICONS } from '../composables/useFileIcon'
+import { showPrompt, showConfirm } from '../composables/useNativeDialog'
+import { usePendingOpsStore } from './pendingOps'
+
+const TEXT_CHUNK_SIZE = 256 * 1024 // 256KB — aligns with 4 encryption chunks
+const LARGE_FILE_LIMIT_KEY = 'zephyr_large_file_limit'
+const DEFAULT_LARGE_FILE_LIMIT = 10 * 1024 * 1024 // 10MB
+const NON_CHUNKABLE_TYPES = new Set(['notebook', 'xlsx', 'docx', 'epub', 'archive'])
+
+function getLargeFileLimit() {
+  const saved = localStorage.getItem(LARGE_FILE_LIMIT_KEY)
+  return saved ? Number(saved) : DEFAULT_LARGE_FILE_LIMIT
+}
+
+function formatFileSize(bytes) {
+  if (bytes < 1024) return bytes + ' B'
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
+  return (bytes / (1024 * 1024)).toFixed(1) + ' MB'
+}
+
+let tabIdCounter = 0
+function nextTabId() {
+  return 'tab-' + (++tabIdCounter)
+}
+
+async function fetchTextChunk(path, byteStart, totalSize) {
+  const byteEnd = Math.min(byteStart + TEXT_CHUNK_SIZE - 1, totalSize - 1)
+  const res = await api.get('/raw', {
+    params: { path },
+    headers: { Range: `bytes=${byteStart}-${byteEnd}` },
+    responseType: 'arraybuffer',
+  })
+
+  const buffer = new Uint8Array(res.data)
+  const text = new TextDecoder('utf-8').decode(buffer)
+  const isLast = byteEnd >= totalSize - 1
+
+  if (isLast) {
+    return { text, byteLength: buffer.byteLength, nextByteStart: totalSize }
+  }
+
+  // Find last newline for clean line-aligned boundary
+  const lastNL = text.lastIndexOf('\n')
+  if (lastNL > 0) {
+    const clean = text.substring(0, lastNL + 1)
+    const cleanBytes = new TextEncoder().encode(clean).byteLength
+    return { text: clean, byteLength: cleanBytes, nextByteStart: byteStart + cleanBytes }
+  }
+
+  // No newline found — use full buffer
+  return { text, byteLength: buffer.byteLength, nextByteStart: byteStart + buffer.byteLength }
+}
+
+export const useFileSystemStore = defineStore('fileSystem', () => {
+  const auth = useAuthStore()
+  const ops = useOperationsStore()
+  const wm = useWindowManagerStore()
+  const { t, te } = useI18n()
+
+  // --- Multi-tab state ---
+  const tabs = ref([])
+  const activeTabId = ref('')
+
+  const activeTab = computed(() => tabs.value.find(t => t.id === activeTabId.value))
+
+  function bindActiveTabField(key, fallback) {
+    return computed({
+      get: () => activeTab.value?.[key] ?? (typeof fallback === 'function' ? fallback() : fallback),
+      set: (value) => {
+        if (activeTab.value) activeTab.value[key] = value
+      },
+    })
+  }
+
+  // --- Proxy computed properties (delegate to active tab) ---
+  const currentPath = bindActiveTabField('path', '')
+  const files = bindActiveTabField('files', () => [])
+  const loading = bindActiveTabField('loading', false)
+  const error = bindActiveTabField('error', null)
+  const selectedFiles = bindActiveTabField('selectedFiles', () => [])
+  const lastSelectedIndex = bindActiveTabField('lastSelectedIndex', -1)
+  const history = bindActiveTabField('history', () => [])
+  const historyIndex = bindActiveTabField('historyIndex', -1)
+  const viewMode = bindActiveTabField('viewMode', 'icons')
+  const sortBy = bindActiveTabField('sortBy', 'name')
+  const sortOrder = bindActiveTabField('sortOrder', 'asc')
+  const searchQuery = bindActiveTabField('searchQuery', '')
+
+  // --- Global (non-tab) state ---
+  const clipboard = ref({ items: [], mode: null })
+  const iconSize = ref(48)
+  const focusPathBar = ref(false)
+  const focusSearch = ref(false)
+  const renamingFile = ref(null)
+  const showInfoPanel = ref(false)
+  const showSidebar = ref(true)
+
+  // App windows (multi-window: array of { windowId, file, url, type, ... })
+  const appWindows = ref([])
+
+  // Directory cache (global, shared across tabs)
+  const cache = new Map()
+  const CACHE_TTL = 30000
+
+  // Sorted and filtered files
+  const sortedFiles = computed(() => {
+    let items = [...files.value]
+
+    if (searchQuery.value) {
+      const q = searchQuery.value.toLowerCase()
+      items = items.filter(f => f.name.toLowerCase().includes(q))
+    }
+
+    items.sort((a, b) => {
+      if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
+      const mult = sortOrder.value === 'asc' ? 1 : -1
+      switch (sortBy.value) {
+        case 'name':
+          return mult * a.name.localeCompare(b.name, undefined, { numeric: true })
+        case 'size':
+          return mult * (a.size - b.size)
+        case 'date':
+          return mult * (new Date(a.last_modified) - new Date(b.last_modified))
+        default:
+          return 0
+      }
+    })
+
+    return items
+  })
+
+  const selectedFile = computed(() => {
+    if (selectedFiles.value.length === 1) {
+      return files.value.find(f => f.path === selectedFiles.value[0])
+    }
+    return null
+  })
+
+  const isTrash = computed(() => currentPath.value === '__trash__/')
+
+  const canGoBack = computed(() => historyIndex.value > 0)
+  const canGoForward = computed(() => historyIndex.value < history.value.length - 1)
+  const canGoUp = computed(() => currentPath.value !== '' && !isTrash.value)
+
+  const pathSegments = computed(() => {
+    if (!currentPath.value) return []
+    const parts = currentPath.value.replace(/\/$/, '').split('/')
+    const segments = []
+    let accumulated = ''
+    for (const part of parts) {
+      accumulated += part + '/'
+      segments.push({ name: part, path: accumulated })
+    }
+    return segments
+  })
+
+  // --- Tab operations ---
+  function createTab(path) {
+    const id = nextTabId()
+    const initialPath = path || (auth.username + '/')
+    const tab = {
+      id,
+      path: initialPath,
+      files: [],
+      selectedFiles: [],
+      lastSelectedIndex: -1,
+      history: [initialPath],
+      historyIndex: 0,
+      viewMode: 'icons',
+      sortBy: 'name',
+      sortOrder: 'asc',
+      searchQuery: '',
+      loading: false,
+      error: null,
+    }
+    tabs.value.push(tab)
+    activeTabId.value = id
+    loadFiles(initialPath)
+    return id
+  }
+
+  function closeTab(id) {
+    if (tabs.value.length <= 1) {
+      wm.closeWindow('files')
+      return
+    }
+    const idx = tabs.value.findIndex(t => t.id === id)
+    if (idx < 0) return
+    tabs.value.splice(idx, 1)
+    if (activeTabId.value === id) {
+      // Switch to nearest tab
+      const newIdx = Math.min(idx, tabs.value.length - 1)
+      activeTabId.value = tabs.value[newIdx].id
+    }
+  }
+
+  function switchTab(id) {
+    if (tabs.value.find(t => t.id === id)) {
+      activeTabId.value = id
+    }
+  }
+
+  function nextTab() {
+    const idx = tabs.value.findIndex(t => t.id === activeTabId.value)
+    if (idx < 0) return
+    const next = (idx + 1) % tabs.value.length
+    activeTabId.value = tabs.value[next].id
+  }
+
+  function prevTab() {
+    const idx = tabs.value.findIndex(t => t.id === activeTabId.value)
+    if (idx < 0) return
+    const prev = (idx - 1 + tabs.value.length) % tabs.value.length
+    activeTabId.value = tabs.value[prev].id
+  }
+
+  function moveTab(fromIndex, toIndex) {
+    if (fromIndex === toIndex) return
+    const [tab] = tabs.value.splice(fromIndex, 1)
+    tabs.value.splice(toIndex, 0, tab)
+  }
+
+  // --- Navigation ---
+  async function navigate(path, addToHistory = true) {
+    path = path || ''
+    if (path && !path.endsWith('/')) path += '/'
+
+    // Skip prefix logic for virtual paths
+    if (path !== '__trash__/') {
+      if (auth.isAdmin && path && !path.startsWith(auth.username + '/')) {
+        // Admin can navigate anywhere
+      } else if (!auth.isAdmin) {
+        if (path && !path.startsWith(auth.username + '/')) {
+          path = auth.username + '/' + path
+        }
+      }
+    }
+
+    currentPath.value = path
+    selectedFiles.value = []
+    searchQuery.value = ''
+
+    if (addToHistory) {
+      history.value = history.value.slice(0, historyIndex.value + 1)
+      history.value.push(path)
+      historyIndex.value = history.value.length - 1
+    }
+
+    await loadFiles(path)
+  }
+
+  async function loadFiles(path) {
+    const cached = cache.get(path)
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      files.value = cached.data
+      fetchFiles(path).then(data => {
+        if (data && currentPath.value === path) {
+          files.value = data
+          cache.set(path, { data, timestamp: Date.now() })
+        }
+      }).catch(() => {})
+      return
+    }
+
+    loading.value = true
+    error.value = null
+    try {
+      const data = await fetchFiles(path)
+      if (data && currentPath.value === path) {
+        files.value = data
+        cache.set(path, { data, timestamp: Date.now() })
+      }
+    } catch (e) {
+      error.value = te(e)
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function fetchFiles(path) {
+    if (path === '__trash__/') {
+      const res = await api.get('/trash')
+      const items = res.data || []
+      return items.map(item => ({
+        name: item.original_path.replace(/\/$/, '').split('/').pop(),
+        path: '__trash__/' + item.id,
+        is_dir: item.is_dir,
+        size: item.size,
+        last_modified: item.deleted_at,
+        _trashId: item.id,
+        _originalPath: item.original_path,
+      }))
+    }
+    const res = await api.get('/list', { params: { path } })
+    return res.data.files || []
+  }
+
+  function goBack() {
+    if (!canGoBack.value) return
+    historyIndex.value--
+    navigate(history.value[historyIndex.value], false)
+  }
+
+  function goForward() {
+    if (!canGoForward.value) return
+    historyIndex.value++
+    navigate(history.value[historyIndex.value], false)
+  }
+
+  function goUp() {
+    if (!canGoUp.value) return
+    const parts = currentPath.value.replace(/\/$/, '').split('/')
+    parts.pop()
+    navigate(parts.length > 0 ? parts.join('/') + '/' : '')
+  }
+
+  function refresh() {
+    cache.delete(currentPath.value)
+    return loadFiles(currentPath.value)
+  }
+
+  function invalidateCache() {
+    cache.delete(currentPath.value)
+  }
+
+  async function reloadCurrentDir() {
+    invalidateCache()
+    await refresh()
+  }
+
+  function getFileByPath(path) {
+    return files.value.find(f => f.path === path)
+  }
+
+  // Selection
+  function selectFile(path, event) {
+    const ctrl = event?.ctrlKey || event?.metaKey
+    const shift = event?.shiftKey
+
+    if (shift && lastSelectedIndex.value >= 0) {
+      const currentIndex = sortedFiles.value.findIndex(f => f.path === path)
+      const start = Math.min(lastSelectedIndex.value, currentIndex)
+      const end = Math.max(lastSelectedIndex.value, currentIndex)
+      selectedFiles.value = sortedFiles.value.slice(start, end + 1).map(f => f.path)
+    } else if (ctrl) {
+      const idx = selectedFiles.value.indexOf(path)
+      if (idx >= 0) {
+        selectedFiles.value.splice(idx, 1)
+      } else {
+        selectedFiles.value.push(path)
+      }
+    } else {
+      selectedFiles.value = [path]
+    }
+
+    lastSelectedIndex.value = sortedFiles.value.findIndex(f => f.path === path)
+  }
+
+  function selectAll() {
+    selectedFiles.value = sortedFiles.value.map(f => f.path)
+  }
+
+  function clearSelection() {
+    selectedFiles.value = []
+    lastSelectedIndex.value = -1
+  }
+
+  // Mobile select mode
+  const selectMode = ref(false)
+
+  function enterSelectMode(path) {
+    selectMode.value = true
+    if (path && !selectedFiles.value.includes(path)) {
+      selectedFiles.value = [path]
+    }
+  }
+
+  function exitSelectMode() {
+    selectMode.value = false
+    clearSelection()
+  }
+
+  function toggleSelect(path) {
+    const idx = selectedFiles.value.indexOf(path)
+    if (idx >= 0) {
+      selectedFiles.value.splice(idx, 1)
+      if (selectedFiles.value.length === 0) selectMode.value = false
+    } else {
+      selectedFiles.value.push(path)
+    }
+  }
+
+  // Clipboard
+  function buildClipboardItems() {
+    return selectedFiles.value.map(path => {
+      const file = getFileByPath(path)
+      return { path, is_dir: file?.is_dir || false, name: file?.name || '' }
+    })
+  }
+
+  function copySelected() {
+    clipboard.value = {
+      items: buildClipboardItems(),
+      mode: 'copy',
+    }
+  }
+
+  function cutSelected() {
+    if (!auth.canEdit) return
+    clipboard.value = {
+      items: buildClipboardItems(),
+      mode: 'cut',
+    }
+  }
+
+  async function paste() {
+    if (!auth.canEdit) return
+    if (clipboard.value.items.length === 0) return
+    const mode = clipboard.value.mode
+
+    const promises = clipboard.value.items.map(item => {
+      const dstPath = currentPath.value + item.name + (item.is_dir ? '/' : '')
+      const url = mode === 'copy' ? '/copy' : '/move'
+      const body = { src_path: item.path, dst_path: dstPath, is_dir: item.is_dir }
+      const desc = `${mode === 'copy' ? 'Copy' : 'Move'} ${item.name}`
+      return ops.runSSEOperation(url, body, mode, desc)
+    })
+
+    await Promise.all(promises)
+
+    if (mode === 'cut') {
+      clipboard.value = { items: [], mode: null }
+    }
+
+    await reloadCurrentDir()
+  }
+
+  // File operations
+  async function createFolder() {
+    if (!auth.canUpload) return
+    const name = await showPrompt(t('dialog.new_folder_name'))
+    if (!name) return
+
+    try {
+      await api.post('/mkdir', { path: currentPath.value + name })
+      await reloadCurrentDir()
+    } catch (e) {
+      console.error('Create folder failed:', e)
+      const pending = usePendingOpsStore()
+      if (pending.isQueueableError(e)) {
+        pending.enqueue({
+          type: 'mkdir',
+          description: `${t('pending.type_mkdir')}: ${name}`,
+          username: auth.username,
+          apiMethod: 'post',
+          apiUrl: '/mkdir',
+          apiData: { path: currentPath.value + name },
+        })
+      }
+    }
+  }
+
+  function startRename() {
+    if (!auth.canEdit) return
+    if (selectedFiles.value.length !== 1) return
+    renamingFile.value = selectedFiles.value[0]
+  }
+
+  function cancelRename() {
+    renamingFile.value = null
+  }
+
+  async function rename(oldPath, newName, isDir) {
+    if (!auth.canEdit) return
+    const parts = oldPath.replace(/\/$/, '').split('/')
+    parts[parts.length - 1] = newName
+    const newPath = parts.join('/') + (isDir ? '/' : '')
+
+    try {
+      await api.post('/rename', {
+        old_path: oldPath,
+        new_path: newPath,
+        is_dir: isDir,
+      })
+      renamingFile.value = null
+      await reloadCurrentDir()
+    } catch (e) {
+      console.error('Rename failed:', e)
+      const pending = usePendingOpsStore()
+      if (pending.isQueueableError(e)) {
+        const oldName = oldPath.replace(/\/$/, '').split('/').pop()
+        pending.enqueue({
+          type: 'rename',
+          description: `${t('pending.type_rename')}: ${oldName} → ${newName}`,
+          username: auth.username,
+          apiMethod: 'post',
+          apiUrl: '/rename',
+          apiData: { old_path: oldPath, new_path: newPath, is_dir: isDir },
+        })
+      }
+      throw e
+    }
+  }
+
+  async function deleteSelected() {
+    if (!auth.canDelete) return
+    if (selectedFiles.value.length === 0) return
+    const count = selectedFiles.value.length
+
+    if (isTrash.value) {
+      // Permanent delete from trash (no SSE needed, these are DB + OSS cleanup)
+      if (!await showConfirm(t('dialog.confirm_permanent_delete', { n: count }))) return
+      for (const path of selectedFiles.value) {
+        const file = getFileByPath(path)
+        if (!file?._trashId) continue
+        try {
+          await api.delete(`/trash/${file._trashId}`)
+        } catch (e) {
+          console.error('Permanent delete failed:', e)
+          const pending = usePendingOpsStore()
+          if (pending.isQueueableError(e)) {
+            pending.enqueue({
+              type: 'deleteTrash',
+              description: `${t('pending.type_deleteTrash')}: ${file.name}`,
+              username: auth.username,
+              apiMethod: 'delete',
+              apiUrl: `/trash/${file._trashId}`,
+              apiData: null,
+            })
+          }
+        }
+      }
+    } else {
+      if (!await showConfirm(t('dialog.confirm_delete', { n: count }))) return
+      const promises = selectedFiles.value.map(path => {
+        const name = path.replace(/\/$/, '').split('/').pop()
+        return ops.runSSEOperation('/delete', null, 'delete', `Delete ${name}`, {
+          method: 'DELETE',
+          params: { path },
+        })
+      })
+      await Promise.all(promises)
+    }
+
+    selectedFiles.value = []
+    await reloadCurrentDir()
+  }
+
+  async function restoreSelected() {
+    if (!isTrash.value || selectedFiles.value.length === 0) return
+    for (const path of selectedFiles.value) {
+      const file = getFileByPath(path)
+      if (!file?._trashId) continue
+      try {
+        await api.post('/trash/restore', { id: file._trashId })
+      } catch (e) {
+        console.error('Restore failed:', e)
+        const pending = usePendingOpsStore()
+        if (pending.isQueueableError(e)) {
+          pending.enqueue({
+            type: 'restore',
+            description: `${t('pending.type_restore')}: ${file.name}`,
+            username: auth.username,
+            apiMethod: 'post',
+            apiUrl: '/trash/restore',
+            apiData: { id: file._trashId },
+          })
+        }
+      }
+    }
+    selectedFiles.value = []
+    await reloadCurrentDir()
+  }
+
+  async function emptyTrash() {
+    if (!await showConfirm(t('dialog.confirm_empty_trash'))) return
+    try {
+      await ops.runSSEOperation('/trash', null, 'delete', t('menu.empty_trash'), {
+        method: 'DELETE',
+      })
+    } catch (e) {
+      console.error('Empty trash failed:', e)
+    }
+    await reloadCurrentDir()
+  }
+
+  function openSelected() {
+    if (selectedFiles.value.length !== 1) return
+    const file = getFileByPath(selectedFiles.value[0])
+    if (!file) return
+
+    const viewerType = getViewerType(file.name)
+    if (file.is_dir) {
+      navigate(file.path)
+    } else if (viewerType) {
+      openViewer(file)
+    } else {
+      downloadFile(file.path)
+    }
+  }
+
+  const imageExts = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico', 'avif'])
+  const videoExts = new Set(['mp4', 'webm'])
+  const audioExts = new Set(['mp3', 'wav', 'ogg', 'aac', 'm4a', 'flac', 'opus'])
+  const fontExts = new Set(['ttf', 'otf', 'woff', 'woff2'])
+  const archiveExts = new Set(['zip'])
+  const epubExts = new Set(['epub'])
+  const officeSpreadsheetExts = new Set(['xlsx', 'xls'])
+  const officeDocExts = new Set(['docx'])
+  const notebookExts = new Set(['ipynb'])
+  const textExts = new Set([
+    'txt', 'json', 'yaml', 'yml', 'xml', 'log', 'ini', 'conf', 'cfg',
+    'js', 'ts', 'jsx', 'tsx', 'vue', 'html', 'css', 'scss', 'less',
+    'go', 'py', 'rb', 'java', 'c', 'cpp', 'h', 'hpp', 'rs', 'swift', 'kt',
+    'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd',
+    'sql', 'graphql', 'proto',
+    'toml', 'env', 'gitignore', 'dockerignore', 'editorconfig',
+    'dockerfile', 'makefile',
+    'php', 'pl', 'lua', 'r', 'scala', 'clj', 'ex', 'exs', 'erl', 'hs',
+    'mod', 'sum',
+  ])
+  const extToLanguage = {
+    js: 'javascript', ts: 'typescript', jsx: 'javascript', tsx: 'typescript',
+    vue: 'xml', html: 'xml', css: 'css', scss: 'scss', less: 'less',
+    go: 'go', py: 'python', rb: 'ruby', java: 'java',
+    c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp', rs: 'rust', swift: 'swift', kt: 'kotlin',
+    sh: 'bash', bash: 'bash', zsh: 'bash', fish: 'bash',
+    json: 'json', yaml: 'yaml', yml: 'yaml', xml: 'xml', toml: 'ini',
+    sql: 'sql', graphql: 'graphql', proto: 'protobuf',
+    md: 'markdown', php: 'php', lua: 'lua', r: 'r', scala: 'scala',
+    dockerfile: 'dockerfile', makefile: 'makefile',
+  }
+
+  const appIcons = {
+    image: ICONS.image,
+    video: ICONS.video,
+    text: ICONS.text,
+    pdf: ICONS.pdf,
+    audio: ICONS.audio,
+    markdown: ICONS.markdown,
+    csv: ICONS.text,
+    font: ICONS.file,
+    xlsx: ICONS.spreadsheet,
+    docx: ICONS.document,
+    epub: ICONS.document,
+    archive: ICONS.archive,
+    notebook: ICONS.code,
+  }
+
+  function parseFileName(name) {
+    const baseName = name.toLowerCase()
+    return {
+      baseName,
+      ext: baseName.split('.').pop(),
+    }
+  }
+
+  function isImageFile(name) {
+    const { ext } = parseFileName(name)
+    return imageExts.has(ext)
+  }
+
+  function isVideoFile(name) {
+    const { ext } = parseFileName(name)
+    return videoExts.has(ext)
+  }
+
+  function isTextFile(name) {
+    const { ext, baseName } = parseFileName(name)
+    return textExts.has(ext) || textExts.has(baseName)
+  }
+
+  function isPdfFile(name) {
+    const { ext } = parseFileName(name)
+    return ext === 'pdf'
+  }
+
+  function getLanguage(name) {
+    const { ext, baseName } = parseFileName(name)
+    return extToLanguage[ext] || extToLanguage[baseName] || null
+  }
+
+  function getViewerType(name) {
+    const { ext } = parseFileName(name)
+    if (isVideoFile(name)) return 'video'
+    if (audioExts.has(ext)) return 'audio'
+    if (ext === 'md') return 'markdown'
+    if (ext === 'csv') return 'csv'
+    if (notebookExts.has(ext)) return 'notebook'
+    if (officeSpreadsheetExts.has(ext)) return 'xlsx'
+    if (officeDocExts.has(ext)) return 'docx'
+    if (epubExts.has(ext)) return 'epub'
+    if (fontExts.has(ext)) return 'font'
+    if (archiveExts.has(ext)) return 'archive'
+    if (isTextFile(name)) return 'text'
+    if (isImageFile(name)) return 'image'
+    if (isPdfFile(name)) return 'pdf'
+    return null
+  }
+
+  function appWindowId(filePath) {
+    return 'app-' + filePath
+  }
+
+  function findApp(windowId) {
+    return appWindows.value.find(p => p.windowId === windowId)
+  }
+
+  async function openViewer(file) {
+    const windowId = appWindowId(file.path)
+    const type = getViewerType(file.name) || 'image'
+
+    // If already open, just bring to front
+    const existing = findApp(windowId)
+    if (existing) {
+      wm.bringToFront(windowId)
+      const win = wm.findWindow(windowId)
+      if (win) win.minimized = false
+      return
+    }
+
+    const state = reactive({
+      windowId,
+      file,
+      url: '',
+      blob: null,
+      type,
+      content: null,
+      language: null,
+      editing: false,
+      dirty: false,
+      saving: false,
+      openedAt: Date.now(),
+    })
+
+    appWindows.value.push(state)
+
+    wm.openWindow({
+      id: windowId,
+      title: file.name,
+      icon: appIcons[type] || appIcons.image,
+      type: 'viewer',
+      data: { filePath: file.path },
+    })
+
+    const blobTypes = ['video', 'image', 'pdf', 'audio', 'font', 'epub', 'archive', 'xlsx', 'docx']
+    const textTypes = ['text', 'markdown', 'csv', 'notebook']
+
+    // Size guard for non-chunkable types
+    if (NON_CHUNKABLE_TYPES.has(type) && file.size > getLargeFileLimit()) {
+      const sizeStr = formatFileSize(file.size)
+      const limitStr = formatFileSize(getLargeFileLimit())
+      const ok = await showConfirm(
+        t('dialog.large_file_title'),
+        t('dialog.large_file_body', { size: sizeStr, limit: limitStr }),
+      )
+      if (!ok) {
+        // User declined — close the window we just opened
+        appWindows.value = appWindows.value.filter(a => a.windowId !== windowId)
+        wm.closeWindow(windowId)
+        return
+      }
+    }
+
+    if (blobTypes.includes(type)) {
+      try {
+        const res = await api.get('/raw', {
+          params: { path: file.path },
+          responseType: 'blob',
+        })
+        state.url = URL.createObjectURL(res.data)
+        state.blob = res.data
+      } catch {
+        state.url = ''
+      }
+    } else if (textTypes.includes(type)) {
+      state.language = getLanguage(file.name)
+      state.totalSize = file.size || 0
+      state.baseSize = file.size || 0
+
+      if (type === 'notebook') {
+        // Notebook: JSON needs full parse
+        state.chunked = false
+        try {
+          const res = await api.get('/raw', {
+            params: { path: file.path },
+            responseType: 'text',
+          })
+          state.content = res.data
+          state.baseSize = new TextEncoder().encode(res.data).length
+          state.totalSize = state.baseSize
+        } catch {
+          state.content = ''
+          state.baseSize = 0
+        }
+      } else {
+        // Range-based chunked loading
+        state.chunked = true
+        state.page = 0
+        state.pageByteStart = 0
+        state.pageByteEnd = 0
+        state.pageMap = [{ byteStart: 0 }]
+        state.totalPages = Math.max(1, Math.ceil((file.size || 1) / TEXT_CHUNK_SIZE))
+        state.isFullyLoaded = false
+        try {
+          const result = await fetchTextChunk(file.path, 0, state.totalSize)
+          state.content = result.text
+          state.pageByteEnd = result.byteLength
+          state.isFullyLoaded = result.nextByteStart >= state.totalSize
+          if (state.isFullyLoaded) {
+            state.totalPages = 1
+            state.baseSize = new TextEncoder().encode(result.text).byteLength
+          } else {
+            state.pageMap.push({ byteStart: result.nextByteStart })
+          }
+        } catch {
+          state.content = ''
+        }
+      }
+    }
+  }
+
+  async function saveViewer(windowId) {
+    if (!auth.canEdit) return
+    const state = findApp(windowId)
+    if (!state || state.saving) return
+    state.saving = true
+    try {
+      const newContent = state.content
+      const newBytes = new TextEncoder().encode(newContent)
+      await api.put('/content/diff', {
+        path: state.file.path,
+        base_size: state.baseSize,
+        edits: [{ offset: 0, delete: state.baseSize, insert: newContent }],
+      })
+      state.baseSize = newBytes.length
+      state.editing = false
+      state.dirty = false
+    } catch (e) {
+      console.error('Save failed:', e)
+      const pending = usePendingOpsStore()
+      if (pending.isQueueableError(e)) {
+        const fileName = state.file.path.split('/').pop()
+        pending.enqueue({
+          type: 'saveViewer',
+          description: `${t('pending.type_saveViewer')}: ${fileName}`,
+          username: auth.username,
+          apiMethod: 'put',
+          apiUrl: '/content/diff',
+          apiData: {
+            path: state.file.path,
+            base_size: state.baseSize,
+            edits: [{ offset: 0, delete: state.baseSize, insert: state.content }],
+          },
+        })
+      }
+    } finally {
+      state.saving = false
+    }
+  }
+
+  function closeViewer(windowId) {
+    const state = findApp(windowId)
+    if (state) {
+      if (state.openedAt) {
+        const duration = Date.now() - state.openedAt
+        navigator.sendBeacon(`${API_BASE}/audit/preview`, JSON.stringify({
+          path: state.file.path,
+          duration_ms: duration,
+          type: state.type,
+        }))
+      }
+      if (state.url && state.url.startsWith('blob:')) {
+        URL.revokeObjectURL(state.url)
+      }
+    }
+    wm.closeWindow(windowId)
+    const idx = appWindows.value.findIndex(p => p.windowId === windowId)
+    if (idx >= 0) appWindows.value.splice(idx, 1)
+  }
+
+  async function downloadFile(path) {
+    try {
+      const res = await api.get('/download', { params: { path } })
+      window.open((API_BASE) + res.data.url, '_blank')
+    } catch (e) {
+      console.error('Download failed:', e)
+    }
+  }
+
+  // Initialize
+  function init() {
+    if (auth.isLoggedIn) {
+      // Reset tabs
+      tabs.value = []
+      activeTabId.value = ''
+      createTab()
+      // Open Files app window
+      wm.openFilesApp()
+    }
+  }
+
+  async function viewerNextPage(windowId) {
+    const state = findApp(windowId)
+    if (!state?.chunked || state.page >= state.totalPages - 1) return
+    const nextIdx = state.page + 1
+    const entry = state.pageMap[nextIdx]
+    if (!entry || entry.byteStart >= state.totalSize) return
+    try {
+      const result = await fetchTextChunk(state.file.path, entry.byteStart, state.totalSize)
+      state.content = result.text
+      state.page = nextIdx
+      state.pageByteStart = entry.byteStart
+      state.pageByteEnd = entry.byteStart + result.byteLength
+      if (!state.pageMap[nextIdx + 1] && result.nextByteStart < state.totalSize) {
+        state.pageMap.push({ byteStart: result.nextByteStart })
+      }
+      if (result.nextByteStart >= state.totalSize) {
+        state.totalPages = nextIdx + 1
+      }
+    } catch { /* fetch error */ }
+  }
+
+  async function viewerPrevPage(windowId) {
+    const state = findApp(windowId)
+    if (!state?.chunked || state.page <= 0) return
+    const prevIdx = state.page - 1
+    const entry = state.pageMap[prevIdx]
+    if (!entry) return
+    try {
+      const result = await fetchTextChunk(state.file.path, entry.byteStart, state.totalSize)
+      state.content = result.text
+      state.page = prevIdx
+      state.pageByteStart = entry.byteStart
+      state.pageByteEnd = entry.byteStart + result.byteLength
+    } catch { /* fetch error */ }
+  }
+
+  return {
+    // Tab state
+    tabs,
+    activeTabId,
+    activeTab,
+    createTab,
+    closeTab,
+    switchTab,
+    nextTab,
+    prevTab,
+
+    // Proxied per-tab state
+    currentPath,
+    files,
+    loading,
+    error,
+    selectedFiles,
+    selectedFile,
+    clipboard,
+    viewMode,
+    sortBy,
+    sortOrder,
+    iconSize,
+    focusPathBar,
+    focusSearch,
+    renamingFile,
+    searchQuery,
+    showInfoPanel,
+    showSidebar,
+    sortedFiles,
+    pathSegments,
+    canGoBack,
+    canGoForward,
+    canGoUp,
+    navigate,
+    goBack,
+    goForward,
+    goUp,
+    refresh,
+    invalidateCache,
+    selectFile,
+    selectAll,
+    clearSelection,
+    selectMode,
+    enterSelectMode,
+    exitSelectMode,
+    toggleSelect,
+    copySelected,
+    cutSelected,
+    paste,
+    createFolder,
+    startRename,
+    cancelRename,
+    rename,
+    deleteSelected,
+    restoreSelected,
+    emptyTrash,
+    isTrash,
+    openSelected,
+    downloadFile,
+    appWindows,
+    isImageFile,
+    isVideoFile,
+    isTextFile,
+    isPdfFile,
+    getViewerType,
+    getLanguage,
+    findApp,
+    openViewer,
+    saveViewer,
+    closeViewer,
+    viewerNextPage,
+    viewerPrevPage,
+    moveTab,
+    init,
+  }
+})

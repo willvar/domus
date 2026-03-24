@@ -1,0 +1,169 @@
+:root {
+  /* Breeze Dark color palette — sampled from KDE Dolphin dark mode */
+  --breeze-bg: #1b1e20;
+  --breeze-bg-alt: #1e2226;
+  --breeze-surface: #2a2e32;
+  --breeze-surface-raised: #31363b;
+  --breeze-border: #3b4045;
+  --breeze-border-light: #333840;
+  --breeze-text: #bfc5ca;
+  --breeze-text-secondary: #6e7a86;
+  --breeze-text-disabled: #505962;
+  --breeze-accent: #3daee9;
+  --breeze-accent-hover: #4dbcf5;
+  --breeze-accent-light: rgba(61, 174, 233, 0.18);
+  --breeze-selection: #3daee9;
+  --breeze-selection-text: #ffffff;
+  --breeze-danger: #da4453;
+  --breeze-warning: #f67400;
+  --breeze-success: #27ae60;
+  --breeze-hover: rgba(255, 255, 255, 0.05);
+  --breeze-active: rgba(61, 174, 233, 0.22);
+
+  /* Toolbar */
+  --toolbar-bg: #2a2e32;
+  --toolbar-border: #1b1e20;
+  --toolbar-button-hover: rgba(255, 255, 255, 0.08);
+  --toolbar-button-active: rgba(255, 255, 255, 0.12);
+
+  /* Sidebar */
+  --sidebar-bg: #1e2226;
+  --sidebar-width: 180px;
+  --sidebar-item-hover: var(--breeze-hover);
+  --sidebar-item-active: var(--breeze-active);
+
+  /* File view */
+  --file-icon-size: 48px;
+  --file-grid-gap: 12px;
+  --file-item-padding: 8px;
+  --file-item-radius: 4px;
+
+  /* Info panel */
+  --info-panel-width: 260px;
+
+  /* Spacing */
+  --gap-xs: 4px;
+  --gap-sm: 8px;
+  --gap-md: 12px;
+  --gap-lg: 16px;
+  --gap-xl: 24px;
+
+  /* Typography */
+  --font-family: 'Noto Sans', 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-size-xs: 15px;
+  --font-size-sm: 15px;
+  --font-size-base: 16px;
+  --font-size-md: 17px;
+  --font-size-lg: 18px;
+
+  /* Transitions */
+  --transition-fast: 0.12s ease;
+  --transition-normal: 0.2s ease;
+
+  /* Icon colors (Breeze dark) */
+  --icon-folder: #4d9de8;
+  --icon-text: #7e8b98;
+  --icon-code: #8fd4a6;
+  --icon-image: #d4a66c;
+  --icon-video: #c97878;
+  --icon-audio: #d4a6d4;
+  --icon-archive: #c4945a;
+  --icon-data: #7aacbf;
+  --icon-config: #b0a080;
+  --icon-exec: #6dbd6d;
+  --icon-generic: #6e7a86;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body, #app {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+
+body {
+  font-family: var(--font-family);
+  font-size: var(--font-size-base);
+  color: var(--breeze-text);
+  background: var(--breeze-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Scrollbar styling (Breeze dark) */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Disable text selection globally (desktop app feel) */
+* {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Allow selection in input fields and editors */
+input, textarea, [contenteditable],
+.cm-editor, .cm-editor *,
+.n-input, .n-input * {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Selection color when allowed */
+::selection {
+  background: var(--breeze-selection);
+  color: var(--breeze-selection-text);
+}
+
+/* Utility classes */
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ─── Mobile overrides ─── */
+@media (max-width: 767px) {
+  :root {
+    --touch-min: 44px;
+    --file-icon-size: 56px;
+    --file-grid-gap: 8px;
+    --file-item-padding: 6px;
+  }
+}
+
+/* Safe area support for notch/home indicator devices */
+#app {
+  padding-top: env(safe-area-inset-top);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+
+/* Touch-only :active feedback (replaces :hover on touch devices) */
+@media (hover: none) {
+  .viewer-btn:active,
+  .nav-btn:active,
+  .tab-item:active,
+  .breadcrumb-segment:active,
+  .file-item:active,
+  .taskbar-item:active {
+    background: var(--toolbar-button-active) !important;
+  }
+}
