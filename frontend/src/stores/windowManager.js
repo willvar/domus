@@ -1,8 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import iconFileManager from '../assets/icons/app-file-manager.svg?raw'
-
-export const FILES_ICON = iconFileManager
+import IconFolderHome from '~icons/mdi/folder-home'
+export const FILES_ICON = IconFolderHome
 
 export const useWindowManagerStore = defineStore('windowManager', () => {
   const windows = ref([])
@@ -10,6 +9,110 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
   //   _restoreRect: { x, y, width, height } }
 
   let zCounter = 100
+  let _userId = null
+  let _savedGeo = null // { id: { x, y, width, height, maximized } }
+  let _saveTimer = null
+  const alwaysCenter = ref(false)
+  const defaultWidth = ref(800)
+  const defaultHeight = ref(600)
+
+  const PREFS_KEY = 'zephyr_window_prefs'
+
+  function _storageKey() {
+    return _userId ? `zephyr_window_geo_${_userId}` : null
+  }
+
+  function _prefsKey() {
+    return _userId ? `${PREFS_KEY}_${_userId}` : null
+  }
+
+  function _loadGeo() {
+    const key = _storageKey()
+    if (!key) { _savedGeo = null; return }
+    try {
+      _savedGeo = JSON.parse(localStorage.getItem(key)) || {}
+    } catch {
+      _savedGeo = {}
+    }
+  }
+
+  function _loadPrefs() {
+    const key = _prefsKey()
+    if (!key) return
+    try {
+      const prefs = JSON.parse(localStorage.getItem(key))
+      if (prefs) {
+        alwaysCenter.value = !!prefs.alwaysCenter
+        defaultWidth.value = prefs.defaultWidth || 800
+        defaultHeight.value = prefs.defaultHeight || 600
+      }
+    } catch { /* ignore */ }
+  }
+
+  function _savePrefs() {
+    const key = _prefsKey()
+    if (!key) return
+    localStorage.setItem(key, JSON.stringify({
+      alwaysCenter: alwaysCenter.value,
+      defaultWidth: defaultWidth.value,
+      defaultHeight: defaultHeight.value,
+    }))
+  }
+
+  function _saveGeo() {
+    if (_saveTimer) clearTimeout(_saveTimer)
+    _saveTimer = setTimeout(() => {
+      const key = _storageKey()
+      if (key && _savedGeo) {
+        localStorage.setItem(key, JSON.stringify(_savedGeo))
+      }
+    }, 300)
+  }
+
+  function _recordGeo(win) {
+    if (!_savedGeo || !win) return
+    _savedGeo[win.id] = { x: win.x, y: win.y, width: win.width, height: win.height, maximized: win.maximized }
+    _saveGeo()
+  }
+
+  function _applySavedGeo(win) {
+    if (alwaysCenter.value) {
+      win.width = defaultWidth.value
+      win.height = defaultHeight.value
+      // x=-1, y=-1 keeps PlasmaWindow's auto-center logic
+      return
+    }
+    if (!_savedGeo) return
+    const saved = _savedGeo[win.id]
+    if (saved) {
+      win.x = saved.x
+      win.y = saved.y
+      win.width = saved.width
+      win.height = saved.height
+      win.maximized = saved.maximized
+    }
+  }
+
+  function setUser(userId) {
+    _userId = userId
+    _loadPrefs()
+    _loadGeo()
+  }
+
+  function clearUser() {
+    _userId = null
+    _savedGeo = null
+    alwaysCenter.value = false
+    defaultWidth.value = 800
+    defaultHeight.value = 600
+  }
+
+  function updatePrefs(prefs) {
+    if (prefs.alwaysCenter !== undefined) alwaysCenter.value = prefs.alwaysCenter
+    if (prefs.defaultWidth !== undefined) defaultWidth.value = prefs.defaultWidth
+    if (prefs.defaultHeight !== undefined) defaultHeight.value = prefs.defaultHeight
+    _savePrefs()
+  }
 
   const activeWindowId = computed(() => {
     const nonMinimized = windows.value.filter(w => !w.minimized)
@@ -45,6 +148,7 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
       data: data || {},
       _restoreRect: null,
     }
+    _applySavedGeo(win)
     windows.value.push(win)
     return win
   }
@@ -95,6 +199,7 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
       win.maximized = true
     }
     bringToFront(id)
+    _recordGeo(win)
   }
 
   function tileWindow(id, side, containerWidth, containerHeight) {
@@ -138,6 +243,7 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
     const win = findWindow(id)
     if (win) {
       Object.assign(win, props)
+      _recordGeo(win)
     }
   }
 
@@ -165,5 +271,11 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
     updateWindow,
     findWindow,
     openFilesApp,
+    setUser,
+    clearUser,
+    alwaysCenter,
+    defaultWidth,
+    defaultHeight,
+    updatePrefs,
   }
 })

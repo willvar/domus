@@ -5,6 +5,12 @@ import { useWindowManagerStore } from '../stores/windowManager'
 import { useI18n } from '../composables/useI18n'
 import { useCodeMirror } from '../composables/useCodeMirror'
 import PlasmaWindow from './PlasmaWindow.vue'
+import IconEye from '~icons/mdi/eye-outline'
+import IconSave from '~icons/mdi/content-save'
+import IconClose from '~icons/mdi/close'
+import IconEdit from '~icons/mdi/pencil'
+import IconPrev from '~icons/mdi/chevron-left'
+import IconNext from '~icons/mdi/chevron-right'
 
 // Lazy-loaded viewer sub-components
 const viewerMap = {
@@ -131,7 +137,7 @@ onUnmounted(() => {
     v-if="windowOpen && state"
     :window-id="windowId"
     :title="state.file.name"
-    :icon="'<svg width=&quot;16&quot; height=&quot;16&quot; viewBox=&quot;0 0 24 24&quot; fill=&quot;none&quot; stroke=&quot;currentColor&quot; stroke-width=&quot;2&quot;><path d=&quot;M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z&quot;/><circle cx=&quot;12&quot; cy=&quot;12&quot; r=&quot;3&quot;/></svg>'"
+    :icon="IconEye"
     @close="handleClose"
   >
     <!-- Delegated viewers (audio, markdown, csv, font, xlsx, docx, epub, archive, notebook) -->
@@ -158,36 +164,28 @@ onUnmounted(() => {
           </template>
           <template v-if="state.editing">
             <button class="viewer-btn save-btn" :disabled="state.saving || !state.dirty" @click="fs.saveViewer(windowId)">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
-                <polyline points="17 21 17 13 7 13 7 21" /><polyline points="7 3 7 8 15 8" />
-              </svg>
+              <IconSave width="16" height="16" />
               <span>{{ state.saving ? '...' : t('preview.save') }}</span>
             </button>
             <button class="viewer-btn" @click="cancelEdit">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-              </svg>
+              <IconClose width="16" height="16" />
               <span>{{ t('preview.cancel') }}</span>
             </button>
           </template>
           <template v-else-if="canEdit">
             <button class="viewer-btn edit-btn" @click="startEdit">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
-                <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
-              </svg>
+              <IconEdit width="16" height="16" />
               <span>{{ t('preview.edit') }}</span>
             </button>
           </template>
           <template v-if="state.chunked && !state.isFullyLoaded && !state.editing">
             <span class="toolbar-sep" />
             <button class="viewer-btn" :disabled="state.page <= 0" @click="fs.viewerPrevPage(windowId)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+              <IconPrev width="14" height="14" />
             </button>
             <span class="page-indicator">{{ state.page + 1 }} / ~{{ state.totalPages }}</span>
             <button class="viewer-btn" :disabled="state.page >= state.totalPages - 1" @click="fs.viewerNextPage(windowId)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+              <IconNext width="14" height="14" />
             </button>
           </template>
         </template>
