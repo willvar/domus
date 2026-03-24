@@ -1,0 +1,12 @@
+config.json
+config.yaml
+tmp/
+dist/
+zephyr.db
+zephyr
+frontend/node_modules/
+frontend/dist/
+*.pid
+.idea/
+.claude/
+CLAUDE.md
