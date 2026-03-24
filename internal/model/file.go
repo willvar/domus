@@ -110,6 +110,21 @@ func UpdateFileThumbnail(userID, path, thumbnailKey string, width, height int, d
 	}).Error
 }
 
+func GetFile(userID string, path string) (*FileRecord, error) {
+	var record FileRecord
+	if err := db.Where("user_id = ? AND path = ?", userID, path).First(&record).Error; err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
+func SumFileSizeByPrefix(userID string, prefix string) (int64, error) {
+	var total int64
+	err := db.Model(&FileRecord{}).Where("user_id = ? AND path LIKE ?", userID, prefix+"%").
+		Select("COALESCE(SUM(size), 0)").Scan(&total).Error
+	return total, err
+}
+
 func DeleteFile(userID string, path string) error {
 	return db.Where("user_id = ? AND path = ?", userID, path).Delete(&FileRecord{}).Error
 }

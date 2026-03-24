@@ -78,12 +78,18 @@ func (h *Handler) handleDeleteTrashItem(c *fiber.Ctx) error {
 
 	// Permanently delete from OSS
 	if item.IsDir {
-		_ = h.Store.RecursiveDelete(item.TrashKey, nil)
+		if err := h.Store.RecursiveDelete(item.TrashKey, nil); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "delete_from_storage_failed"})
+		}
 	} else {
-		_ = h.Store.DeleteObject(item.TrashKey)
+		if err := h.Store.DeleteObject(item.TrashKey); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "delete_from_storage_failed"})
+		}
 	}
 
-	_ = model.DeleteTrashRecord(item.ID)
+	if err := model.DeleteTrashRecord(item.ID); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "delete_record_failed"})
+	}
 
 	return c.JSON(fiber.Map{"ok": true})
 }
