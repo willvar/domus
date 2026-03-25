@@ -1,24 +1,24 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import api, { API_BASE } from '../composables/useApi'
+import { useWebSocket } from '../composables/useWebSocket'
 
 export const useJobsStore = defineStore('jobs', () => {
-  const jobs = ref([])
-  const sseConnections = new Map()
+  const tasks = ref([])
   const panelOpen = ref(false)
   const error = ref(null)
+  const ws = useWebSocket()
 
-  const activeJobs = computed(() =>
-    jobs.value.filter(j => j.status === 'pending' || j.status === 'running' || j.status === 'paused')
+  const activeTasks = computed(() =>
+    tasks.value.filter(t => t.status === 'running' || t.status === 'pending')
   )
 
-  const hasActiveJobs = computed(() => activeJobs.value.length > 0)
+  const hasActiveTasks = computed(() => activeTasks.value.length > 0)
 
-  const completedJobs = computed(() =>
-    jobs.value.filter(j => j.status === 'completed' || j.status === 'failed' || j.status === 'aborted')
+  const completedTasks = computed(() =>
+    tasks.value.filter(t => t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled')
   )
 
-  const hasCompletedJobs = computed(() => completedJobs.value.length > 0)
+  const hasCompletedTasks = computed(() => completedTasks.value.length > 0)
 
   function togglePanel() {
     panelOpen.value = !panelOpen.value
@@ -28,92 +28,57 @@ export const useJobsStore = defineStore('jobs', () => {
     panelOpen.value = false
   }
 
-  async function fetchJobs() {
-    const res = await api.get('/job')
-    jobs.value = Array.isArray(res.data) ? res.data : []
-    for (const job of activeJobs.value) {
-      if (!sseConnections.has(job.job_id)) {
-        watchJob(job.job_id)
-      }
+  async function fetchTasks() {
+    try {
+      const data = await ws.request('task.list')
+      tasks.value = Array.isArray(data) ? data : []
+    } catch {
+      tasks.value = []
     }
   }
 
-  function watchJob(jobId) {
-    if (sseConnections.has(jobId)) return
-
-    const evtSource = new EventSource(`${API_BASE}/job/${jobId}/status`, { withCredentials: true })
-    sseConnections.set(jobId, evtSource)
-
-    evtSource.onmessage = (event) => {
-      let data
-      try {
-        data = JSON.parse(event.data)
-      } catch {
-        return
-      }
-      const idx = jobs.value.findIndex(j => j.job_id === jobId)
-      if (idx >= 0) {
-        jobs.value[idx] = { ...jobs.value[idx], ...data }
-      } else {
-        jobs.value.push(data)
-      }
-
-      if (data.status === 'completed' || data.status === 'failed' || data.status === 'aborted') {
-        evtSource.close()
-        sseConnections.delete(jobId)
-      }
-    }
-
-    evtSource.onerror = () => {
-      evtSource.close()
-      sseConnections.delete(jobId)
-    }
+  function addTask(task) {
+    tasks.value.unshift(task)
   }
 
-  async function cancelJob(jobId) {
-    await api.delete(`/job/${jobId}`)
-    const idx = jobs.value.findIndex(j => j.job_id === jobId)
+  async function cancelTask(taskId) {
+    await ws.request('task.cancel', { task_id: taskId })
+    const idx = tasks.value.findIndex(t => t.task_id === taskId)
     if (idx >= 0) {
-      jobs.value[idx].status = 'aborted'
+      tasks.value[idx].status = 'cancelled'
     }
-    const evtSource = sseConnections.get(jobId)
-    if (evtSource) {
-      evtSource.close()
-      sseConnections.delete(jobId)
-    }
-  }
-
-  function addJob(job) {
-    jobs.value.unshift(job)
-    watchJob(job.job_id)
   }
 
   async function clearCompleted() {
-    await api.delete('/job/done')
-    await fetchJobs()
+    await ws.request('task.clearDone')
+    await fetchTasks()
   }
 
-  function cleanup() {
-    for (const [, evtSource] of sseConnections) {
-      evtSource.close()
+  // Listen for task push events
+  ws.on('task.update', (data) => {
+    const idx = tasks.value.findIndex(t => t.task_id === data.task_id)
+    if (idx >= 0) {
+      tasks.value[idx] = { ...tasks.value[idx], ...data }
+    } else {
+      tasks.value.push(data)
     }
-    sseConnections.clear()
-  }
+  })
+
+  function cleanup() {}
 
   return {
-    jobs,
-    activeJobs,
-    hasActiveJobs,
-    completedJobs,
-    hasCompletedJobs,
+    tasks,
+    activeTasks,
+    hasActiveTasks,
+    completedTasks,
+    hasCompletedTasks,
     panelOpen,
     error,
     togglePanel,
     closePanel,
-    fetchJobs,
-    watchJob,
-    cancelJob,
-    addJob,
+    fetchTasks,
+    cancelTask,
+    addTask,
     clearCompleted,
     cleanup,
   }

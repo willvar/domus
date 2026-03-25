@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '../composables/useApi'
+import { useWebSocket } from '../composables/useWebSocket'
 import { useI18n } from '../composables/useI18n'
 import { showConfirm, showDuplicateDialog } from '../composables/useNativeDialog'
 import { useFileSystemStore } from './fileSystem'
@@ -32,11 +33,21 @@ function loadInterruptedState() {
 
 export const useUploadStore = defineStore('upload', () => {
   const { t } = useI18n()
+  const ws = useWebSocket()
   const uploads = ref([])
   const showPanel = ref(false)
 
   const activeUploads = computed(() => uploads.value.filter(u => u.status === 'uploading' || u.status === 'paused'))
   const hasActive = computed(() => activeUploads.value.length > 0)
+
+  // Listen for task updates — remove local upload entries once server takes over
+  ws.on('task.update', (data) => {
+    const entry = uploads.value.find(u => u.taskId === data.task_id)
+    if (!entry || entry.status !== 'processing') return
+    // Server is now tracking this task; remove from local upload list
+    uploads.value = uploads.value.filter(u => u.taskId !== data.task_id)
+    if (uploads.value.length === 0) showPanel.value = false
+  })
 
   function checkInterrupted() {
     const interrupted = loadInterruptedState()
@@ -148,6 +159,12 @@ export const useUploadStore = defineStore('upload', () => {
     }
     uploads.value.push(entry)
     showPanel.value = true
+    // Also open the jobs panel since uploads are shown there
+    try {
+      const { useJobsStore } = await import('./jobs')
+      const jobsStore = useJobsStore()
+      jobsStore.panelOpen = true
+    } catch { /* ignore */ }
     const upload = uploads.value[uploads.value.length - 1]
 
     try {
@@ -174,6 +191,7 @@ export const useUploadStore = defineStore('upload', () => {
       }
 
       upload.uploadId = initRes.data.upload_id
+      upload.taskId = initRes.data.task_id || null
       saveInterruptedState(uploads.value)
       const chunkSize = initRes.data.chunk_size
       const totalParts = initRes.data.total_parts
@@ -253,6 +271,14 @@ export const useUploadStore = defineStore('upload', () => {
         upload.speed = Math.floor(chunkLen / elapsed)
         upload.bytesUploaded += chunkLen
         upload.progress = Math.floor((upload.etags.length / totalParts) * 100)
+
+        // Report progress to server via WS
+        if (upload.taskId) {
+          ws.request('upload.progress', {
+            task_id: upload.taskId,
+            progress: upload.etags.length / totalParts,
+          }).catch(() => {})
+        }
       }
 
       localStorage.setItem(storageKey, JSON.stringify(upload.etags))
@@ -266,21 +292,21 @@ export const useUploadStore = defineStore('upload', () => {
     upload.etags.sort((a, b) => a.partNumber - b.partNumber)
     await api.post('/file/upload', {
       upload_id: upload.uploadId,
+      task_id: upload.taskId || '',
       parts: upload.etags.map(p => ({ part_number: p.partNumber, etag: p.etag })),
     })
 
-    upload.status = 'completed'
+    // Chunks delivered — server will continue processing via the same job
+    // The job.update WS push will drive status changes from here
+    upload.status = 'processing'
     upload.progress = 100
+    upload.speed = 0
     localStorage.removeItem(storageKey)
     saveInterruptedState(uploads.value)
 
     const fs = useFileSystemStore()
     fs.invalidateCache()
     fs.refresh()
-
-    setTimeout(() => {
-      if (!hasActive.value) showPanel.value = false
-    }, 3000)
   }
 
   function pauseUpload(id) {
