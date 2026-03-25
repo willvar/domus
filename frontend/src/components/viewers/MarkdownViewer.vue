@@ -3,6 +3,8 @@ import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import MarkdownIt from 'markdown-it'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useCodeMirror } from '../../composables/useCodeMirror'
+import IconPrev from '~icons/mdi/chevron-left'
+import IconNext from '~icons/mdi/chevron-right'
 import { useI18n } from '../../composables/useI18n'
 
 const props = defineProps({
@@ -105,11 +107,11 @@ onUnmounted(() => cm.destroy())
     <template v-if="state.chunked && !state.isFullyLoaded && !state.editing">
       <span class="toolbar-sep" />
       <button class="viewer-btn" :disabled="state.page <= 0" @click="fs.viewerPrevPage(windowId)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+        <IconPrev width="14" height="14" />
       </button>
       <span class="page-indicator">{{ state.page + 1 }} / ~{{ state.totalPages }}</span>
       <button class="viewer-btn" :disabled="state.page >= state.totalPages - 1" @click="fs.viewerNextPage(windowId)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+        <IconNext width="14" height="14" />
       </button>
     </template>
   </div>

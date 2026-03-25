@@ -16,7 +16,7 @@ func tryLock(path string) (acquired bool, unlock func(), err error) {
 
 	err = lockFile(f)
 	if err != nil {
-		f.Close()
+		_ = f.Close()
 		if err == ErrAlreadyRunning {
 			return false, nil, nil
 		}
@@ -24,8 +24,8 @@ func tryLock(path string) (acquired bool, unlock func(), err error) {
 	}
 
 	return true, func() {
-		unlockFile(f)
-		f.Close()
+		_ = unlockFile(f)
+		_ = f.Close()
 	}, nil
 }
 

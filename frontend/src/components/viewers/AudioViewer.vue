@@ -1,7 +1,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted } from 'vue'
 
-const props = defineProps({
+defineProps({
   state: { type: Object, required: true },
   windowId: { type: String, required: true },
 })

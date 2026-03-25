@@ -6,7 +6,7 @@ import { historyClose } from '../composables/useWindowHistory'
 const props = defineProps({
   windowId: { type: String, required: true },
   title: { type: String, default: 'Window' },
-  icon: { type: String, default: '' },
+  icon: { type: [String, Object], default: '' },
 })
 
 const emit = defineEmits(['close'])
@@ -402,7 +402,7 @@ onUnmounted(() => {
       @touchstart="startDragTouch"
       @dblclick="handleTitleDblClick"
     >
-      <span v-if="icon" class="plasma-titlebar-icon" v-html="icon" />
+      <component :is="icon" v-if="icon" class="plasma-titlebar-icon" width="16" height="16" />
       <span class="plasma-titlebar-title">{{ title }}</span>
       <div class="plasma-titlebar-buttons">
         <button class="plasma-btn plasma-btn-minimize" title="最小化" @click.stop="minimize">
@@ -457,10 +457,6 @@ onUnmounted(() => {
   width: 16px;
   height: 16px;
   flex-shrink: 0;
-}
-.plasma-titlebar-icon :deep(svg) {
-  width: 16px;
-  height: 16px;
 }
 
 .plasma-titlebar-title {

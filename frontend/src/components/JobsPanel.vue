@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, onUnmounted } from 'vue'
+import { computed, onMounted } from 'vue'
 import { NButton, NProgress, NEmpty, useMessage } from 'naive-ui'
 import dayjs from 'dayjs'
 import { useJobsStore } from '../stores/jobs'

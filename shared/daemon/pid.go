@@ -34,7 +34,7 @@ func AcquirePID(pidFile string) (*PIDLock, error) {
 	}
 
 	if err := lockFile(f); err != nil {
-		f.Close()
+		_ = f.Close()
 		if err == ErrAlreadyRunning {
 			return nil, ErrAlreadyRunning
 		}
@@ -43,18 +43,18 @@ func AcquirePID(pidFile string) (*PIDLock, error) {
 
 	pid := os.Getpid()
 	if err := f.Truncate(0); err != nil {
-		unlockFile(f)
-		f.Close()
+		_ = unlockFile(f)
+		_ = f.Close()
 		return nil, fmt.Errorf("truncate pid file: %w", err)
 	}
 	if _, err := f.WriteString(strconv.Itoa(pid)); err != nil {
-		unlockFile(f)
-		f.Close()
+		_ = unlockFile(f)
+		_ = f.Close()
 		return nil, fmt.Errorf("write pid file: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		unlockFile(f)
-		f.Close()
+		_ = unlockFile(f)
+		_ = f.Close()
 		return nil, fmt.Errorf("sync pid file: %w", err)
 	}
 
@@ -64,8 +64,8 @@ func AcquirePID(pidFile string) (*PIDLock, error) {
 // Release 释放锁并关闭文件描述符（不删除锁文件）
 func (l *PIDLock) Release() {
 	if l.file != nil {
-		unlockFile(l.file)
-		l.file.Close()
+		_ = unlockFile(l.file)
+		_ = l.file.Close()
 		l.file = nil
 	}
 }

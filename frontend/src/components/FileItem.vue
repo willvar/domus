@@ -1,11 +1,12 @@
 <script setup>
 import { computed, ref, onBeforeUnmount } from 'vue'
 import { useFileSystemStore } from '../stores/fileSystem'
-import { getFileIconSvg } from '../composables/useFileIcon'
+import { getFileIcon } from '../composables/useFileIcon'
 import { openContextMenu } from '../composables/useContextMenu'
 import { useTouchHandlers } from '../composables/useTouch'
 import { useI18n } from '../composables/useI18n'
 import RenameInput from './RenameInput.vue'
+import IconCheck from '~icons/mdi/check'
 
 const { t } = useI18n()
 
@@ -22,10 +23,7 @@ const isCut = computed(() =>
   fs.clipboard.mode === 'cut' && fs.clipboard.items.some(i => i.path === props.file.path)
 )
 
-const iconSvg = computed(() => {
-  const size = fs.iconSize
-  return getFileIconSvg(props.file.name, props.file.is_dir, size)
-})
+const iconName = computed(() => getFileIcon(props.file.name, props.file.is_dir))
 
 function formatSize(bytes) {
   if (!bytes) return ''
@@ -156,7 +154,7 @@ const touch = useTouchHandlers({
   >
     <div class="file-icon">
       <div v-if="fs.selectMode" class="select-check" :class="{ checked: isSelected }">
-        <svg v-if="isSelected" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3"><polyline points="20 6 9 17 4 12"/></svg>
+        <IconCheck v-if="isSelected" width="18" height="18" color="#fff" />
       </div>
       <img
         v-if="file.thumbnail_url"
@@ -165,7 +163,7 @@ const touch = useTouchHandlers({
         loading="lazy"
         draggable="false"
       />
-      <span v-else v-html="iconSvg" />
+      <component :is="iconName" v-else :width="fs.iconSize" :height="fs.iconSize" />
     </div>
     <div class="file-label">
       <RenameInput
@@ -188,27 +186,27 @@ const touch = useTouchHandlers({
         />
         <div class="tooltip-info">
           <div class="tooltip-name">{{ file.name }}</div>
-          <div class="tooltip-row" v-if="!file.is_dir">
+          <div v-if="!file.is_dir" class="tooltip-row">
             <span class="tooltip-label">{{ t('info.type') }}:</span>
             <span>{{ fileType(file) }}</span>
           </div>
-          <div class="tooltip-row" v-if="!file.is_dir">
+          <div v-if="!file.is_dir" class="tooltip-row">
             <span class="tooltip-label">{{ t('info.size') }}:</span>
             <span>{{ formatSize(file.size) }}</span>
           </div>
-          <div class="tooltip-row" v-if="file.media_width && file.media_height">
+          <div v-if="file.media_width && file.media_height" class="tooltip-row">
             <span class="tooltip-label">{{ t('info.dimensions') }}:</span>
             <span>{{ file.media_width }} x {{ file.media_height }}</span>
           </div>
-          <div class="tooltip-row" v-if="file.media_duration">
+          <div v-if="file.media_duration" class="tooltip-row">
             <span class="tooltip-label">{{ t('info.duration') }}:</span>
             <span>{{ formatDuration(file.media_duration) }}</span>
           </div>
-          <div class="tooltip-row" v-if="file.created_at">
+          <div v-if="file.created_at" class="tooltip-row">
             <span class="tooltip-label">{{ t('info.created') }}:</span>
             <span>{{ formatDate(file.created_at) }}</span>
           </div>
-          <div class="tooltip-row" v-if="file.last_modified">
+          <div v-if="file.last_modified" class="tooltip-row">
             <span class="tooltip-label">{{ t('info.modified') }}:</span>
             <span>{{ formatDate(file.last_modified) }}</span>
           </div>
