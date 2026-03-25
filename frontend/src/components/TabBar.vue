@@ -1,6 +1,7 @@
 <script setup>
 import { ref, watch, nextTick } from 'vue'
 import { useFileSystemStore } from '../stores/fileSystem'
+import IconFolder from '~icons/mdi/folder'
 
 const fs = useFileSystemStore()
 const tabListRef = ref(null)
@@ -160,7 +161,7 @@ function tabStyle(tab) {
         @click="fs.switchTab(tab.id)"
         @mousedown="handleMouseDown($event, tab); onTabDragStart($event, tab)"
       >
-        <svg class="tab-icon" viewBox="0 0 16 16"><path d="M1 3.5A1.5 1.5 0 0 1 2.5 2h3.172a1.5 1.5 0 0 1 1.06.44l.828.828a.5.5 0 0 0 .354.146H13.5A1.5 1.5 0 0 1 15 4.914V12.5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 1 12.5v-9z" /></svg>
+        <IconFolder class="tab-icon" width="16" height="16" />
         <span class="tab-label">{{ tabLabel(tab) }}</span>
         <button
           class="tab-close"
