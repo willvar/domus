@@ -431,4 +431,3 @@ func cleanOrphanUploads(fileStore store.FileStore) {
 func printHelp() {
 	bootstrap.PrintHelp("zephyr", "文件管理服务")
 }
-

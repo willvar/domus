@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '../composables/useApi'
-import { addOp, getAllOps, deleteOp, clearOps, isDBAvailable } from '../composables/useIndexedDB'
+import { addOp, getAllOps, deleteOp, isDBAvailable } from '../composables/useIndexedDB'
 
 export const usePendingOpsStore = defineStore('pendingOps', () => {
   const ops = ref([])
@@ -77,7 +77,7 @@ export const usePendingOpsStore = defineStore('pendingOps', () => {
 
       // Success — remove from queue
       ops.value = ops.value.filter(o => o.id !== id)
-      try { await deleteOp(id) } catch {}
+      try { await deleteOp(id) } catch { /* ignored */ }
 
       // Refresh directory
       try {
@@ -85,11 +85,11 @@ export const usePendingOpsStore = defineStore('pendingOps', () => {
         const fs = useFileSystemStore()
         fs.invalidateCache()
         fs.refresh()
-      } catch {}
+      } catch { /* ignored */ }
     } catch (e) {
       op.lastError = e.response?.data?.error || e.message || String(e)
       op.lastAttempt = Date.now()
-      try { await addOp(op) } catch {}
+      try { await addOp(op) } catch { /* ignored */ }
     } finally {
       op._retrying = false
     }
@@ -117,7 +117,7 @@ export const usePendingOpsStore = defineStore('pendingOps', () => {
 
   async function discard(id) {
     ops.value = ops.value.filter(o => o.id !== id)
-    try { await deleteOp(id) } catch {}
+    try { await deleteOp(id) } catch { /* ignored */ }
     if (ops.value.length === 0) showPanel.value = false
   }
 
@@ -129,7 +129,7 @@ export const usePendingOpsStore = defineStore('pendingOps', () => {
       for (const id of ids) {
         await deleteOp(id)
       }
-    } catch {}
+    } catch { /* ignored */ }
   }
 
   return {

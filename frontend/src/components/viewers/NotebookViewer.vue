@@ -10,7 +10,6 @@ const props = defineProps({
 
 const md = new MarkdownIt({ html: false, linkify: true })
 const notebook = ref(null)
-const codeCells = ref([])
 const codeContainers = ref({})
 
 const cells = computed(() => notebook.value?.cells || [])

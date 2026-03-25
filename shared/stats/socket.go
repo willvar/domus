@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strings"
 	"time"
 )
 
@@ -44,9 +43,6 @@ func (s *SocketServer) acceptLoop() {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
-			if !strings.Contains(err.Error(), "use of closed network connection") {
-				// 记录错误但继续运行
-			}
 			return
 		}
 
@@ -55,7 +51,7 @@ func (s *SocketServer) acceptLoop() {
 }
 
 func (s *SocketServer) handleConn(conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	snapshot := s.collector.GetSnapshot()
 	data := snapshot.ToMap()
@@ -86,7 +82,7 @@ func FetchStats(socketPath string, timeout time.Duration) (map[string]any, error
 	if err != nil {
 		return nil, fmt.Errorf("connect to socket: %w", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, fmt.Errorf("set read deadline: %w", err)

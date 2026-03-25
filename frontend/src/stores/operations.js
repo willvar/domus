@@ -130,7 +130,7 @@ export const useOperationsStore = defineStore('operations', () => {
             sseBody: body,
             sseOptions: { method: options.method, params: options.params },
           })
-        } catch {}
+        } catch { /* ignored */ }
       }
     }
 

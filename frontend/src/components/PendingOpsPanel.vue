@@ -1,5 +1,5 @@
 <script setup>
-import { NCard, NButton, NEmpty } from 'naive-ui'
+import { NButton, NEmpty } from 'naive-ui'
 import { usePendingOpsStore } from '../stores/pendingOps'
 import { useI18n } from '../composables/useI18n'
 import { showConfirm } from '../composables/useNativeDialog'

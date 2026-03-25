@@ -6,6 +6,9 @@ import { useAuthStore } from '../stores/auth'
 import { useJobsStore } from '../stores/jobs'
 import { usePendingOpsStore } from '../stores/pendingOps'
 import { useI18n } from '../composables/useI18n'
+import IconGrid from '~icons/mdi/view-grid'
+import IconSync from '~icons/mdi/refresh'
+import IconAccount from '~icons/mdi/account'
 
 const wm = useWindowManagerStore()
 const auth = useAuthStore()
@@ -82,7 +85,7 @@ const activeCount = computed(() => jobsStore.activeJobs.length)
         :title="win.title"
         @click="handleClick(win)"
       >
-        <span v-if="win.icon" class="taskbar-item-icon" v-html="win.icon" />
+        <component :is="win.icon" v-if="win.icon" class="taskbar-item-icon" width="48" height="48" />
       </button>
     </div>
 
@@ -93,12 +96,7 @@ const activeCount = computed(() => jobsStore.activeJobs.length)
         :title="t('jobs.title')"
         @click="jobsStore.togglePanel()"
       >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <rect x="3" y="3" width="7" height="7" rx="1" />
-          <rect x="14" y="3" width="7" height="7" rx="1" />
-          <rect x="3" y="14" width="7" height="7" rx="1" />
-          <rect x="14" y="14" width="7" height="7" rx="1" />
-        </svg>
+        <IconGrid width="18" height="18" />
         <span v-if="activeCount > 0" class="tray-badge">{{ activeCount }}</span>
       </button>
 
@@ -108,19 +106,13 @@ const activeCount = computed(() => jobsStore.activeJobs.length)
         :title="t('pending.title')"
         @click="pendingOps.showPanel = !pendingOps.showPanel"
       >
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="1 4 1 10 7 10" />
-          <path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10" />
-        </svg>
+        <IconSync width="18" height="18" />
         <span v-if="pendingOps.pendingCount > 0" class="tray-badge tray-badge--warning">{{ pendingOps.pendingCount }}</span>
       </button>
 
       <NDropdown :options="userMenuOptions" trigger="click" placement="top-end" @select="handleUserMenu">
         <button class="taskbar-tray-btn" :title="auth.username">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-            <circle cx="12" cy="7" r="4" />
-          </svg>
+          <IconAccount width="18" height="18" />
         </button>
       </NDropdown>
     </div>
@@ -183,10 +175,6 @@ const activeCount = computed(() => jobsStore.activeJobs.length)
   display: flex;
   align-items: center;
   justify-content: center;
-}
-.taskbar-item-icon :deep(svg) {
-  width: 48px;
-  height: 48px;
 }
 
 .taskbar-tray-btn {

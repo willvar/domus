@@ -55,7 +55,7 @@ func (s *Service) Start() error {
 // Stop 停止服务（关闭 stats socket，释放 PID 锁）
 func (s *Service) Stop() {
 	if s.socketServer != nil {
-		s.socketServer.Close()
+		_ = s.socketServer.Close()
 	}
 	if s.pidLock != nil {
 		s.pidLock.Release()

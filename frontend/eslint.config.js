@@ -39,6 +39,11 @@ export default [
         confirm: 'readonly',
         AbortController: 'readonly',
         history: 'readonly',
+        TextEncoder: 'readonly',
+        FontFace: 'readonly',
+        indexedDB: 'readonly',
+        crypto: 'readonly',
+        self: 'readonly',
       },
     },
     rules: {
@@ -55,6 +60,8 @@ export default [
       'vue/multiline-html-element-content-newline': 'off',
       // v-html 用于静态 SVG 图标，已确认安全
       'vue/no-v-html': 'off',
+      // viewer 组件通过 prop 共享可变 state 对象，属于有意设计
+      'vue/no-mutating-props': 'off',
     },
   },
 ]

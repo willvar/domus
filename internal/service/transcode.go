@@ -144,16 +144,16 @@ func (t *Transcoder) BuildArgs(inputPath, outputPath, mediaType, preset, outputF
 	args := []string{"-i", inputPath, "-y"}
 
 	switch mediaType {
-		case "video":
-			args = append(args, videoPreset(preset, outputFormat)...)
-			if probe != nil && probe.AudioCode != "" {
-				args = append(args, audioPreset(preset, outputFormat)...)
-			} else {
-				args = append(args, "-an")
-			}
-		case "audio":
+	case "video":
+		args = append(args, videoPreset(preset, outputFormat)...)
+		if probe != nil && probe.AudioCode != "" {
 			args = append(args, audioPreset(preset, outputFormat)...)
-		case "image":
+		} else {
+			args = append(args, "-an")
+		}
+	case "audio":
+		args = append(args, audioPreset(preset, outputFormat)...)
+	case "image":
 		args = append(args, imagePreset(preset)...)
 	}
 

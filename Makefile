@@ -11,7 +11,7 @@ help:
 	@echo "  make build-prod   Build with UPX compression"
 	@echo "  make dev          Run in dev mode"
 	@echo "  make tidy         Run go mod tidy"
-	@echo "  make lint         Run golangci-lint"
+	@echo "  make lint         Run golangci-lint + eslint"
 	@echo "  make clean        Remove build artifacts"
 
 build:
@@ -36,6 +36,7 @@ tidy:
 
 lint:
 	golangci-lint run
+	cd frontend && npx eslint .
 
 clean:
 	rm -rf $(BUILD_DIR)
