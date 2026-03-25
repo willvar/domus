@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"zephyr/internal/middleware"
 	"zephyr/internal/model"
 	"zephyr/internal/store"
+	"zephyr/internal/ws"
 )
 
 func setupTestDB(t *testing.T) *gorm.DB {
@@ -32,12 +34,11 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Skipf("skipping test: could not connect to PostgreSQL: %v", err)
 	}
-	if err := testDB.AutoMigrate(&model.User{}, &model.TrashItem{}, &model.UploadRecord{}, &model.Bookmark{}, &model.FileRecord{}, &model.DBSession{}, &model.Job{}, &model.AuditLog{}); err != nil {
+	if err := testDB.AutoMigrate(&model.User{}, &model.TrashItem{}, &model.Bookmark{}, &model.FileRecord{}, &model.DBSession{}, &model.Job{}, &model.AuditLog{}); err != nil {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 	testDB.Exec("DELETE FROM users")
 	testDB.Exec("DELETE FROM trash")
-	testDB.Exec("DELETE FROM uploads")
 	testDB.Exec("DELETE FROM bookmarks")
 	testDB.Exec("DELETE FROM files")
 	testDB.Exec("DELETE FROM sessions")
@@ -71,6 +72,8 @@ func setupTestApp(t *testing.T) (*fiber.App, func(username, password string) str
 
 	mockStore := &MockFileStore{}
 
+	hub := ws.NewHub()
+
 	h := &Handler{
 		Config:     cfg,
 		DB:         testDB,
@@ -79,6 +82,7 @@ func setupTestApp(t *testing.T) (*fiber.App, func(username, password string) str
 		Audit:      audit,
 		Challenges: challenges,
 		Mid:        mid,
+		Hub:        hub,
 	}
 
 	app := fiber.New()
@@ -88,9 +92,9 @@ func setupTestApp(t *testing.T) (*fiber.App, func(username, password string) str
 		t.Helper()
 		user, err := model.GetUserByUsername(username)
 		if err != nil {
-			user, _ = model.CreateUser(username, password, "admin", model.PermAll)
+			user, _ = model.CreateUser(username, password, "root", model.PermAll)
 		}
-		sessionID, err := sessions.Create(user.ID, username, "admin", model.PermAll)
+		sessionID, err := sessions.Create(user.ID, username, "root", model.PermAll)
 		if err != nil {
 			t.Fatalf("failed to create session: %v", err)
 		}
@@ -120,6 +124,7 @@ type MockFileStore struct {
 	RenameObjectFn          func(oldKey, newKey string, isDir bool) error
 	DownloadToFileFn        func(key, localPath string) error
 	UploadFromFileFn        func(key, localPath string) error
+	UploadFromFileCtxFn     func(ctx context.Context, key, localPath string) error
 	PutObjectBytesFn        func(key string, data []byte) error
 	GetObjectContentRangeFn func(key string, start, end int64) (io.ReadCloser, error)
 }
@@ -231,6 +236,12 @@ func (m *MockFileStore) UploadFromFile(key, localPath string) error {
 		return m.UploadFromFileFn(key, localPath)
 	}
 	return nil
+}
+func (m *MockFileStore) UploadFromFileCtx(ctx context.Context, key, localPath string) error {
+	if m.UploadFromFileCtxFn != nil {
+		return m.UploadFromFileCtxFn(ctx, key, localPath)
+	}
+	return m.UploadFromFile(key, localPath)
 }
 func (m *MockFileStore) PutObjectBytes(key string, data []byte) error {
 	if m.PutObjectBytesFn != nil {

@@ -164,7 +164,7 @@ func TestAuthRequired_ValidSession(t *testing.T) {
 	sessions := model.NewSessionStore(testDB)
 	m := New(sessions, "test")
 
-	sessionID, _ := sessions.Create("test-user-id", "alice", "admin", model.PermAll)
+	sessionID, _ := sessions.Create("test-user-id", "alice", "root", model.PermAll)
 	cookie := auth.SignCookie(sessionID, "test")
 
 	app := fiber.New()
@@ -228,7 +228,7 @@ func TestPermissionRequired_AdminBypass(t *testing.T) {
 	sessions := model.NewSessionStore(testDB)
 	m := New(sessions, "test")
 
-	sessionID, _ := sessions.Create("test-user-id", "admin", "admin", 0)
+	sessionID, _ := sessions.Create("test-user-id", "root", "root", 0)
 	cookie := auth.SignCookie(sessionID, "test")
 
 	app := fiber.New()
