@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/websocket/v2"
 
 	"zephyr/internal/auth"
 	"zephyr/internal/model"
@@ -63,11 +64,11 @@ func RoleRequired(roles ...string) fiber.Handler {
 }
 
 // PermissionRequired checks that the user has the given permission bit(s).
-// Admin role always passes regardless of bitmask.
+// Root role always passes regardless of bitmask.
 func PermissionRequired(perm int64) fiber.Handler {
 	return func(c *fiber.Ctx) error {
 		session := c.Locals("session").(*model.Session)
-		if session.Role == "admin" {
+		if session.Role == "root" {
 			return c.Next()
 		}
 		if session.Permissions&perm == perm {
@@ -77,37 +78,61 @@ func PermissionRequired(perm int64) fiber.Handler {
 	}
 }
 
-// AdminRequired restricts to admin only.
-func AdminRequired() fiber.Handler {
-	return RoleRequired("admin")
+// RootRequired restricts to admin only.
+func RootRequired() fiber.Handler {
+	return RoleRequired("root")
 }
 
-// ResolvePath resolves the user-relative path to the full OSS key
-// and validates that the user has access to the path.
+// WebSocketUpgrade validates the session cookie during the HTTP upgrade request
+// and rejects unauthorized connections before the WebSocket handshake completes.
+func (m *Middleware) WebSocketUpgrade() fiber.Handler {
+	return func(c *fiber.Ctx) error {
+		if !websocket.IsWebSocketUpgrade(c) {
+			return fiber.ErrUpgradeRequired
+		}
+
+		cookieValue := c.Cookies(SessionCookieName)
+		if cookieValue == "" {
+			return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+		}
+
+		sessionID, err := auth.VerifyCookie(cookieValue, m.SessionSecret)
+		if err != nil {
+			return c.Status(401).JSON(fiber.Map{"error": "invalid_session"})
+		}
+
+		session := m.Sessions.Get(sessionID)
+		if session == nil {
+			return c.Status(401).JSON(fiber.Map{"error": "session_expired"})
+		}
+
+		c.Locals("session", session)
+		c.Locals("sessionID", sessionID)
+		return c.Next()
+	}
+}
+
+// ResolvePath converts an application-layer path (e.g. "/home/tom/file.txt")
+// to the full OSS key (e.g. "tom/home/tom/file.txt").
+// All users (including root) share the same logic.
 func ResolvePath(c *fiber.Ctx, path string) (string, error) {
 	session := c.Locals("session").(*model.Session)
-
-	path = strings.TrimPrefix(path, "/")
-
-	if session.Role == "admin" {
-		if path == "" {
-			return session.Username + "/", nil
-		}
-		return path, nil
-	}
-
-	prefix := session.Username + "/"
-	if path == "" {
-		return prefix, nil
-	}
-
-	if !strings.HasPrefix(path, prefix) {
-		return "", fiber.NewError(403, "access denied: path outside your space")
-	}
 
 	if strings.Contains(path, "..") {
 		return "", fiber.NewError(403, "invalid path")
 	}
 
-	return path, nil
+	// Normalize: ensure leading /
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+
+	// Prepend OSS namespace prefix
+	return session.Username + path, nil
+}
+
+// ToAppPath converts an OSS key back to an application-layer path.
+// e.g. "tom/home/tom/file.txt" → "/home/tom/file.txt"
+func ToAppPath(ossPath, username string) string {
+	return "/" + strings.TrimPrefix(ossPath, username+"/")
 }

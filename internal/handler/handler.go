@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/websocket/v2"
 	"gorm.io/gorm"
 
 	"zephyr/config"
@@ -14,6 +15,7 @@ import (
 	"zephyr/internal/model"
 	"zephyr/internal/service"
 	"zephyr/internal/store"
+	"zephyr/internal/ws"
 )
 
 // Handler holds all dependencies for HTTP handlers.
@@ -27,6 +29,7 @@ type Handler struct {
 	Audit      *model.AuditWorker
 	Challenges *auth.ChallengeManager
 	Mid        *middleware.Middleware
+	Hub        *ws.Hub
 }
 
 // RegisterRoutes registers all API routes on the Fiber app.
@@ -57,9 +60,9 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 
 	// /audit
 	audit := authed.Group("/audit")
-	audit.Get("/", middleware.AdminRequired(), h.handleListAuditLogs)
+	audit.Get("/", middleware.RootRequired(), h.handleListAuditLogs)
 	audit.Post("/", h.handleAuditPreview)
-	auditUser := audit.Group("/user", middleware.AdminRequired())
+	auditUser := audit.Group("/user", middleware.RootRequired())
 	auditUser.Get("/", h.handleListUsers)
 	auditUser.Post("/", h.handleCreateUser)
 	auditUser.Put("/:id", h.handleUpdateUser)
@@ -98,18 +101,22 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	job.Delete("/done", h.handleClearJobs)
 	job.Get("/:id/status", h.handleJobStatus)
 	job.Delete("/:id", h.handleCancelJob)
+
+	// WebSocket — auth via cookie on HTTP upgrade
+	app.Use("/ws", h.Mid.WebSocketUpgrade())
+	app.Get("/ws", websocket.New(func(c *websocket.Conn) {
+		session := c.Locals("session").(*model.Session)
+		sessionID := c.Locals("sessionID").(string)
+		h.Hub.HandleConnection(c.Conn, session, sessionID)
+	}))
+
+	// Register all WS actions
+	h.registerWSActions()
 }
 
-// getFileEncryptionKey resolves the correct encryption key for the given file path.
-func (h *Handler) getFileEncryptionKey(session *model.Session, resolvedPath string) ([]byte, error) {
-	userID := session.UserID
-	if session.Role == "admin" {
-		var record model.FileRecord
-		if err := h.DB.Where("path = ?", resolvedPath).First(&record).Error; err == nil {
-			userID = record.UserID
-		}
-	}
-	return auth.DeriveKey(h.Config.Server.EncryptionSecret, userID)
+// getFileEncryptionKey derives the encryption key for the current user's files.
+func (h *Handler) getFileEncryptionKey(session *model.Session) ([]byte, error) {
+	return auth.DeriveKey(h.Config.Server.EncryptionSecret, session.UserID)
 }
 
 // syncDirFiles scans OSS objects under a prefix and upserts them all into the files table.

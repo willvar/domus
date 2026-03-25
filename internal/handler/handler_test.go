@@ -20,7 +20,7 @@ import (
 
 func TestLogin_Success(t *testing.T) {
 	app, _ := setupTestApp(t)
-	_, _ = model.CreateUser("testuser", "testpass", "admin", model.PermAll)
+	_, _ = model.CreateUser("testuser", "testpass", "root", model.PermAll)
 
 	verifyBody := `{"username":"testuser","password":"testpass"}`
 	req := httptest.NewRequest("POST", "/auth/verify", strings.NewReader(verifyBody))
@@ -68,7 +68,7 @@ func TestLogin_Success(t *testing.T) {
 
 func TestLogin_BadPassword(t *testing.T) {
 	app, _ := setupTestApp(t)
-	_, _ = model.CreateUser("testuser", "testpass", "admin", model.PermAll)
+	_, _ = model.CreateUser("testuser", "testpass", "root", model.PermAll)
 
 	body := `{"username":"testuser","password":"wrongpass"}`
 	req := httptest.NewRequest("POST", "/auth/verify", strings.NewReader(body))
@@ -95,7 +95,7 @@ func TestLogin_NonexistentUser(t *testing.T) {
 
 func TestMe(t *testing.T) {
 	app, loginAs := setupTestApp(t)
-	cookie := loginAs("admin", "pass")
+	cookie := loginAs("root", "pass")
 
 	req := httptest.NewRequest("GET", "/auth/me", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
@@ -110,14 +110,14 @@ func TestMe(t *testing.T) {
 
 	var result map[string]interface{}
 	_ = json.NewDecoder(resp.Body).Decode(&result)
-	if result["username"] != "admin" {
+	if result["username"] != "root" {
 		t.Fatalf("expected admin, got %v", result["username"])
 	}
 }
 
 func TestLogout(t *testing.T) {
 	app, loginAs := setupTestApp(t)
-	cookie := loginAs("admin", "pass")
+	cookie := loginAs("root", "pass")
 
 	req := httptest.NewRequest("POST", "/auth/logout", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
@@ -137,7 +137,7 @@ func TestLogout(t *testing.T) {
 
 func TestListUsers_AsAdmin(t *testing.T) {
 	app, loginAs := setupTestApp(t)
-	cookie := loginAs("admin", "pass")
+	cookie := loginAs("root", "pass")
 
 	req := httptest.NewRequest("GET", "/admin/users", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
@@ -150,9 +150,9 @@ func TestListUsers_AsAdmin(t *testing.T) {
 
 func TestHandleList(t *testing.T) {
 	app, loginAs := setupTestApp(t)
-	cookie := loginAs("admin", "pass")
+	cookie := loginAs("root", "pass")
 
-	adminUser, _ := model.GetUserByUsername("admin")
+	adminUser, _ := model.GetUserByUsername("root")
 	_ = model.UpsertFile(adminUser.ID, "admin/test.txt", "test.txt", false, 100, "", "")
 	_ = model.UpsertFile(adminUser.ID, "admin/docs/", "docs", true, 0, "", "")
 
@@ -177,7 +177,7 @@ func TestHandleList(t *testing.T) {
 
 func TestHandleDownload(t *testing.T) {
 	app, loginAs := setupTestApp(t)
-	cookie := loginAs("admin", "pass")
+	cookie := loginAs("root", "pass")
 
 	req := httptest.NewRequest("GET", "/download?path=admin/file.txt", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
@@ -200,9 +200,9 @@ func TestHandleDownload(t *testing.T) {
 
 func TestHandleGetContent(t *testing.T) {
 	_, loginAs := setupTestApp(t)
-	_ = loginAs("admin", "pass")
+	_ = loginAs("root", "pass")
 
-	adminUser, _ := model.GetUserByUsername("admin")
+	adminUser, _ := model.GetUserByUsername("root")
 	key, err := auth.DeriveKey("0000000000000000000000000000000000000000000000000000000000000000", adminUser.ID)
 	if err != nil {
 		t.Fatalf("derive key: %v", err)
@@ -250,9 +250,9 @@ func TestHandleGetContent(t *testing.T) {
 	app2 := fiber.New()
 	h.RegisterRoutes(app2)
 
-	user2, _ := model.CreateUser("admin2", "pass", "admin", model.PermAll)
+	user2, _ := model.CreateUser("admin2", "pass", "root", model.PermAll)
 	_ = user2
-	sessionID, _ := sessions.Create(adminUser.ID, "admin", "admin", model.PermAll)
+	sessionID, _ := sessions.Create(adminUser.ID, "root", "root", model.PermAll)
 	cookie2 := auth.SignCookie(sessionID, cfg.Server.SessionSecret)
 
 	req := httptest.NewRequest("GET", "/content?path=admin/test.txt", nil)
