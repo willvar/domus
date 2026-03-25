@@ -1,8 +1,8 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
 import { NInput, useMessage } from 'naive-ui'
-import { useFileSystemStore } from '../stores/fileSystem'
-import { useI18n } from '../composables/useI18n'
+import { useFileSystemStore } from '../../stores/fileSystem'
+import { useI18n } from '../../composables/useI18n'
 
 const props = defineProps({
   file: { type: Object, required: true },

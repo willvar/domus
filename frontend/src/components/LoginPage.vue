@@ -1,9 +1,10 @@
 <script setup>
 import { ref, onMounted } from 'vue'
-import { NCard, NForm, NFormItem, NInput, NButton, NTabs, NTabPane, NSpace, useMessage } from 'naive-ui'
+import { NCard, NForm, NFormItem, NInput, NButton, NTabs, NTabPane, NSpace, NIcon, useMessage } from 'naive-ui'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
 import api from '../composables/useApi'
+import IconDolphin from '~icons/mdi/dolphin'
 
 const auth = useAuthStore()
 const message = useMessage()
@@ -140,7 +141,7 @@ function resetTo(newTab) {
   <div class="login-page">
     <NCard class="login-card" :bordered="true">
       <div class="login-header">
-        <div class="login-icon">🐬</div>
+        <div class="login-icon"><NIcon :size="48"><IconDolphin /></NIcon></div>
         <h1>{{ t('app.title') }}</h1>
         <p>{{ t('app.subtitle') }}</p>
       </div>

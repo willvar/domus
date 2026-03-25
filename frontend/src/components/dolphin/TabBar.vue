@@ -1,7 +1,9 @@
 <script setup>
 import { ref, watch, nextTick } from 'vue'
-import { useFileSystemStore } from '../stores/fileSystem'
+import { NIcon } from 'naive-ui'
+import { useFileSystemStore } from '../../stores/fileSystem'
 import IconFolder from '~icons/mdi/folder'
+import IconClose from '~icons/mdi/close'
 
 const fs = useFileSystemStore()
 const tabListRef = ref(null)
@@ -166,7 +168,7 @@ function tabStyle(tab) {
         <button
           class="tab-close"
           @click.stop="fs.closeTab(tab.id)"
-        >×</button>
+        ><NIcon :size="14"><IconClose /></NIcon></button>
       </div>
     </div>
     <button class="tab-new" @click="fs.createTab()">+</button>

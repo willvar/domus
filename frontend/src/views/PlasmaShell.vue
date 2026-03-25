@@ -9,18 +9,16 @@ import { useWindowHistory } from '../composables/useWindowHistory'
 import { useNotification, NButton } from 'naive-ui'
 import { useI18n } from '../composables/useI18n'
 
-import Desktop from '../components/Desktop.vue'
-import FilesApp from '../components/FilesApp.vue'
-import AppRenderer from '../components/AppRenderer.vue'
-import TaskBar from '../components/TaskBar.vue'
-import ContextMenu from '../components/ContextMenu.vue'
-import UploadProgress from '../components/UploadProgress.vue'
-import OperationProgress from '../components/OperationProgress.vue'
+import PlasmaDesktop from '../components/plasma/Desktop.vue'
+import DolphinApp from '../components/dolphin/App.vue'
+import AppRenderer from '../components/plasma/AppRenderer.vue'
+import PlasmaPanel from '../components/plasma/Panel.vue'
+import ContextMenu from '../components/plasma/ContextMenu.vue'
 import GlobalDialog from '../components/GlobalDialog.vue'
 import TranscodeDialog from '../components/TranscodeDialog.vue'
-import JobsPanel from '../components/JobsPanel.vue'
-import PendingOpsPanel from '../components/PendingOpsPanel.vue'
-import AccountSettings from '../components/AccountSettings.vue'
+import JobsPanel from '../components/plasma/systemtray/JobsPanel.vue'
+import PendingOpsPanel from '../components/plasma/systemtray/PendingOpsPanel.vue'
+import AccountSettings from '../components/plasma/systemtray/AccountSettings.vue'
 
 const auth = useAuthStore()
 const fs = useFileSystemStore()
@@ -67,16 +65,14 @@ if (auth.needsSetup) {
 <template>
   <div class="app-layout">
     <div class="desktop-area">
-      <Desktop />
-      <FilesApp />
+      <PlasmaDesktop />
+      <DolphinApp />
       <AppRenderer />
     </div>
 
-    <TaskBar @show-account="showAccount = true" />
+    <PlasmaPanel @show-account="showAccount = true" @update:show-account="v => showAccount = v" />
 
     <ContextMenu />
-    <UploadProgress />
-    <OperationProgress />
     <TranscodeDialog ref="transcodeDialogRef" />
     <JobsPanel />
     <PendingOpsPanel />

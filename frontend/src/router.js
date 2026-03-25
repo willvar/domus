@@ -2,8 +2,8 @@ import { createRouter, createWebHashHistory } from 'vue-router'
 import { useAuthStore } from './stores/auth'
 
 const routes = [
-  { path: '/', component: () => import('./views/DesktopView.vue') },
-  { path: '/admin', component: () => import('./views/AdminView.vue'), meta: { requiresAdmin: true } },
+  { path: '/', component: () => import('./views/PlasmaShell.vue') },
+  { path: '/admin', component: () => import('./views/AdminView.vue'), meta: { requiresRoot: true } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
@@ -13,9 +13,9 @@ const router = createRouter({
 })
 
 router.beforeEach((to) => {
-  if (to.meta.requiresAdmin) {
+  if (to.meta.requiresRoot) {
     const auth = useAuthStore()
-    if (!auth.isAdmin) return '/'
+    if (!auth.isRoot) return '/'
   }
 })
 

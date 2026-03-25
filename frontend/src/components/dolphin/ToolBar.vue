@@ -7,10 +7,10 @@ import IconViewGrid from '~icons/mdi/view-grid-outline'
 import IconViewList from '~icons/mdi/view-list-outline'
 import IconUpload from '~icons/mdi/upload'
 import IconSearch from '~icons/mdi/magnify'
-import { useFileSystemStore } from '../stores/fileSystem'
-import { useUploadStore } from '../stores/upload'
-import { useAuthStore } from '../stores/auth'
-import { useI18n } from '../composables/useI18n'
+import { useFileSystemStore } from '../../stores/fileSystem'
+import { useUploadStore } from '../../stores/upload'
+import { useAuthStore } from '../../stores/auth'
+import { useI18n } from '../../composables/useI18n'
 
 const fs = useFileSystemStore()
 const upload = useUploadStore()

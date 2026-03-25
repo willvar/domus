@@ -1,19 +1,19 @@
 <script setup>
 import { ref, reactive, computed, h, onUnmounted } from 'vue'
 import { NDataTable, NSpin, NEmpty } from 'naive-ui'
-import { useFileSystemStore } from '../stores/fileSystem'
-import { useUploadStore } from '../stores/upload'
-import { useAuthStore } from '../stores/auth'
-import { useI18n } from '../composables/useI18n'
-import { getFileIcon } from '../composables/useFileIcon'
+import { useFileSystemStore } from '../../stores/fileSystem'
+import { useUploadStore } from '../../stores/upload'
+import { useAuthStore } from '../../stores/auth'
+import { useI18n } from '../../composables/useI18n'
+import { getFileIcon } from '../../composables/useFileIcon'
 import IconCopy from '~icons/mdi/content-copy'
 import IconCut from '~icons/mdi/content-cut'
 import IconDelete from '~icons/mdi/delete-outline'
 import IconClose from '~icons/mdi/close'
-import { openContextMenu } from '../composables/useContextMenu'
-import { useTouchHandlers } from '../composables/useTouch'
-import FileItem from './FileItem.vue'
-import RenameInput from './RenameInput.vue'
+import { openContextMenu } from '../../composables/useContextMenu'
+import { useTouchHandlers } from '../../composables/useTouch'
+import DesktopEntry from '../plasma/DesktopEntry.vue'
+import InlineRename from './InlineRename.vue'
 import dayjs from 'dayjs'
 
 const fs = useFileSystemStore()
@@ -147,12 +147,21 @@ const columns = computed(() => [
     render(row) {
       const iconComp = getFileIcon(row.name, row.is_dir)
       const isRenaming = fs.renamingFile === row.path
-      return h('div', { class: 'detail-name' }, [
+      const status = row.status || 'ready'
+      const children = [
         h(iconComp, { width: fs.iconSize, height: fs.iconSize, class: 'detail-icon' }),
         isRenaming
-          ? h(RenameInput, { file: row })
+          ? h(InlineRename, { file: row })
           : h('span', { class: 'truncate' }, row.name),
-      ])
+      ]
+      if (status === 'processing' && row.job_phase) {
+        const pct = row.job_progress != null ? Math.round(row.job_progress * 100) : 0
+        const phaseText = t(`jobs.phase_${row.job_phase}`) || row.job_phase
+        children.push(h('span', { class: 'file-status-badge badge-processing' }, `${phaseText} ${pct}%`))
+      } else if (status !== 'ready') {
+        children.push(h('span', { class: `file-status-badge badge-${status}` }, t(`status.badge_${status}`)))
+      }
+      return h('div', { class: ['detail-name', status !== 'ready' ? 'detail-not-ready' : '', status === 'uploading' ? 'detail-uploading' : ''] }, children)
     },
   },
   {
@@ -281,7 +290,7 @@ function handleContextMenu(e) {
           class="file-grid"
           :class="{ 'compact-grid': fs.viewMode === 'compact' }"
         >
-          <FileItem
+          <DesktopEntry
             v-for="file in fs.sortedFiles"
             :key="file.path"
             :file="file"
@@ -399,6 +408,36 @@ function handleContextMenu(e) {
   display: inline-flex;
   align-items: center;
   line-height: 0;
+}
+:deep(.detail-not-ready) {
+  opacity: 0.55;
+}
+:deep(.detail-uploading) {
+  animation: pulse-uploading 1.8s ease-in-out infinite;
+}
+@keyframes pulse-uploading {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 0.75; }
+}
+:deep(.file-status-badge) {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+:deep(.badge-uploading) {
+  color: #3daee9;
+  background: rgba(61, 174, 233, 0.15);
+}
+:deep(.badge-processing) {
+  color: #f67400;
+  background: rgba(246, 116, 0, 0.15);
+}
+:deep(.badge-failed) {
+  color: #da4453;
+  background: rgba(218, 68, 83, 0.15);
 }
 
 .select-action-bar {
