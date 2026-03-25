@@ -4,7 +4,7 @@ import { useFileSystemStore } from '../stores/fileSystem'
 import { useWindowManagerStore } from '../stores/windowManager'
 import { useI18n } from '../composables/useI18n'
 import { useCodeMirror } from '../composables/useCodeMirror'
-import PlasmaWindow from './PlasmaWindow.vue'
+import PlasmaWindow from './plasma/Window.vue'
 import IconEye from '~icons/mdi/eye-outline'
 import IconSave from '~icons/mdi/content-save'
 import IconClose from '~icons/mdi/close'
@@ -14,15 +14,15 @@ import IconNext from '~icons/mdi/chevron-right'
 
 // Lazy-loaded viewer sub-components
 const viewerMap = {
-  audio: defineAsyncComponent(() => import('./viewers/AudioViewer.vue')),
-  markdown: defineAsyncComponent(() => import('./viewers/MarkdownViewer.vue')),
-  csv: defineAsyncComponent(() => import('./viewers/CsvViewer.vue')),
-  font: defineAsyncComponent(() => import('./viewers/FontViewer.vue')),
-  xlsx: defineAsyncComponent(() => import('./viewers/SpreadsheetViewer.vue')),
-  docx: defineAsyncComponent(() => import('./viewers/DocxViewer.vue')),
-  epub: defineAsyncComponent(() => import('./viewers/EpubViewer.vue')),
-  archive: defineAsyncComponent(() => import('./viewers/ArchiveViewer.vue')),
-  notebook: defineAsyncComponent(() => import('./viewers/NotebookViewer.vue')),
+  audio: defineAsyncComponent(() => import('./elisa/App.vue')),
+  markdown: defineAsyncComponent(() => import('./kate/Markdown.vue')),
+  csv: defineAsyncComponent(() => import('./kate/Csv.vue')),
+  font: defineAsyncComponent(() => import('./kfontview/App.vue')),
+  xlsx: defineAsyncComponent(() => import('./sheets/App.vue')),
+  docx: defineAsyncComponent(() => import('./okular/Docx.vue')),
+  epub: defineAsyncComponent(() => import('./okular/Epub.vue')),
+  archive: defineAsyncComponent(() => import('./ark/App.vue')),
+  notebook: defineAsyncComponent(() => import('./notebook/App.vue')),
 }
 
 const props = defineProps({

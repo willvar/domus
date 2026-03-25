@@ -4,21 +4,21 @@ import { NMenu } from 'naive-ui'
 import IconHome from '~icons/mdi/home-outline'
 import IconTrash from '~icons/mdi/delete-outline'
 import IconFolderOutline from '~icons/mdi/folder-outline'
-import { useFileSystemStore } from '../stores/fileSystem'
-import { useAuthStore } from '../stores/auth'
-import { useI18n } from '../composables/useI18n'
-import api from '../composables/useApi'
+import { useFileSystemStore } from '../../stores/fileSystem'
+import { useAuthStore } from '../../stores/auth'
+import { useI18n } from '../../composables/useI18n'
+import { useWebSocket } from '../../composables/useWebSocket'
 
 const fs = useFileSystemStore()
 const auth = useAuthStore()
+const ws = useWebSocket()
 const { t } = useI18n()
 
 const bookmarks = ref([])
 
 onMounted(async () => {
   try {
-    const res = await api.get('/user/bookmark')
-    bookmarks.value = res.data
+    bookmarks.value = await ws.request('bookmark.list')
   } catch { /* bookmarks stay empty on error */ }
 })
 
@@ -44,7 +44,7 @@ const menuOptions = computed(() => [
 
 function handleSelect(key) {
   if (key === 'home') {
-    fs.navigate(auth.username + '/')
+    fs.navigate(`/home/${auth.username}/`)
   } else if (key === 'trash') {
     fs.navigate('__trash__')
   } else {

@@ -1,9 +1,9 @@
 <script setup>
 import { computed } from 'vue'
 import { NSlider } from 'naive-ui'
-import { useFileSystemStore } from '../stores/fileSystem'
-import { useUploadStore } from '../stores/upload'
-import { useI18n } from '../composables/useI18n'
+import { useFileSystemStore } from '../../stores/fileSystem'
+import { useUploadStore } from '../../stores/upload'
+import { useI18n } from '../../composables/useI18n'
 
 const fs = useFileSystemStore()
 const upload = useUploadStore()

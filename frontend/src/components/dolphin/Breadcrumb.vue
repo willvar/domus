@@ -1,13 +1,12 @@
 <script setup>
 import { ref, watch, nextTick } from 'vue'
 import { NInput, NDropdown } from 'naive-ui'
-import { useFileSystemStore } from '../stores/fileSystem'
-import { useAuthStore } from '../stores/auth'
-import api from '../composables/useApi'
-import { useI18n } from '../composables/useI18n'
+import { useFileSystemStore } from '../../stores/fileSystem'
+import { useWebSocket } from '../../composables/useWebSocket'
+import { useI18n } from '../../composables/useI18n'
 
 const fs = useFileSystemStore()
-const auth = useAuthStore()
+const ws = useWebSocket()
 const { t } = useI18n()
 const editing = ref(false)
 const editPath = ref('')
@@ -42,8 +41,8 @@ function cancelEdit() {
 
 async function loadSubDirs(parentPath) {
   try {
-    const res = await api.get('/file', { params: { path: parentPath } })
-    const dirs = (res.data.files || []).filter(f => f.is_dir)
+    const res = await ws.request('file.list', { path: parentPath })
+    const dirs = (res.files || []).filter(f => f.is_dir)
     subDirs.value = dirs.map(d => ({ label: d.name, key: d.path }))
   } catch {
     subDirs.value = []
@@ -71,7 +70,7 @@ function handleSubDirSelect(path) {
     </template>
     <template v-else-if="fs.isTrash">
       <div class="breadcrumb-segments">
-        <span class="breadcrumb-segment" @click.stop="fs.navigate(auth.username + '/')">
+        <span class="breadcrumb-segment" @click.stop="fs.navigate('/')">
           /
         </span>
         <span class="breadcrumb-sep">›</span>
@@ -82,7 +81,7 @@ function handleSubDirSelect(path) {
     </template>
     <template v-else>
       <div class="breadcrumb-segments">
-        <span class="breadcrumb-segment" @click.stop="fs.navigate(auth.username + '/')">
+        <span class="breadcrumb-segment" @click.stop="fs.navigate('/')">
           /
         </span>
         <template v-for="(seg, i) in fs.pathSegments" :key="seg.path">

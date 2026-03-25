@@ -1,14 +1,15 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { NButton } from 'naive-ui'
-import { useFileSystemStore } from '../stores/fileSystem'
-import { useWindowManagerStore, FILES_ICON } from '../stores/windowManager'
-import PlasmaWindow from './PlasmaWindow.vue'
+import { NButton, NIcon } from 'naive-ui'
+import IconMenu from '~icons/mdi/menu'
+import { useFileSystemStore } from '../../stores/fileSystem'
+import { useWindowManagerStore, FILES_ICON } from '../../stores/windowManager'
+import PlasmaWindow from '../plasma/Window.vue'
 import ToolBar from './ToolBar.vue'
-import BreadcrumbBar from './BreadcrumbBar.vue'
+import Breadcrumb from './Breadcrumb.vue'
 import TabBar from './TabBar.vue'
-import PlacesPanel from './PlacesPanel.vue'
-import FileView from './FileView.vue'
+import Places from './Places.vue'
+import View from './View.vue'
 import InfoPanel from './InfoPanel.vue'
 import StatusBar from './StatusBar.vue'
 
@@ -43,7 +44,7 @@ function handleClose() {
     @close="handleClose"
   >
     <ToolBar />
-    <BreadcrumbBar class="mobile-hide" />
+    <Breadcrumb class="mobile-hide" />
     <TabBar />
     <div class="files-main-content">
       <NButton
@@ -52,17 +53,17 @@ function handleClose() {
         quaternary
         @click="mobileSidebar = !mobileSidebar"
       >
-        ☰
+        <template #icon><NIcon><IconMenu /></NIcon></template>
       </NButton>
 
       <Transition name="slide-left">
-        <PlacesPanel
+        <Places
           v-if="showSidebarComputed"
           @click="mobileSidebar = false"
         />
       </Transition>
 
-      <FileView />
+      <View />
 
       <InfoPanel v-if="fs.showInfoPanel" class="info-panel-desktop" />
     </div>

@@ -1,9 +1,9 @@
 <script setup>
 import { computed } from 'vue'
 import { NDescriptions, NDescriptionsItem } from 'naive-ui'
-import { useFileSystemStore } from '../stores/fileSystem'
-import { useI18n } from '../composables/useI18n'
-import { getFileIcon } from '../composables/useFileIcon'
+import { useFileSystemStore } from '../../stores/fileSystem'
+import { useI18n } from '../../composables/useI18n'
+import { getFileIcon } from '../../composables/useFileIcon'
 import dayjs from 'dayjs'
 
 const fs = useFileSystemStore()
