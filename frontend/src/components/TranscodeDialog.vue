@@ -1,10 +1,11 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { NModal, NForm, NFormItem, NSelect, NSwitch, NButton, NSpace, useMessage } from 'naive-ui'
-import api from '../composables/useApi'
+import { useWebSocket } from '../composables/useWebSocket'
 import { useI18n } from '../composables/useI18n'
 import { useJobsStore } from '../stores/jobs'
 
+const ws = useWebSocket()
 const { t, te } = useI18n()
 const message = useMessage()
 const jobsStore = useJobsStore()
@@ -88,26 +89,26 @@ function close() {
 async function startTranscode() {
   loading.value = true
   try {
-    const res = await api.post('/job', {
+    const res = await ws.request('task.create', {
       type: 'transcode',
       path: filePath.value,
       preset: preset.value,
       output_format: outputFormat.value,
       replace: replace.value,
     })
-    const jobId = res.data.job_id
-    jobsStore.addJob({
-      job_id: jobId,
+    const taskId = res.task_id
+    jobsStore.addTask({
+      task_id: taskId,
       type: 'transcode',
-      status: 'pending',
+      status: 'running',
       progress: 0,
       phase: '',
-      params: JSON.stringify({ original_name: fileName.value, output_format: outputFormat.value }),
+      name: fileName.value,
     })
     message.success(t('transcode.started'))
     show.value = false
     if (resolvePromise) {
-      resolvePromise(jobId)
+      resolvePromise(taskId)
       resolvePromise = null
     }
   } catch (e) {

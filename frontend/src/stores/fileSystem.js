@@ -1,8 +1,8 @@
 import { defineStore } from 'pinia'
 import { ref, reactive, computed } from 'vue'
 import api, { API_BASE } from '../composables/useApi'
+import { useWebSocket } from '../composables/useWebSocket'
 import { useAuthStore } from './auth'
-import { useOperationsStore } from './operations'
 import { useWindowManagerStore } from './windowManager'
 import { useI18n } from '../composables/useI18n'
 import { ICONS } from '../composables/useFileIcon'
@@ -60,8 +60,8 @@ async function fetchTextChunk(path, byteStart, totalSize) {
 
 export const useFileSystemStore = defineStore('fileSystem', () => {
   const auth = useAuthStore()
-  const ops = useOperationsStore()
   const wm = useWindowManagerStore()
+  const ws = useWebSocket()
   const { t, te } = useI18n()
 
   // --- Multi-tab state ---
@@ -147,13 +147,14 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   const canGoBack = computed(() => historyIndex.value > 0)
   const canGoForward = computed(() => historyIndex.value < history.value.length - 1)
-  const canGoUp = computed(() => currentPath.value !== '' && !isTrash.value)
+  const canGoUp = computed(() => currentPath.value !== '/' && !isTrash.value)
 
   const pathSegments = computed(() => {
-    if (!currentPath.value) return []
-    const parts = currentPath.value.replace(/\/$/, '').split('/')
+    if (!currentPath.value || currentPath.value === '/') return []
+    const trimmed = currentPath.value.replace(/^\//, '').replace(/\/$/, '')
+    const parts = trimmed.split('/')
     const segments = []
-    let accumulated = ''
+    let accumulated = '/'
     for (const part of parts) {
       accumulated += part + '/'
       segments.push({ name: part, path: accumulated })
@@ -164,7 +165,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   // --- Tab operations ---
   function createTab(path) {
     const id = nextTabId()
-    const initialPath = path || (auth.username + '/')
+    const initialPath = path || `/home/${auth.username}/`
     const tab = {
       id,
       path: initialPath,
@@ -182,6 +183,11 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     }
     tabs.value.push(tab)
     activeTabId.value = id
+
+    // Subscribe to directory changes for this tab
+    tabSubs.set(id, initialPath)
+    ws.request('subscribe.directory', { path: initialPath }).catch(() => {})
+
     loadFiles(initialPath)
     return id
   }
@@ -191,11 +197,16 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       wm.closeWindow('files')
       return
     }
+    // Unsubscribe directory for this tab
+    const sub = tabSubs.get(id)
+    if (sub) {
+      ws.request('unsubscribe.directory', { path: sub }).catch(() => {})
+      tabSubs.delete(id)
+    }
     const idx = tabs.value.findIndex(t => t.id === id)
     if (idx < 0) return
     tabs.value.splice(idx, 1)
     if (activeTabId.value === id) {
-      // Switch to nearest tab
       const newIdx = Math.min(idx, tabs.value.length - 1)
       activeTabId.value = tabs.value[newIdx].id
     }
@@ -227,20 +238,19 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     tabs.value.splice(toIndex, 0, tab)
   }
 
+  // Track subscribed directories per tab
+  const tabSubs = new Map() // tabId -> subscribedPath
+
   // --- Navigation ---
   async function navigate(path, addToHistory = true) {
-    path = path || ''
-    if (path && !path.endsWith('/')) path += '/'
+    path = path || '/'
+    if (path !== '/' && !path.endsWith('/')) path += '/'
 
-    // Skip prefix logic for virtual paths
-    if (path !== '__trash__/') {
-      if (auth.isAdmin && path && !path.startsWith(auth.username + '/')) {
-        // Admin can navigate anywhere
-      } else if (!auth.isAdmin) {
-        if (path && !path.startsWith(auth.username + '/')) {
-          path = auth.username + '/' + path
-        }
-      }
+    // Unsubscribe old directory for this tab
+    const tabId = activeTabId.value
+    const oldSub = tabSubs.get(tabId)
+    if (oldSub && oldSub !== path && path !== '__trash__/') {
+      ws.request('unsubscribe.directory', { path: oldSub }).catch(() => {})
     }
 
     currentPath.value = path
@@ -251,6 +261,12 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       history.value = history.value.slice(0, historyIndex.value + 1)
       history.value.push(path)
       historyIndex.value = history.value.length - 1
+    }
+
+    // Subscribe to new directory
+    if (path !== '__trash__/') {
+      tabSubs.set(tabId, path)
+      ws.request('subscribe.directory', { path }).catch(() => {})
     }
 
     await loadFiles(path)
@@ -286,8 +302,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   async function fetchFiles(path) {
     if (path === '__trash__/') {
-      const res = await api.get('/file/trash')
-      const items = res.data || []
+      const items = await ws.request('trash.list') || []
       return items.map(item => ({
         name: item.original_path.replace(/\/$/, '').split('/').pop(),
         path: '__trash__/' + item.id,
@@ -298,8 +313,8 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         _originalPath: item.original_path,
       }))
     }
-    const res = await api.get('/file', { params: { path } })
-    return res.data.files || []
+    const res = await ws.request('file.list', { path })
+    return res.files || []
   }
 
   function goBack() {
@@ -318,7 +333,8 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     if (!canGoUp.value) return
     const parts = currentPath.value.replace(/\/$/, '').split('/')
     parts.pop()
-    navigate(parts.length > 0 ? parts.join('/') + '/' : '')
+    const parent = parts.join('/') + '/'
+    navigate(parent === '/' ? '/' : parent)
   }
 
   function refresh() {
@@ -424,13 +440,11 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     if (!auth.canEdit) return
     if (clipboard.value.items.length === 0) return
     const mode = clipboard.value.mode
+    const action = mode === 'copy' ? 'file.copy' : 'file.move'
 
     const promises = clipboard.value.items.map(item => {
       const dstPath = currentPath.value + item.name + (item.is_dir ? '/' : '')
-      const url = mode === 'copy' ? '/file/copy' : '/file/move'
-      const body = { src_path: item.path, dst_path: dstPath, is_dir: item.is_dir }
-      const desc = `${mode === 'copy' ? 'Copy' : 'Move'} ${item.name}`
-      return ops.runSSEOperation(url, body, mode, desc)
+      return ws.request(action, { src_path: item.path, dst_path: dstPath, is_dir: item.is_dir })
     })
 
     await Promise.all(promises)
@@ -449,21 +463,10 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     if (!name) return
 
     try {
-      await api.post('/file/mkdir', { path: currentPath.value + name })
+      await ws.request('file.mkdir', { path: currentPath.value + name })
       await reloadCurrentDir()
     } catch (e) {
       console.error('Create folder failed:', e)
-      const pending = usePendingOpsStore()
-      if (pending.isQueueableError(e)) {
-        pending.enqueue({
-          type: 'mkdir',
-          description: `${t('pending.type_mkdir')}: ${name}`,
-          username: auth.username,
-          apiMethod: 'post',
-          apiUrl: '/file/mkdir',
-          apiData: { path: currentPath.value + name },
-        })
-      }
     }
   }
 
@@ -484,7 +487,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const newPath = parts.join('/') + (isDir ? '/' : '')
 
     try {
-      await api.post('/file/rename', {
+      await ws.request('file.rename', {
         old_path: oldPath,
         new_path: newPath,
         is_dir: isDir,
@@ -493,18 +496,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       await reloadCurrentDir()
     } catch (e) {
       console.error('Rename failed:', e)
-      const pending = usePendingOpsStore()
-      if (pending.isQueueableError(e)) {
-        const oldName = oldPath.replace(/\/$/, '').split('/').pop()
-        pending.enqueue({
-          type: 'rename',
-          description: `${t('pending.type_rename')}: ${oldName} → ${newName}`,
-          username: auth.username,
-          apiMethod: 'post',
-          apiUrl: '/file/rename',
-          apiData: { old_path: oldPath, new_path: newPath, is_dir: isDir },
-        })
-      }
       throw e
     }
   }
@@ -515,36 +506,20 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const count = selectedFiles.value.length
 
     if (isTrash.value) {
-      // Permanent delete from trash (no SSE needed, these are DB + OSS cleanup)
       if (!await showConfirm(t('dialog.confirm_permanent_delete', { n: count }))) return
       for (const path of selectedFiles.value) {
         const file = getFileByPath(path)
         if (!file?._trashId) continue
         try {
-          await api.delete(`/file/trash/${file._trashId}`)
+          await ws.request('trash.delete', { id: file._trashId })
         } catch (e) {
           console.error('Permanent delete failed:', e)
-          const pending = usePendingOpsStore()
-          if (pending.isQueueableError(e)) {
-            pending.enqueue({
-              type: 'deleteTrash',
-              description: `${t('pending.type_deleteTrash')}: ${file.name}`,
-              username: auth.username,
-              apiMethod: 'delete',
-              apiUrl: `/file/trash/${file._trashId}`,
-              apiData: null,
-            })
-          }
         }
       }
     } else {
       if (!await showConfirm(t('dialog.confirm_delete', { n: count }))) return
       const promises = selectedFiles.value.map(path => {
-        const name = path.replace(/\/$/, '').split('/').pop()
-        return ops.runSSEOperation('/file/delete', null, 'delete', `Delete ${name}`, {
-          method: 'DELETE',
-          params: { path },
-        })
+        return ws.request('file.delete', { path })
       })
       await Promise.all(promises)
     }
@@ -559,20 +534,9 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       const file = getFileByPath(path)
       if (!file?._trashId) continue
       try {
-        await api.post('/file/trash/restore', { id: file._trashId })
+        await ws.request('trash.restore', { id: file._trashId })
       } catch (e) {
         console.error('Restore failed:', e)
-        const pending = usePendingOpsStore()
-        if (pending.isQueueableError(e)) {
-          pending.enqueue({
-            type: 'restore',
-            description: `${t('pending.type_restore')}: ${file.name}`,
-            username: auth.username,
-            apiMethod: 'post',
-            apiUrl: '/file/trash/restore',
-            apiData: { id: file._trashId },
-          })
-        }
       }
     }
     selectedFiles.value = []
@@ -582,9 +546,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   async function emptyTrash() {
     if (!await showConfirm(t('dialog.confirm_empty_trash'))) return
     try {
-      await ops.runSSEOperation('/file/trash', null, 'delete', t('menu.empty_trash'), {
-        method: 'DELETE',
-      })
+      await ws.request('trash.clear')
     } catch (e) {
       console.error('Empty trash failed:', e)
     }
@@ -835,7 +797,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     try {
       const newContent = state.content
       const newBytes = new TextEncoder().encode(newContent)
-      await api.put('/file/content/diff', {
+      await ws.request('file.patchContent', {
         path: state.file.path,
         base_size: state.baseSize,
         edits: [{ offset: 0, delete: state.baseSize, insert: newContent }],
@@ -845,22 +807,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       state.dirty = false
     } catch (e) {
       console.error('Save failed:', e)
-      const pending = usePendingOpsStore()
-      if (pending.isQueueableError(e)) {
-        const fileName = state.file.path.split('/').pop()
-        pending.enqueue({
-          type: 'saveViewer',
-          description: `${t('pending.type_saveViewer')}: ${fileName}`,
-          username: auth.username,
-          apiMethod: 'put',
-          apiUrl: '/file/content/diff',
-          apiData: {
-            path: state.file.path,
-            base_size: state.baseSize,
-            edits: [{ offset: 0, delete: state.baseSize, insert: state.content }],
-          },
-        })
-      }
     } finally {
       state.saving = false
     }
@@ -871,11 +817,11 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     if (state) {
       if (state.openedAt) {
         const duration = Date.now() - state.openedAt
-        navigator.sendBeacon(`${API_BASE}/audit`, JSON.stringify({
+        ws.request('audit.preview', {
           path: state.file.path,
           duration_ms: duration,
           type: state.type,
-        }))
+        }).catch(() => {})
       }
       if (state.url && state.url.startsWith('blob:')) {
         URL.revokeObjectURL(state.url)
@@ -894,6 +840,52 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       console.error('Download failed:', e)
     }
   }
+
+  // Listen for task updates — update processing files in file list with progress/phase
+  ws.on('task.update', (data) => {
+    if (!data.task_id) return
+    for (const tab of tabs.value) {
+      for (const file of tab.files) {
+        if (file.job_id === data.task_id) {
+          file.job_progress = data.progress
+          file.job_phase = data.phase
+          file.status = data.status === 'completed' ? 'ready' : file.status
+        }
+      }
+    }
+  })
+
+  // Listen for directory change push events
+  ws.on('dir.changed', ({ path }) => {
+    // Invalidate cache for this directory
+    cache.delete(path)
+    // Refresh all tabs viewing this directory
+    for (const tab of tabs.value) {
+      if (tab.path === path) {
+        loadFilesForTab(tab, path)
+      }
+    }
+  })
+
+  // Load files directly into a specific tab (works for any tab, not just active)
+  async function loadFilesForTab(tab, path) {
+    try {
+      const data = await fetchFiles(path)
+      if (data) {
+        tab.files = data
+        cache.set(path, { data, timestamp: Date.now() })
+      }
+    } catch { /* ignore refresh errors */ }
+  }
+
+  // Re-subscribe directories after WS reconnection
+  ws.onReconnect(() => {
+    for (const [, subPath] of tabSubs) {
+      if (subPath) {
+        ws.request('subscribe.directory', { path: subPath }).catch(() => {})
+      }
+    }
+  })
 
   // Initialize
   function init() {

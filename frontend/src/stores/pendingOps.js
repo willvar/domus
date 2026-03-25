@@ -106,13 +106,15 @@ export const usePendingOpsStore = defineStore('pendingOps', () => {
   async function retrySSE(op) {
     const { useOperationsStore } = await import('./operations')
     const opsStore = useOperationsStore()
-    await opsStore.runSSEOperation(
-      op.sseUrl,
-      op.sseBody,
-      op.type,
-      op.description,
-      { ...op.sseOptions, _isRetry: true },
-    )
+    // Map old SSE url/body to WS action/data
+    const actionMap = {
+      '/file/copy': 'file.copy',
+      '/file/move': 'file.move',
+      '/file/delete': 'file.delete',
+      '/file/trash': 'trash.clear',
+    }
+    const action = actionMap[op.sseUrl] || op.sseUrl
+    await opsStore.runOperation(action, op.sseBody || {}, op.type, op.description)
   }
 
   async function discard(id) {

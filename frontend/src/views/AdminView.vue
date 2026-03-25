@@ -2,13 +2,14 @@
 import { ref, computed, watch, onMounted, h } from 'vue'
 import { NDataTable, NButton, NForm, NFormItem, NInput, NSelect, NCheckbox, NSpace, NModal, useMessage } from 'naive-ui'
 import { useRouter } from 'vue-router'
-import api from '../composables/useApi'
+import { useWebSocket } from '../composables/useWebSocket'
 import { useI18n } from '../composables/useI18n'
 import { showPrompt, showConfirm } from '../composables/useNativeDialog'
 import { PERM_READ, PERM_UPLOAD, PERM_EDIT, PERM_DELETE } from '../stores/auth'
 import dayjs from 'dayjs'
 
 const router = useRouter()
+const ws = useWebSocket()
 const { t, te } = useI18n()
 const message = useMessage()
 
@@ -22,7 +23,7 @@ const defaultPerms = { admin: 15, user: 15 }
 const newUser = ref({ username: '', password: '', role: 'user', permissions: 15 })
 
 const roleOptions = [
-  { label: 'Admin', value: 'admin' },
+  { label: 'Root', value: 'root' },
   { label: 'User', value: 'user' },
 ]
 
@@ -106,8 +107,8 @@ function openEdit(user) {
 async function loadUsers() {
   loading.value = true
   try {
-    const res = await api.get('/audit/user')
-    users.value = Array.isArray(res.data) ? res.data : []
+    const data = await ws.request('admin.listUsers')
+    users.value = Array.isArray(data) ? data : []
   } catch {
     message.error('Failed to load users')
   } finally {
@@ -117,20 +118,21 @@ async function loadUsers() {
 
 async function createUser() {
   try {
-    await api.post('/audit/user', newUser.value)
+    await ws.request('admin.createUser', newUser.value)
     message.success(t('admin.user_created'))
     showCreate.value = false
     newUser.value = { username: '', password: '', role: 'user', permissions: 15 }
     await loadUsers()
   } catch (e) {
-    message.error(te(e))
+    message.error(e.error || 'Failed')
   }
 }
 
 async function saveEdit() {
   if (!editingUser.value) return
   try {
-    await api.put(`/audit/user/${editingUser.value.id}`, {
+    await ws.request('admin.updateUser', {
+      id: editingUser.value.id,
       role: editingUser.value.role,
       permissions: editingUser.value.permissions,
     })
@@ -139,7 +141,7 @@ async function saveEdit() {
     editingUser.value = null
     await loadUsers()
   } catch (e) {
-    message.error(te(e))
+    message.error(e.error || 'Failed')
   }
 }
 
@@ -147,7 +149,7 @@ async function resetPassword(user) {
   const password = await showPrompt(t('admin.new_password', { name: user.username }))
   if (!password) return
   try {
-    await api.put(`/audit/user/${user.id}`, { password })
+    await ws.request('admin.updateUser', { id: user.id, password })
     message.success(t('admin.pwd_updated'))
   } catch {
     message.error('Failed to reset password')
@@ -157,18 +159,18 @@ async function resetPassword(user) {
 async function deleteUser(user) {
   if (!await showConfirm(t('admin.confirm_delete', { name: user.username }))) return
   try {
-    await api.delete(`/audit/user/${user.id}`)
+    await ws.request('admin.deleteUser', { id: user.id })
     message.success(t('admin.user_deleted'))
     await loadUsers()
   } catch (e) {
-    message.error(te(e))
+    message.error(e.error || 'Failed')
   }
 }
 
 async function resetOTP(user) {
   if (!await showConfirm(t('admin.confirm_reset_otp', { name: user.username }))) return
   try {
-    await api.delete(`/audit/user/${user.id}/otp`)
+    await ws.request('admin.resetUserOTP', { id: user.id })
     message.success(t('admin.otp_reset'))
     await loadUsers()
   } catch {
@@ -179,7 +181,7 @@ async function resetOTP(user) {
 async function resetEmail(user) {
   if (!await showConfirm(t('admin.confirm_reset_email', { name: user.username }))) return
   try {
-    await api.delete(`/audit/user/${user.id}/email`)
+    await ws.request('admin.resetUserEmail', { id: user.id })
     message.success(t('admin.email_reset'))
     await loadUsers()
   } catch {
