@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 
 	"zephyr/internal/auth"
 	"zephyr/internal/model"
@@ -65,7 +66,20 @@ func (h *Handler) RunThumbnailJob(ctx context.Context, job *model.Job) error {
 			height = probe.Height
 			duration = probe.Duration
 		}
-		return model.UpdateFileThumbnail(job.UserID, params.SourceKey, params.ThumbnailKey, width, height, duration)
+		_ = model.UpdateFileThumbnail(job.UserID, params.SourceKey, params.ThumbnailKey, width, height, duration)
+
+		if h.Hub != nil {
+			parent := parentDirOf(params.SourceKey)
+			if parent != "" {
+				username := params.SourceKey
+				if idx := strings.Index(username, "/"); idx > 0 {
+					username = username[:idx]
+				}
+				appPath := toAppPath(parent, username)
+				h.Hub.PushDirChanged(parent, appPath, "refresh")
+			}
+		}
+		return nil
 	}
 
 	// Phase 1: Download and decrypt source file
@@ -147,6 +161,19 @@ func (h *Handler) RunThumbnailJob(ctx context.Context, job *model.Job) error {
 	// Update file record with thumbnail key and media info
 	_ = model.UpdateFileThumbnail(job.UserID, params.SourceKey, params.ThumbnailKey, width, height, duration)
 	_ = model.UpdateJobResult(job.JobID, `{"ok":true}`)
+
+	// Notify directory subscribers so the file list refreshes with the new thumbnail
+	if h.Hub != nil {
+		parent := parentDirOf(params.SourceKey)
+		if parent != "" {
+			username := params.SourceKey
+			if idx := strings.Index(username, "/"); idx > 0 {
+				username = username[:idx]
+			}
+			appPath := toAppPath(parent, username)
+			h.Hub.PushDirChanged(parent, appPath, "refresh")
+		}
+	}
 
 	return nil
 }

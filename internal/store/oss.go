@@ -49,6 +49,7 @@ type FileStore interface {
 	RenameObject(oldKey, newKey string, isDir bool) error
 	DownloadToFile(key, localPath string) error
 	UploadFromFile(key, localPath string) error
+	UploadFromFileCtx(ctx context.Context, key, localPath string) error
 }
 
 // FileInfo holds metadata for a file or directory
@@ -64,6 +65,10 @@ type FileInfo struct {
 	MediaWidth    int       `json:"media_width,omitempty"`
 	MediaHeight   int       `json:"media_height,omitempty"`
 	MediaDuration float64   `json:"media_duration,omitempty"`
+	Status        string    `json:"status,omitempty"`
+	JobID         string    `json:"job_id,omitempty"`
+	JobProgress   float64   `json:"job_progress,omitempty"`
+	JobPhase      string    `json:"job_phase,omitempty"`
 }
 
 // ListResult holds a paginated directory listing
@@ -464,12 +469,16 @@ func (c *OSSClient) DownloadToFile(key, localPath string) error {
 
 // UploadFromFile uploads a local file to OSS.
 func (c *OSSClient) UploadFromFile(key, localPath string) error {
+	return c.UploadFromFileCtx(c.ctx(), key, localPath)
+}
+
+func (c *OSSClient) UploadFromFileCtx(ctx context.Context, key, localPath string) error {
 	f, err := os.Open(localPath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = f.Close() }()
-	_, err = c.client.PutObject(c.ctx(), &oss.PutObjectRequest{
+	_, err = c.client.PutObject(ctx, &oss.PutObjectRequest{
 		Bucket: oss.Ptr(c.bucketName),
 		Key:    oss.Ptr(key),
 		Body:   f,

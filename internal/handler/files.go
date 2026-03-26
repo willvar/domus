@@ -7,6 +7,7 @@ import (
 	"log"
 	"mime"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 
+	"zephyr/config"
 	"zephyr/internal/auth"
 	"zephyr/internal/middleware"
 	"zephyr/internal/model"
@@ -29,16 +31,38 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 		return err
 	}
 
+	session := c.Locals("session").(*model.Session)
 	records, err := model.ListDirectChildren(resolvedPath)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "list_failed"})
+	}
+
+	// Build uploadID -> task info map for processing files
+	type taskInfo struct {
+		TaskID   string
+		Progress float64
+		Phase    string
+	}
+	uploadTasks := make(map[string]taskInfo)
+	if jobs, err := model.ListActiveUploadJobs(session.UserID); err == nil {
+		for _, j := range jobs {
+			if j.TaskID == "" {
+				continue
+			}
+			var p struct{ UploadID string `json:"upload_id"` }
+			if json.Unmarshal([]byte(j.Params), &p) == nil && p.UploadID != "" {
+				if task, err := model.GetTask(j.TaskID); err == nil {
+					uploadTasks[p.UploadID] = taskInfo{TaskID: task.TaskID, Progress: task.Progress, Phase: task.Phase}
+				}
+			}
+		}
 	}
 
 	files := make([]store.FileInfo, 0, len(records))
 	for _, r := range records {
 		fi := store.FileInfo{
 			Name:          r.Name,
-			Path:          r.Path,
+			Path:          middleware.ToAppPath(r.Path, session.Username),
 			IsDir:         r.IsDir,
 			Size:          r.Size,
 			CreatedAt:     r.CreatedAt,
@@ -47,6 +71,14 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 			MediaWidth:    r.MediaWidth,
 			MediaHeight:   r.MediaHeight,
 			MediaDuration: r.MediaDuration,
+			Status:        r.Status,
+		}
+		if r.Status == "processing" && r.UploadID != "" {
+			if ti, ok := uploadTasks[r.UploadID]; ok {
+				fi.JobID = ti.TaskID
+				fi.JobProgress = ti.Progress
+				fi.JobPhase = ti.Phase
+			}
 		}
 		if r.ThumbnailKey != "" {
 			if url, err := h.Store.GeneratePresignedURL(r.ThumbnailKey, 1*time.Hour); err == nil {
@@ -97,6 +129,15 @@ func (h *Handler) handleRename(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+
+	// Block rename for non-ready files
+	if !body.IsDir {
+		session := c.Locals("session").(*model.Session)
+		if rec, err := model.GetFile(session.UserID, oldResolved); err == nil && rec.Status != "ready" {
+			return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
+		}
+	}
+
 	newResolved, err := middleware.ResolvePath(c, body.NewPath)
 	if err != nil {
 		return err
@@ -145,6 +186,9 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 		srcRecord, err := model.GetFile(session.UserID, srcResolved)
 		if err != nil {
 			return c.Status(404).JSON(fiber.Map{"error": "source_not_found"})
+		}
+		if srcRecord.Status != "ready" {
+			return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
 		}
 		srcSize = srcRecord.Size
 		srcContentHash = srcRecord.ContentHash
@@ -225,6 +269,15 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+
+	// Block move for non-ready files
+	if !body.IsDir {
+		session := c.Locals("session").(*model.Session)
+		if rec, err := model.GetFile(session.UserID, srcResolved); err == nil && rec.Status != "ready" {
+			return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
+		}
+	}
+
 	dstResolved, err := middleware.ResolvePath(c, body.DstPath)
 	if err != nil {
 		return err
@@ -302,6 +355,27 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 
 	session := c.Locals("session").(*model.Session)
 	isDir := strings.HasSuffix(path, "/")
+
+	// For non-ready files: cancel job, delete record, clean temp — no trash needed
+	if !isDir {
+		fileRecord, err := model.GetFile(session.UserID, resolvedPath)
+		if err != nil {
+			return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+		}
+		if fileRecord.Status != "ready" {
+			// Cancel associated oss_upload job if any
+			if fileRecord.UploadID != "" {
+				if job, err := model.FindActiveJobByParam("upload", fileRecord.UploadID); err == nil {
+					h.Dispatcher.Cancel(job.JobID)
+				}
+				tempDir := filepath.Join(config.TempDir, "upload", fileRecord.UploadID)
+				_ = os.RemoveAll(tempDir)
+			}
+			_ = model.DeleteFile(session.UserID, resolvedPath)
+			h.Audit.LogFromCtx(c, "file_delete", path, "", "success", 0)
+			return c.JSON(fiber.Map{"ok": true})
+		}
+	}
 
 	// Calculate size from DB for quota update
 	var totalSize int64
@@ -412,8 +486,14 @@ func (h *Handler) handleDownload(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
 	}
 
-	if _, err := middleware.ResolvePath(c, path); err != nil {
+	resolvedPath, err := middleware.ResolvePath(c, path)
+	if err != nil {
 		return err
+	}
+
+	session := c.Locals("session").(*model.Session)
+	if rec, err := model.GetFile(session.UserID, resolvedPath); err == nil && rec.Status != "ready" {
+		return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
 	}
 
 	h.Audit.LogFromCtx(c, "file_download", path, "", "success", 0)
@@ -491,7 +571,7 @@ func (h *Handler) handleRawFile(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	key, err := h.getFileEncryptionKey(session, resolvedPath)
+	key, err := h.getFileEncryptionKey(session)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
@@ -511,6 +591,9 @@ func (h *Handler) handleRawFile(c *fiber.Ctx) error {
 	var fileRecord model.FileRecord
 	if err := h.DB.Where("path = ?", resolvedPath).First(&fileRecord).Error; err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	}
+	if fileRecord.Status != "ready" {
+		return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
 	}
 	plaintextSize := fileRecord.Size
 

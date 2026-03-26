@@ -43,7 +43,7 @@ func (h *Handler) handleJobDispatch(c *fiber.Ctx) error {
 	switch peek.Type {
 	case "transcode":
 		session := c.Locals("session").(*model.Session)
-		if session.Role != "admin" && session.Permissions&model.PermEdit != model.PermEdit {
+		if session.Role != "root" && session.Permissions&model.PermEdit != model.PermEdit {
 			return c.Status(403).JSON(fiber.Map{"error": "forbidden"})
 		}
 		return h.handleTranscodeStart(c)
@@ -81,7 +81,7 @@ func (h *Handler) handleJobStatus(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "job_not_found"})
 	}
-	if job.UserID != session.UserID && session.Role != "admin" {
+	if job.UserID != session.UserID && session.Role != "root" {
 		return c.Status(403).JSON(fiber.Map{"error": "access_denied"})
 	}
 
@@ -130,7 +130,7 @@ func (h *Handler) handleCancelJob(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "job_not_found"})
 	}
-	if job.UserID != session.UserID && session.Role != "admin" {
+	if job.UserID != session.UserID && session.Role != "root" {
 		return c.Status(403).JSON(fiber.Map{"error": "access_denied"})
 	}
 

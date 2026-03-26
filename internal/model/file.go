@@ -21,8 +21,13 @@ type FileRecord struct {
 	MediaWidth    int       `gorm:"not null;default:0" json:"-"`
 	MediaHeight   int       `gorm:"not null;default:0" json:"-"`
 	MediaDuration float64   `gorm:"not null;default:0" json:"-"`
-	CreatedAt     time.Time `json:"created_at"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	// Upload-related fields
+	Status         string `gorm:"not null;default:'ready';index" json:"status"`
+	UploadID       string `gorm:"default:'';index" json:"-"`
+	ChunkSize      int    `gorm:"not null;default:0" json:"-"`
+	CompletedParts string `gorm:"default:''" json:"-"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 func (FileRecord) TableName() string { return "files" }
@@ -38,22 +43,6 @@ type TrashItem struct {
 }
 
 func (TrashItem) TableName() string { return "trash" }
-
-type UploadRecord struct {
-	ID             int64     `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID         string    `gorm:"not null;index" json:"user_id"`
-	UploadID       string    `gorm:"not null" json:"upload_id"`
-	OSSKey         string    `gorm:"not null" json:"oss_key"`
-	FileName       string    `gorm:"not null" json:"file_name"`
-	FileSize       int64     `gorm:"not null" json:"file_size"`
-	ChunkSize      int       `gorm:"not null" json:"chunk_size"`
-	CompletedParts string    `gorm:"default:'[]'" json:"completed_parts"`
-	Status         string    `gorm:"not null;default:active" json:"status"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
-}
-
-func (UploadRecord) TableName() string { return "uploads" }
 
 type Bookmark struct {
 	ID        int64  `gorm:"primaryKey;autoIncrement" json:"id"`
@@ -92,6 +81,7 @@ func UpsertFile(userID string, path, name string, isDir bool, size int64, conten
 		"is_dir":       isDir,
 		"size":         size,
 		"content_type": contentType,
+		"status":       "ready",
 		"updated_at":   time.Now(),
 	}
 	if contentHash != "" {
@@ -153,10 +143,19 @@ func parentOf(path string) string {
 }
 
 // ListDirectChildren returns direct children (files and dirs) under a parent path.
-// Uses B-tree index on the parent column for O(log n) lookup.
+// Returns files in all visible statuses (ready, uploading, processing). Failed files are hidden.
 func ListDirectChildren(parent string) ([]FileRecord, error) {
 	var records []FileRecord
-	err := db.Where("parent = ?", parent).Order("is_dir DESC, name ASC").Find(&records).Error
+	err := db.Where("parent = ? AND status != ?", parent, "deleted").
+		Order("is_dir DESC, name ASC").Find(&records).Error
+	return records, err
+}
+
+// ListAllChildren returns all direct children under a parent path regardless of status.
+// Used for conflict detection during uploads where we need to see uploading/processing files too.
+func ListAllChildren(parent string) ([]FileRecord, error) {
+	var records []FileRecord
+	err := db.Where("parent = ?", parent).Find(&records).Error
 	return records, err
 }
 
@@ -214,46 +213,48 @@ func ClearTrash(userID string) ([]TrashItem, error) {
 	return items, nil
 }
 
-// Upload record operations
+// Upload-related operations (merged into FileRecord)
 
-func CreateUploadRecord(userID string, uploadID, ossKey, fileName string, fileSize int64, chunkSize int) error {
-	return db.Create(&UploadRecord{
+func CreateUploadFile(userID, uploadID, path, name string, fileSize int64, chunkSize int) error {
+	return db.Create(&FileRecord{
 		UserID:    userID,
+		Path:      path,
+		Parent:    parentOf(path),
+		Name:      name,
+		Size:      fileSize,
+		Status:    "uploading",
 		UploadID:  uploadID,
-		OSSKey:    ossKey,
-		FileName:  fileName,
-		FileSize:  fileSize,
 		ChunkSize: chunkSize,
 	}).Error
 }
 
-func GetUploadRecord(uploadID string) (*UploadRecord, error) {
-	r := &UploadRecord{}
+func GetUploadFile(uploadID string) (*FileRecord, error) {
+	r := &FileRecord{}
 	if err := db.Where("upload_id = ?", uploadID).First(r).Error; err != nil {
 		return nil, err
 	}
 	return r, nil
 }
 
-func UpdateUploadParts(uploadID, completedParts string) error {
-	return db.Model(&UploadRecord{}).Where("upload_id = ?", uploadID).Updates(map[string]interface{}{
+func UpdateUploadFileParts(uploadID, completedParts string) error {
+	return db.Model(&FileRecord{}).Where("upload_id = ?", uploadID).Updates(map[string]interface{}{
 		"completed_parts": completedParts,
 		"updated_at":      time.Now(),
 	}).Error
 }
 
-func UpdateUploadStatus(uploadID, status string) error {
-	return db.Model(&UploadRecord{}).Where("upload_id = ?", uploadID).Updates(map[string]interface{}{
+func UpdateFileStatus(uploadID, status string) error {
+	return db.Model(&FileRecord{}).Where("upload_id = ?", uploadID).Updates(map[string]interface{}{
 		"status":     status,
 		"updated_at": time.Now(),
 	}).Error
 }
 
-// GetStaleUploads returns uploads that are still 'active' but haven't been updated within the given duration.
-func GetStaleUploads(staleAfter time.Duration) ([]UploadRecord, error) {
-	var records []UploadRecord
+// GetStaleUploadFiles returns files still in "uploading" status that haven't been updated within the given duration.
+func GetStaleUploadFiles(staleAfter time.Duration) ([]FileRecord, error) {
+	var records []FileRecord
 	cutoff := time.Now().Add(-staleAfter)
-	if err := db.Where("status = ? AND updated_at < ?", "active", cutoff).Find(&records).Error; err != nil {
+	if err := db.Where("status = ? AND updated_at < ?", "uploading", cutoff).Find(&records).Error; err != nil {
 		return nil, err
 	}
 	return records, nil

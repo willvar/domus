@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -24,16 +25,31 @@ import (
 	"zephyr/internal/store"
 )
 
-// handleUploadDispatch routes POST /file/upload to init or complete based on upload_id presence.
+// OSSUploadParams holds parameters for the async oss_upload job.
+type OSSUploadParams struct {
+	UploadID string `json:"upload_id"`
+	OSSKey   string `json:"oss_key"`
+	FileName string `json:"file_name"`
+	FileSize int64  `json:"file_size"`
+	UserID   string `json:"user_id"`
+	Username string `json:"username"`
+	TempDir  string `json:"temp_dir"`
+}
+
+// handleUploadDispatch routes POST /file/upload to init, complete, or conflict check.
 func (h *Handler) handleUploadDispatch(c *fiber.Ctx) error {
 	var peek struct {
-		UploadID string `json:"upload_id"`
+		UploadID string   `json:"upload_id"`
+		Names    []string `json:"names"`
 	}
 	if err := c.BodyParser(&peek); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
 	}
 	if peek.UploadID != "" {
 		return h.handleUploadComplete(c)
+	}
+	if len(peek.Names) > 0 {
+		return h.handleUploadConflictCheck(c)
 	}
 	return h.handleUploadInit(c)
 }
@@ -81,6 +97,49 @@ func splitFileName(name string) (string, string) {
 	return name[:dot], name[dot:]
 }
 
+// handleUploadConflictCheck checks which files already exist at the target path.
+func (h *Handler) handleUploadConflictCheck(c *fiber.Ctx) error {
+	var body struct {
+		Path  string   `json:"path"`
+		Names []string `json:"names"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	}
+
+	session := c.Locals("session").(*model.Session)
+	dirPath := body.Path
+	if dirPath != "" && !strings.HasSuffix(dirPath, "/") {
+		dirPath += "/"
+	}
+
+	resolvedDir, err := middleware.ResolvePath(c, dirPath)
+	if err != nil {
+		return err
+	}
+
+	allFiles, _ := model.ListAllChildren(resolvedDir)
+	existingByName := make(map[string]*model.FileRecord, len(allFiles))
+	for i := range allFiles {
+		existingByName[allFiles[i].Name] = &allFiles[i]
+	}
+
+	var conflicts []fiber.Map
+	for _, name := range body.Names {
+		if existing, ok := existingByName[name]; ok {
+			conflicts = append(conflicts, fiber.Map{
+				"name":          existing.Name,
+				"size":          existing.Size,
+				"is_dir":        existing.IsDir,
+				"last_modified": existing.UpdatedAt,
+			})
+		}
+	}
+
+	_ = session // used by ResolvePath via locals
+	return c.JSON(fiber.Map{"conflicts": conflicts})
+}
+
 func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 	var body struct {
 		Path             string `json:"path"`
@@ -113,34 +172,24 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 		return err
 	}
 
-	// Check if file already exists
-	existingInfo, err := h.Store.GetObjectInfo(resolvedPath)
-	if err == nil && existingInfo != nil {
+	// Check if file already exists (in DB, covers all statuses: uploading/processing/ready)
+	existing, err := model.GetFile(session.UserID, resolvedPath)
+	if err == nil && existing != nil {
 		// File exists — act based on strategy
 		switch body.ConflictStrategy {
 		case "replace":
-			// Proceed with overwrite — no action needed
+			// Delete the existing record so the new upload can take its place
+			_ = model.DeleteFile(session.UserID, resolvedPath)
 		case "rename":
-			// Resolve the directory path for listing
+			// Collect existing names from the database (all statuses to avoid collisions)
 			resolvedDir, dirErr := middleware.ResolvePath(c, dirPath)
 			if dirErr != nil {
 				return dirErr
 			}
-			// Collect existing names in the directory
+			allFiles, _ := model.ListAllChildren(resolvedDir)
 			usedNames := make(map[string]struct{})
-			marker := ""
-			for {
-				result, listErr := h.Store.ListObjects(resolvedDir, marker, 1000)
-				if listErr != nil {
-					break
-				}
-				for _, f := range result.Files {
-					usedNames[f.Name] = struct{}{}
-				}
-				if !result.IsTruncated {
-					break
-				}
-				marker = result.NextMarker
+			for _, f := range allFiles {
+				usedNames[f.Name] = struct{}{}
 			}
 			fileName = nextAvailableName(fileName, usedNames)
 			filePath = dirPath + fileName
@@ -153,10 +202,10 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 			return c.Status(409).JSON(fiber.Map{
 				"error": "file_already_exists",
 				"existing": fiber.Map{
-					"name":          existingInfo.Name,
-					"size":          existingInfo.Size,
-					"is_dir":        existingInfo.IsDir,
-					"last_modified": existingInfo.LastModified,
+					"name":          existing.Name,
+					"size":          existing.Size,
+					"is_dir":        existing.IsDir,
+					"last_modified": existing.UpdatedAt,
 				},
 			})
 		}
@@ -170,7 +219,7 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 	}
 
 	chunkSize := int(config.UploadChunkSize)
-	if err := model.CreateUploadRecord(session.UserID, uploadID, resolvedPath, fileName, body.FileSize, chunkSize); err != nil {
+	if err := model.CreateUploadFile(session.UserID, uploadID, resolvedPath, fileName, body.FileSize, chunkSize); err != nil {
 		_ = os.RemoveAll(tempDir)
 		return c.Status(500).JSON(fiber.Map{"error": "record_upload_failed"})
 	}
@@ -180,11 +229,21 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 		totalParts++
 	}
 
+	// Create a user-facing task to track the full upload lifecycle
+	taskID := uuid.New().String()
+	_ = model.CreateTask(session.UserID, taskID, "upload", fileName)
+
+	// Notify directory so file list shows the uploading placeholder
+	if h.Hub != nil {
+		h.notifyParentDir(session.Username, resolvedPath)
+	}
+
 	return c.JSON(fiber.Map{
 		"upload_id":   uploadID,
 		"chunk_size":  chunkSize,
 		"total_parts": totalParts,
 		"file_name":   fileName,
+		"task_id":     taskID,
 	})
 }
 
@@ -200,13 +259,13 @@ func (h *Handler) handleUploadPart(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_part_number"})
 	}
 
-	record, err := model.GetUploadRecord(uploadID)
+	record, err := model.GetUploadFile(uploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}
 
 	session := c.Locals("session").(*model.Session)
-	if record.UserID != session.UserID && session.Role != "admin" {
+	if record.UserID != session.UserID && session.Role != "root" {
 		return c.Status(403).JSON(fiber.Map{"error": "access_denied"})
 	}
 
@@ -249,13 +308,13 @@ func (h *Handler) handleUploadPart(c *fiber.Ctx) error {
 	}
 
 	// Track completed parts
-	freshRecord, err := model.GetUploadRecord(uploadID)
+	freshRecord, err := model.GetUploadFile(uploadID)
 	if err == nil {
 		var parts []int
 		_ = json.Unmarshal([]byte(freshRecord.CompletedParts), &parts)
 		parts = append(parts, pn)
 		partsJSON, _ := json.Marshal(parts)
-		_ = model.UpdateUploadParts(uploadID, string(partsJSON))
+		_ = model.UpdateUploadFileParts(uploadID, string(partsJSON))
 	}
 	mu.Unlock()
 
@@ -268,79 +327,157 @@ func (h *Handler) handleUploadPart(c *fiber.Ctx) error {
 func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 	var body struct {
 		UploadID string `json:"upload_id"`
+		TaskID   string `json:"task_id"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
 	}
 
-	record, err := model.GetUploadRecord(body.UploadID)
+	record, err := model.GetUploadFile(body.UploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}
 
 	session := c.Locals("session").(*model.Session)
-	if record.UserID != session.UserID && session.Role != "admin" {
+	if record.UserID != session.UserID && session.Role != "root" {
 		return c.Status(403).JSON(fiber.Map{"error": "access_denied"})
 	}
 
-	tempDir := filepath.Join(config.TempDir, "upload", body.UploadID)
-	localFile := filepath.Join(tempDir, "data")
+	// Queue for async server-side processing
+	_ = model.UpdateFileStatus(body.UploadID, "processing")
+	uploadMu.Delete(body.UploadID)
 
-	// Compute content hash before encryption
-	contentHash, err := hashFile(localFile)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "hash_failed"})
+	// Create a dispatcher job linked to the user-facing task
+	jobID := uuid.New().String()
+	taskID := body.TaskID
+	params := OSSUploadParams{
+		UploadID: body.UploadID,
+		OSSKey:   record.Path,
+		FileName: record.Name,
+		FileSize: record.Size,
+		UserID:   session.UserID,
+		Username: session.Username,
+		TempDir:  filepath.Join(config.TempDir, "upload", body.UploadID),
+	}
+	paramsJSON, _ := json.Marshal(params)
+	_ = model.CreateJobDirect(&model.Job{
+		UserID: session.UserID,
+		JobID:  jobID,
+		TaskID: taskID,
+		Type:   "oss_upload",
+		Status: "pending",
+		Params: string(paramsJSON),
+	})
+
+	// Update the task phase to indicate server processing has begun
+	if taskID != "" {
+		_ = model.UpdateTaskProgress(taskID, 0, "processing")
 	}
 
-	// Encrypt and upload assembled file to OSS
-	key, err := h.getFileEncryptionKey(session, record.OSSKey)
+	h.Audit.LogFromCtx(c, "file_upload", record.Path, record.Name, "processing", 0)
+	return c.JSON(fiber.Map{"ok": true})
+}
+
+// RunOSSUploadJob encrypts and uploads the assembled file to OSS.
+func (h *Handler) RunOSSUploadJob(ctx context.Context, job *model.Job) error {
+	var params OSSUploadParams
+	if err := json.Unmarshal([]byte(job.Params), &params); err != nil {
+		return fmt.Errorf("parse params: %w", err)
+	}
+
+	localFile := filepath.Join(params.TempDir, "data")
+
+	// Hashing
+	_ = model.UpdateJobProgress(job.JobID, 0.1, "hashing")
+	contentHash, err := hashFile(localFile)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "encryption_failed"})
+		_ = model.UpdateFileStatus(params.UploadID, "failed")
+		return fmt.Errorf("hash file: %w", err)
+	}
+
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+
+	// Encrypting
+	_ = model.UpdateJobProgress(job.JobID, 0.3, "encrypting")
+	key, err := auth.DeriveKey(h.Config.Server.EncryptionSecret, params.UserID)
+	if err != nil {
+		_ = model.UpdateFileStatus(params.UploadID, "failed")
+		return fmt.Errorf("derive key: %w", err)
 	}
 	encFile := localFile + ".enc"
 	if err := auth.EncryptFile(key, localFile, encFile); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "encryption_failed"})
+		_ = model.UpdateFileStatus(params.UploadID, "failed")
+		return fmt.Errorf("encrypt: %w", err)
 	}
 	defer func() { _ = os.Remove(encFile) }()
-	if err := h.Store.UploadFromFile(record.OSSKey, encFile); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "upload_storage_failed"})
+
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 
-	_ = model.UpdateUploadStatus(body.UploadID, "completed")
-	uploadMu.Delete(body.UploadID)
+	// Transferring to OSS
+	_ = model.UpdateJobProgress(job.JobID, 0.5, "transferring")
+	if err := h.Store.UploadFromFileCtx(ctx, params.OSSKey, encFile); err != nil {
+		if ctx.Err() != nil {
+			_ = h.Store.DeleteObject(params.OSSKey)
+			_ = os.RemoveAll(params.TempDir)
+			return ctx.Err()
+		}
+		_ = model.UpdateFileStatus(params.UploadID, "failed")
+		return fmt.Errorf("upload to oss: %w", err)
+	}
 
-	// Get actual file size
-	fileSize := record.FileSize
+	// Upload succeeded, but check if file record was deleted during transfer
+	if _, err := model.GetUploadFile(params.UploadID); err != nil {
+		_ = h.Store.DeleteObject(params.OSSKey)
+		_ = os.RemoveAll(params.TempDir)
+		return fmt.Errorf("file record deleted during upload")
+	}
+
+	// Finalize file record
+	fileSize := params.FileSize
 	if fileSize <= 0 {
 		if stat, err := os.Stat(localFile); err == nil {
 			fileSize = stat.Size()
 		}
 	}
-
-	// Record file metadata
-	ct := mime.TypeByExtension(filepath.Ext(record.FileName))
-	_ = model.UpsertFile(session.UserID, record.OSSKey, record.FileName, false, fileSize, ct, contentHash)
+	ct := mime.TypeByExtension(filepath.Ext(params.FileName))
+	_ = model.UpsertFile(params.UserID, params.OSSKey, params.FileName, false, fileSize, ct, contentHash)
+	_ = model.UpdateFileStatus(params.UploadID, "ready")
 
 	// Create thumbnail job for images/videos
-	if mediaType := service.DetectMediaType(record.FileName); mediaType == "image" || mediaType == "video" {
-		thumbKey := fmt.Sprintf("%s/.thumbnails/%s_%d.webp", session.Username, contentHash, fileSize)
+	if mediaType := service.DetectMediaType(params.FileName); mediaType == "image" || mediaType == "video" {
+		thumbKey := fmt.Sprintf("%s/.thumbnails/%s_%d.webp", params.Username, contentHash, fileSize)
 		thumbJobID := uuid.New().String()
-		params := ThumbnailParams{
-			SourceKey:    record.OSSKey,
+		thumbParams := ThumbnailParams{
+			SourceKey:    params.OSSKey,
 			ThumbnailKey: thumbKey,
-			FileName:     record.FileName,
+			FileName:     params.FileName,
 			MediaType:    mediaType,
 			TempDir:      filepath.Join(config.TempDir, "thumbnail", thumbJobID),
 		}
-		paramsJSON, _ := json.Marshal(params)
-		_, _ = model.CreateJob(session.UserID, thumbJobID, "thumbnail", string(paramsJSON))
+		thumbParamsJSON, _ := json.Marshal(thumbParams)
+		_, _ = model.CreateJob(params.UserID, thumbJobID, "thumbnail", string(thumbParamsJSON))
 	}
 
 	// Clean up temp files
-	_ = os.RemoveAll(tempDir)
+	_ = os.RemoveAll(params.TempDir)
 
-	h.Audit.LogFromCtx(c, "file_upload", record.OSSKey, record.FileName, "success", 0)
-	return c.JSON(fiber.Map{"ok": true})
+	resultJSON, _ := json.Marshal(map[string]string{"oss_key": params.OSSKey})
+	_ = model.UpdateJobResult(job.JobID, string(resultJSON))
+
+	// Notify directory subscribers about the new file
+	if h.Hub != nil {
+		parent := parentDirOf(params.OSSKey)
+		if parent != "" {
+			appPath := toAppPath(parent, params.Username)
+			h.Hub.PushDirChanged(parent, appPath, "refresh")
+		}
+	}
+
+	return nil
 }
 
 func (h *Handler) handleUploadAbort(c *fiber.Ctx) error {
@@ -349,13 +486,13 @@ func (h *Handler) handleUploadAbort(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "upload_id required"})
 	}
 
-	record, err := model.GetUploadRecord(uploadID)
+	record, err := model.GetUploadFile(uploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}
 
 	session := c.Locals("session").(*model.Session)
-	if record.UserID != session.UserID && session.Role != "admin" {
+	if record.UserID != session.UserID && session.Role != "root" {
 		return c.Status(403).JSON(fiber.Map{"error": "access_denied"})
 	}
 
@@ -363,7 +500,8 @@ func (h *Handler) handleUploadAbort(c *fiber.Ctx) error {
 	tempDir := filepath.Join(config.TempDir, "upload", uploadID)
 	_ = os.RemoveAll(tempDir)
 
-	_ = model.UpdateUploadStatus(uploadID, "aborted")
+	// Delete the file record (it was only a placeholder)
+	_ = model.DeleteFile(session.UserID, record.Path)
 	uploadMu.Delete(uploadID)
 
 	return c.JSON(fiber.Map{"ok": true})
@@ -375,13 +513,13 @@ func (h *Handler) handleUploadStatus(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "upload_id required"})
 	}
 
-	record, err := model.GetUploadRecord(uploadID)
+	record, err := model.GetUploadFile(uploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}
 
 	session := c.Locals("session").(*model.Session)
-	if record.UserID != session.UserID && session.Role != "admin" {
+	if record.UserID != session.UserID && session.Role != "root" {
 		return c.Status(403).JSON(fiber.Map{"error": "access_denied"})
 	}
 
@@ -402,8 +540,8 @@ func (h *Handler) handleUploadStatus(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"upload_id":  record.UploadID,
-		"file_name":  record.FileName,
-		"file_size":  record.FileSize,
+		"file_name":  record.Name,
+		"file_size":  record.Size,
 		"chunk_size": record.ChunkSize,
 		"status":     record.Status,
 		"parts":      parts,

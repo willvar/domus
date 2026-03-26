@@ -24,6 +24,7 @@ import (
 	"zephyr/internal/model"
 	"zephyr/internal/service"
 	"zephyr/internal/store"
+	"zephyr/internal/ws"
 	"zephyr/shared/bootstrap"
 	"zephyr/shared/logger"
 	"zephyr/shared/stats"
@@ -281,6 +282,14 @@ func runServer(cfg *config.Config, configPath string) {
 	transcoder := service.NewTranscoder(cfg.Transcode)
 	mid := middleware.New(sessions, cfg.Server.SessionSecret)
 
+	// Initialize WebSocket hub
+	hub := ws.NewHub()
+
+	// Wire task update notifications to WebSocket push
+	model.OnTaskUpdate = func(userID, taskID, taskType, name, status string, progress float64, phase string) {
+		hub.PushTaskUpdate(userID, taskID, taskType, name, status, progress, phase)
+	}
+
 	// Initialize handler
 	h := &handler.Handler{
 		Config:     cfg,
@@ -292,12 +301,14 @@ func runServer(cfg *config.Config, configPath string) {
 		Audit:      audit,
 		Challenges: challenges,
 		Mid:        mid,
+		Hub:        hub,
 	}
 
 	// Initialize and start job dispatcher
 	dispatcher := service.NewDispatcher()
 	dispatcher.Register("transcode", cfg.Jobs.TranscodeConcurrency, h.RunTranscodeJob)
 	dispatcher.Register("thumbnail", cfg.Jobs.ThumbnailConcurrency, h.RunThumbnailJob)
+	dispatcher.Register("oss_upload", cfg.Jobs.SystemConcurrency, h.RunOSSUploadJob)
 	dispatcher.Start()
 	defer dispatcher.Stop()
 	h.Dispatcher = dispatcher
@@ -312,15 +323,22 @@ func runServer(cfg *config.Config, configPath string) {
 		}
 	}()
 
-	// Auto-create admin user if no users exist
+	// Auto-create root user if no users exist
 	if count, err := model.UserCount(); err == nil && count == 0 {
 		password := generateRandomPassword()
-		if _, err := model.CreateUser("admin", password, "admin", model.PermAll); err != nil {
-			logger.Fatal("Failed to create admin user: %v", err)
+		user, err := model.CreateUser("root", password, "root", model.PermAll)
+		if err != nil {
+			logger.Fatal("Failed to create root user: %v", err)
 		}
+		// Initialize home directory
+		_ = fileStore.CreateDirectory("root/")
+		_ = fileStore.CreateDirectory("root/home/")
+		_ = fileStore.CreateDirectory("root/home/root/")
+		_ = model.UpsertFile(user.ID, "root/home/", "home", true, 0, "", "")
+		_ = model.UpsertFile(user.ID, "root/home/root/", "root", true, 0, "", "")
 		fmt.Println("========================================")
-		fmt.Println("  Admin user created automatically")
-		fmt.Printf("  Username: admin\n")
+		fmt.Println("  Root user created automatically")
+		fmt.Printf("  Username: root\n")
 		fmt.Printf("  Password: %s\n", password)
 		fmt.Println("  Please change the password after login!")
 		fmt.Println("========================================")
@@ -363,6 +381,8 @@ func runServer(cfg *config.Config, configPath string) {
 	go func() {
 		<-quit
 		logger.Info("Shutting down service...")
+
+		hub.CloseAll()
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -412,10 +432,10 @@ func generateRandomSecret(length int) string {
 	return hex.EncodeToString(b)[:length]
 }
 
-func cleanOrphanUploads(fileStore store.FileStore) {
+func cleanOrphanUploads(_ store.FileStore) {
 	const staleThreshold = 24 * time.Hour
 
-	stale, err := model.GetStaleUploads(staleThreshold)
+	stale, err := model.GetStaleUploadFiles(staleThreshold)
 	if err != nil {
 		logger.Error("[cleanup] Failed to query stale uploads: %v", err)
 		return
@@ -423,8 +443,8 @@ func cleanOrphanUploads(fileStore store.FileStore) {
 	for _, r := range stale {
 		tempDir := filepath.Join(config.TempDir, "upload", r.UploadID)
 		_ = os.RemoveAll(tempDir)
-		_ = model.UpdateUploadStatus(r.UploadID, "aborted")
-		logger.Info("[cleanup] Cleaned stale upload: %s (file: %s)", r.UploadID, r.FileName)
+		_ = model.DeleteFile(r.UserID, r.Path)
+		logger.Info("[cleanup] Cleaned stale upload: %s (file: %s)", r.UploadID, r.Name)
 	}
 }
 

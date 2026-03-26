@@ -114,12 +114,21 @@ func (h *Handler) handleTranscodeStart(c *fiber.Ctx) error {
 	}
 	paramsJSON, _ := json.Marshal(params)
 
-	_, err = model.CreateJob(session.UserID, jobID, "transcode", string(paramsJSON))
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "create_job_failed"})
-	}
+	// Create user-facing task
+	taskID := uuid.New().String()
+	_ = model.CreateTask(session.UserID, taskID, "transcode", originalName)
 
-	return c.JSON(fiber.Map{"job_id": jobID})
+	// Create dispatcher job linked to the task
+	_ = model.CreateJobDirect(&model.Job{
+		UserID: session.UserID,
+		JobID:  jobID,
+		TaskID: taskID,
+		Type:   "transcode",
+		Status: "pending",
+		Params: string(paramsJSON),
+	})
+
+	return c.JSON(fiber.Map{"task_id": taskID})
 }
 
 // RunTranscodeJob is the dispatcher handler for transcode jobs.
@@ -226,6 +235,20 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 	}
 	resultJSON, _ := json.Marshal(result)
 	_ = model.UpdateJobResult(job.JobID, string(resultJSON))
+
+	// Notify directory subscribers about the transcoded file
+	if h.Hub != nil {
+		parent := parentDirOf(params.TargetKey)
+		if parent != "" {
+			// Extract username from OSS key prefix (format: "username/...")
+			username := params.TargetKey
+			if idx := strings.Index(username, "/"); idx > 0 {
+				username = username[:idx]
+			}
+			appPath := toAppPath(parent, username)
+			h.Hub.PushDirChanged(parent, appPath, "refresh")
+		}
+	}
 
 	return nil
 }
