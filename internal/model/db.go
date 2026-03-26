@@ -22,7 +22,7 @@ const (
 // DefaultPermissions returns the default permission bitmask for a role.
 func DefaultPermissions(role string) int64 {
 	switch role {
-	case "admin":
+	case "root":
 		return PermAll
 	case "user":
 		return PermAll
@@ -80,9 +80,12 @@ func InitDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 
-	if err := db.AutoMigrate(&User{}, &TrashItem{}, &UploadRecord{}, &Bookmark{}, &FileRecord{}, &DBSession{}, &Job{}, &AuditLog{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &TrashItem{}, &Bookmark{}, &FileRecord{}, &DBSession{}, &Job{}, &Task{}, &AuditLog{}); err != nil {
 		return nil, fmt.Errorf("auto migrate: %w", err)
 	}
+
+	// One-time migration: drop legacy uploads table (merged into files)
+	db.Exec("DROP TABLE IF EXISTS uploads")
 
 	return db, nil
 }

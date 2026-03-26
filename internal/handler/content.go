@@ -117,7 +117,7 @@ func (h *Handler) handlePatchContent(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	encKey, err := h.getFileEncryptionKey(session, resolvedPath)
+	encKey, err := h.getFileEncryptionKey(session)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}

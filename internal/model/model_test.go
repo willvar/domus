@@ -23,12 +23,11 @@ func setupTestDB(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping test: could not connect to PostgreSQL: %v", err)
 	}
-	if err := db.AutoMigrate(&User{}, &TrashItem{}, &UploadRecord{}, &Bookmark{}, &FileRecord{}, &DBSession{}, &Job{}, &AuditLog{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &TrashItem{}, &Bookmark{}, &FileRecord{}, &DBSession{}, &Job{}, &AuditLog{}); err != nil {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 	db.Exec("DELETE FROM users")
 	db.Exec("DELETE FROM trash")
-	db.Exec("DELETE FROM uploads")
 	db.Exec("DELETE FROM bookmarks")
 	db.Exec("DELETE FROM files")
 	db.Exec("DELETE FROM sessions")
@@ -55,7 +54,7 @@ func TestDefaultPermissions(t *testing.T) {
 		role     string
 		expected int64
 	}{
-		{"admin", PermAll},
+		{"root", PermAll},
 		{"user", PermAll},
 		{"unknown", PermAll},
 	}
@@ -69,14 +68,14 @@ func TestDefaultPermissions(t *testing.T) {
 
 func TestCreateUser(t *testing.T) {
 	setupTestDB(t)
-	user, err := CreateUser("alice", "password123", "admin", PermAll)
+	user, err := CreateUser("alice", "password123", "root", PermAll)
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	if user.Username != "alice" {
 		t.Fatalf("expected alice, got %s", user.Username)
 	}
-	if user.Role != "admin" {
+	if user.Role != "root" {
 		t.Fatalf("expected admin, got %s", user.Role)
 	}
 	if user.PasswordHash == "" {
@@ -123,12 +122,12 @@ func TestGetUserByID(t *testing.T) {
 func TestUpdateUser(t *testing.T) {
 	setupTestDB(t)
 	user, _ := CreateUser("dave", "pass", "user", PermAll)
-	err := UpdateUser(user.ID, "admin", PermRead)
+	err := UpdateUser(user.ID, "root", PermRead)
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	updated, _ := GetUserByID(user.ID)
-	if updated.Role != "admin" {
+	if updated.Role != "root" {
 		t.Fatalf("expected admin, got %s", updated.Role)
 	}
 	if updated.Permissions != PermRead {
@@ -188,7 +187,7 @@ func TestSessionStore_CreateAndGet(t *testing.T) {
 	setupTestDB(t)
 	store := NewSessionStore(db)
 
-	id, err := store.Create("user-uuid-1", "alice", "admin", PermAll)
+	id, err := store.Create("user-uuid-1", "alice", "root", PermAll)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -202,7 +201,7 @@ func TestSessionStore_CreateAndGet(t *testing.T) {
 	if session.Username != "alice" {
 		t.Fatalf("expected username alice, got %s", session.Username)
 	}
-	if session.Role != "admin" {
+	if session.Role != "root" {
 		t.Fatalf("expected role admin, got %s", session.Role)
 	}
 	if session.Permissions != PermAll {
@@ -214,7 +213,7 @@ func TestSessionStore_GetExpired(t *testing.T) {
 	setupTestDB(t)
 	store := NewSessionStore(db)
 
-	id, err := store.Create("user-uuid-1", "alice", "admin", PermAll)
+	id, err := store.Create("user-uuid-1", "alice", "root", PermAll)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -237,7 +236,7 @@ func TestSessionStore_GetNotFound(t *testing.T) {
 func TestSessionStore_Delete(t *testing.T) {
 	setupTestDB(t)
 	store := NewSessionStore(db)
-	id, _ := store.Create("user-uuid-1", "alice", "admin", PermAll)
+	id, _ := store.Create("user-uuid-1", "alice", "root", PermAll)
 	store.Delete(id)
 	session := store.Get(id)
 	if session != nil {
@@ -248,8 +247,8 @@ func TestSessionStore_Delete(t *testing.T) {
 func TestSessionStore_DeleteByUserID(t *testing.T) {
 	setupTestDB(t)
 	store := NewSessionStore(db)
-	id1, _ := store.Create("user-uuid-1", "alice", "admin", PermAll)
-	id2, _ := store.Create("user-uuid-1", "alice", "admin", PermAll)
+	id1, _ := store.Create("user-uuid-1", "alice", "root", PermAll)
+	id2, _ := store.Create("user-uuid-1", "alice", "root", PermAll)
 	id3, _ := store.Create("user-uuid-2", "bob", "user", PermAll)
 	store.DeleteByUserID("user-uuid-1")
 	if store.Get(id1) != nil {
@@ -266,7 +265,7 @@ func TestSessionStore_DeleteByUserID(t *testing.T) {
 func TestCleanExpiredSessions(t *testing.T) {
 	setupTestDB(t)
 	store := NewSessionStore(db)
-	validID, _ := store.Create("user-uuid-1", "alice", "admin", PermAll)
+	validID, _ := store.Create("user-uuid-1", "alice", "root", PermAll)
 	expiredID, _ := store.Create("user-uuid-2", "bob", "user", PermAll)
 	db.Model(&DBSession{}).Where("id = ?", expiredID).Update("expires_at", time.Now().Add(-1*time.Hour))
 	CleanExpiredSessions()

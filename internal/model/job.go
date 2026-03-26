@@ -2,10 +2,30 @@ package model
 
 import "time"
 
+// cascadeToTask propagates a job's progress/status update to its linked Task (if any).
+func cascadeToTask(jobID string) {
+	j, err := GetJobByJobID(jobID)
+	if err != nil || j.TaskID == "" {
+		return
+	}
+	switch j.Status {
+	case "completed":
+		_ = UpdateTaskStatus(j.TaskID, "completed")
+	case "failed":
+		_ = UpdateTaskProgress(j.TaskID, j.Progress, j.Phase)
+		_ = UpdateTaskStatus(j.TaskID, "failed")
+	case "aborted":
+		_ = UpdateTaskStatus(j.TaskID, "cancelled")
+	default:
+		_ = UpdateTaskProgress(j.TaskID, j.Progress, j.Phase)
+	}
+}
+
 type Job struct {
 	ID        int64     `gorm:"primaryKey;autoIncrement" json:"-"`
 	UserID    string    `gorm:"not null;index" json:"-"`
 	JobID     string    `gorm:"uniqueIndex;not null" json:"-"`
+	TaskID    string    `gorm:"default:'';index" json:"-"` // links to user-facing Task (empty for internal jobs)
 	Type      string    `gorm:"not null;index" json:"-"`
 	Status    string    `gorm:"not null;default:pending;index" json:"-"`
 	Progress  float64   `gorm:"not null;default:0" json:"-"`
@@ -35,6 +55,11 @@ func CreateJob(userID string, jobID, jobType, params string) (*Job, error) {
 	return job, nil
 }
 
+// CreateJobDirect inserts a job record with all fields as provided (including custom status).
+func CreateJobDirect(job *Job) error {
+	return db.Create(job).Error
+}
+
 func GetJobByJobID(jobID string) (*Job, error) {
 	j := &Job{}
 	if err := db.Where("job_id = ?", jobID).First(j).Error; err != nil {
@@ -52,9 +77,19 @@ func ListActiveJobs(userID string) ([]Job, error) {
 	return jobs, nil
 }
 
+// ListActiveUploadJobs returns active upload jobs for a user.
+func ListActiveUploadJobs(userID string) ([]Job, error) {
+	var jobs []Job
+	if err := db.Where("user_id = ? AND type = ? AND status IN ?", userID, "upload", []string{"uploading", "pending", "running"}).
+		Find(&jobs).Error; err != nil {
+		return nil, err
+	}
+	return jobs, nil
+}
+
 func ListRecentJobs(userID string) ([]Job, error) {
 	var jobs []Job
-	if err := db.Where("user_id = ? AND type = ?", userID, "transcode").
+	if err := db.Where("user_id = ? AND type IN ?", userID, []string{"transcode", "upload"}).
 		Order("created_at DESC").Limit(50).Find(&jobs).Error; err != nil {
 		return nil, err
 	}
@@ -67,35 +102,51 @@ func DeleteCompletedJobs(userID string) error {
 }
 
 func UpdateJobStatus(jobID, status string) error {
-	return db.Model(&Job{}).Where("job_id = ?", jobID).Updates(map[string]interface{}{
+	err := db.Model(&Job{}).Where("job_id = ?", jobID).Updates(map[string]interface{}{
 		"status":     status,
 		"updated_at": time.Now(),
 	}).Error
+	if err == nil {
+		cascadeToTask(jobID)
+	}
+	return err
 }
 
 func UpdateJobProgress(jobID string, progress float64, phase string) error {
-	return db.Model(&Job{}).Where("job_id = ?", jobID).Updates(map[string]interface{}{
+	err := db.Model(&Job{}).Where("job_id = ?", jobID).Updates(map[string]interface{}{
 		"progress":   progress,
 		"phase":      phase,
 		"updated_at": time.Now(),
 	}).Error
+	if err == nil {
+		cascadeToTask(jobID)
+	}
+	return err
 }
 
 func UpdateJobResult(jobID, result string) error {
-	return db.Model(&Job{}).Where("job_id = ?", jobID).Updates(map[string]interface{}{
+	err := db.Model(&Job{}).Where("job_id = ?", jobID).Updates(map[string]interface{}{
 		"result":     result,
 		"status":     "completed",
 		"progress":   1.0,
 		"updated_at": time.Now(),
 	}).Error
+	if err == nil {
+		cascadeToTask(jobID)
+	}
+	return err
 }
 
 func UpdateJobError(jobID, errorMsg string) error {
-	return db.Model(&Job{}).Where("job_id = ?", jobID).Updates(map[string]interface{}{
+	err := db.Model(&Job{}).Where("job_id = ?", jobID).Updates(map[string]interface{}{
 		"error_msg":  errorMsg,
 		"status":     "failed",
 		"updated_at": time.Now(),
 	}).Error
+	if err == nil {
+		cascadeToTask(jobID)
+	}
+	return err
 }
 
 func ClaimPendingJob(jobType string) (*Job, error) {
@@ -109,6 +160,16 @@ func ClaimPendingJob(jobType string) (*Job, error) {
 	}
 	if result.RowsAffected == 0 {
 		return nil, nil
+	}
+	return j, nil
+}
+
+// FindActiveJobByParam finds an active job whose params contain the given substring.
+func FindActiveJobByParam(jobType, paramSubstr string) (*Job, error) {
+	j := &Job{}
+	err := db.Where("type = ? AND status IN ? AND params LIKE ?", jobType, []string{"uploading", "pending", "running"}, "%"+paramSubstr+"%").First(j).Error
+	if err != nil {
+		return nil, err
 	}
 	return j, nil
 }

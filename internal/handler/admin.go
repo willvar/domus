@@ -37,7 +37,7 @@ func (h *Handler) handleCreateUser(c *fiber.Ctx) error {
 	if body.Role == "" {
 		body.Role = "user"
 	}
-	if body.Role != "admin" && body.Role != "user" {
+	if body.Role != "root" && body.Role != "user" {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_role"})
 	}
 
@@ -54,8 +54,12 @@ func (h *Handler) handleCreateUser(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "create_user_failed"})
 	}
 
-	// Create the user's root directory in OSS (non-fatal, created on first use)
+	// Initialize user's OSS namespace and home directory
 	_ = h.Store.CreateDirectory(user.Username + "/")
+	_ = h.Store.CreateDirectory(user.Username + "/home/")
+	_ = h.Store.CreateDirectory(user.Username + "/home/" + user.Username + "/")
+	_ = model.UpsertFile(user.ID, user.Username+"/home/", "home", true, 0, "", "")
+	_ = model.UpsertFile(user.ID, user.Username+"/home/"+user.Username+"/", user.Username, true, 0, "", "")
 
 	h.Audit.LogFromCtx(c, "user_create", user.Username, body.Role, "success", 0)
 	return c.Status(201).JSON(user)
