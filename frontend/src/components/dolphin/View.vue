@@ -1,6 +1,7 @@
 <script setup>
 import { ref, reactive, computed, h, onUnmounted } from 'vue'
-import { NDataTable, NSpin, NEmpty } from 'naive-ui'
+import BSpin from '../breeze/BSpin.vue'
+import BDataTable from '../breeze/BDataTable.vue'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useUploadStore } from '../../stores/upload'
 import { useAuthStore } from '../../stores/auth'
@@ -252,6 +253,28 @@ function handleBackgroundClick(e) {
 function handleContextMenu(e) {
   openContextMenu(e, null)
 }
+
+function handleSearchResultClick(item) {
+  // Navigate to parent directory
+  if (item.is_dir) {
+    fs.exitSearch()
+    fs.navigate(item.path)
+  } else {
+    fs.exitSearch()
+    fs.navigate(item.parent || '/')
+  }
+}
+
+function handleSearchResultDblClick(item) {
+  fs.exitSearch()
+  if (item.is_dir) {
+    fs.navigate(item.path)
+  } else if (fs.getViewerType(item.name)) {
+    fs.openViewer(item)
+  } else {
+    fs.downloadFile(item.path)
+  }
+}
 </script>
 
 <template>
@@ -266,13 +289,39 @@ function handleContextMenu(e) {
     @contextmenu="handleContextMenu"
     @mousedown="handleRubberBandStart"
   >
-    <NSpin :show="fs.loading" class="file-view-spin">
+    <!-- Search results view -->
+    <template v-if="fs.searchMode">
+      <BSpin :show="fs.searchLoading" class="file-view-spin">
+        <div v-if="fs.searchResults.length === 0 && !fs.searchLoading" class="empty-state">
+          <div class="empty-text">{{ t('search.no_results') }}</div>
+        </div>
+        <div v-else class="search-results">
+          <div
+            v-for="item in fs.searchResults"
+            :key="item.path"
+            class="search-result-item"
+            @click="handleSearchResultClick(item)"
+            @dblclick="handleSearchResultDblClick(item)"
+          >
+            <component :is="getFileIcon(item.name, item.is_dir)" class="search-result-icon" width="24" height="24" />
+            <div class="search-result-info">
+              <div class="search-result-name">{{ item.name }}</div>
+              <div class="search-result-path">{{ item.parent || '/' }}</div>
+            </div>
+            <div class="search-result-rank">{{ Math.round(item.rank * 100) }}%</div>
+          </div>
+        </div>
+      </BSpin>
+    </template>
+
+    <!-- Normal directory view -->
+    <BSpin v-else :show="fs.loading" class="file-view-spin">
       <template v-if="fs.sortedFiles.length === 0 && !fs.loading">
-        <NEmpty :description="t('fileview.empty')" class="empty-state" />
+        <div class="empty-state"><div class="empty-text">{{ t('fileview.empty') }}</div></div>
       </template>
 
       <template v-else-if="fs.viewMode === 'details'">
-        <NDataTable
+        <BDataTable
           :columns="columns"
           :data="fs.sortedFiles"
           :row-key="(row) => row.path"
@@ -281,7 +330,7 @@ function handleContextMenu(e) {
           :bordered="false"
           class="details-table"
           virtual-scroll
-          :max-height="'calc(100vh - 160px)'"
+          max-height="calc(100vh - 160px)"
         />
       </template>
 
@@ -298,7 +347,7 @@ function handleContextMenu(e) {
           />
         </div>
       </template>
-    </NSpin>
+    </BSpin>
 
     <!-- Rubber-band selection rectangle -->
     <div
@@ -360,8 +409,55 @@ function handleContextMenu(e) {
   flex-wrap: nowrap;
   gap: 6px;
 }
+/* Search results */
+.search-results {
+  padding: 4px 0;
+}
+.search-result-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  cursor: default;
+  transition: background var(--transition-fast);
+}
+.search-result-item:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+.search-result-icon {
+  flex-shrink: 0;
+}
+.search-result-info {
+  flex: 1;
+  min-width: 0;
+}
+.search-result-name {
+  font-size: 13px;
+  color: var(--breeze-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-result-path {
+  font-size: 11px;
+  color: var(--breeze-text-disabled);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-result-rank {
+  font-size: 11px;
+  color: var(--breeze-text-secondary);
+  flex-shrink: 0;
+}
+
 .empty-state {
   padding: 60px 20px;
+  text-align: center;
+}
+.empty-text {
+  color: var(--breeze-text-disabled);
+  font-size: 14px;
 }
 .details-table {
   height: 100%;

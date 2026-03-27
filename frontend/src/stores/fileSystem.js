@@ -8,15 +8,14 @@ import { useI18n } from '../composables/useI18n'
 import { ICONS } from '../composables/useFileIcon'
 import { showPrompt, showConfirm } from '../composables/useNativeDialog'
 import { usePendingOpsStore } from './pendingOps'
+import { usePreferences } from '../composables/usePreferences'
 
 const TEXT_CHUNK_SIZE = 256 * 1024 // 256KB — aligns with 4 encryption chunks
-const LARGE_FILE_LIMIT_KEY = 'zephyr_large_file_limit'
-const DEFAULT_LARGE_FILE_LIMIT = 10 * 1024 * 1024 // 10MB
 const NON_CHUNKABLE_TYPES = new Set(['notebook', 'xlsx', 'docx', 'epub', 'archive'])
 
 function getLargeFileLimit() {
-  const saved = localStorage.getItem(LARGE_FILE_LIMIT_KEY)
-  return saved ? Number(saved) : DEFAULT_LARGE_FILE_LIMIT
+  const { prefs } = usePreferences()
+  return prefs.largeFileLimitMB * 1024 * 1024
 }
 
 function formatFileSize(bytes) {
@@ -93,6 +92,11 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const sortOrder = bindActiveTabField('sortOrder', 'asc')
   const searchQuery = bindActiveTabField('searchQuery', '')
 
+  // --- Search state ---
+  const searchMode = ref(false)
+  const searchResults = ref([])
+  const searchLoading = ref(false)
+
   // --- Global (non-tab) state ---
   const clipboard = ref({ items: [], mode: null })
   const iconSize = ref(48)
@@ -109,14 +113,31 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const cache = new Map()
   const CACHE_TTL = 30000
 
+  async function performSearch(query) {
+    if (!query || query.length < 2) return
+    searchMode.value = true
+    searchLoading.value = true
+    try {
+      const res = await ws.request('file.search', { query, limit: 100 })
+      searchResults.value = res.results || []
+    } catch {
+      searchResults.value = []
+    } finally {
+      searchLoading.value = false
+    }
+  }
+
+  function exitSearch() {
+    searchMode.value = false
+    searchResults.value = []
+    searchQuery.value = ''
+  }
+
   // Sorted and filtered files
   const sortedFiles = computed(() => {
-    let items = [...files.value]
+    if (searchMode.value) return searchResults.value
 
-    if (searchQuery.value) {
-      const q = searchQuery.value.toLowerCase()
-      items = items.filter(f => f.name.toLowerCase().includes(q))
-    }
+    let items = [...files.value]
 
     items.sort((a, b) => {
       if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
@@ -245,6 +266,13 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   async function navigate(path, addToHistory = true) {
     path = path || '/'
     if (path !== '/' && !path.endsWith('/')) path += '/'
+
+    // Exit search mode when navigating
+    if (searchMode.value) {
+      searchMode.value = false
+      searchResults.value = []
+      searchQuery.value = ''
+    }
 
     // Unsubscribe old directory for this tab
     const tabId = activeTabId.value
@@ -442,12 +470,18 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const mode = clipboard.value.mode
     const action = mode === 'copy' ? 'file.copy' : 'file.move'
 
-    const promises = clipboard.value.items.map(item => {
-      const dstPath = currentPath.value + item.name + (item.is_dir ? '/' : '')
+    const results = await Promise.allSettled(clipboard.value.items.map(item => {
+      const name = item.is_dir ? item.name.replace(/\/+$/, '') : item.name
+      const dstPath = currentPath.value + name + (item.is_dir ? '/' : '')
       return ws.request(action, { src_path: item.path, dst_path: dstPath, is_dir: item.is_dir })
-    })
+    }))
 
-    await Promise.all(promises)
+    const failed = results.filter(r => r.status === 'rejected')
+    if (failed.length > 0) {
+      const { useMessage } = await import('../composables/useMessage')
+      const msg = useMessage()
+      msg.error(t('paste.partial_failed', { n: failed.length }))
+    }
 
     if (mode === 'cut') {
       clipboard.value = { items: [], mode: null }
@@ -878,12 +912,20 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     } catch { /* ignore refresh errors */ }
   }
 
-  // Re-subscribe directories after WS reconnection
+  // Re-subscribe directories and reload files after WS (re)connection
+  let initialized = false
   ws.onReconnect(() => {
+    // Re-subscribe all tabs
     for (const [, subPath] of tabSubs) {
       if (subPath) {
         ws.request('subscribe.directory', { path: subPath }).catch(() => {})
       }
+    }
+    // On first connect, load files for the initial tab
+    if (!initialized && tabs.value.length > 0) {
+      initialized = true
+      const tab = tabs.value.find(t => t.id === activeTabId.value)
+      if (tab) loadFiles(tab.path)
     }
   })
 
@@ -962,6 +1004,11 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     focusSearch,
     renamingFile,
     searchQuery,
+    searchMode,
+    searchResults,
+    searchLoading,
+    performSearch,
+    exitSearch,
     showInfoPanel,
     showSidebar,
     sortedFiles,
