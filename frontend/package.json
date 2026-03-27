@@ -33,7 +33,6 @@
     "jszip": "^3.10.1",
     "mammoth": "^1.12.0",
     "markdown-it": "^14.1.1",
-    "naive-ui": "^2.44.1",
     "papaparse": "^5.5.3",
     "pinia": "^3.0.4",
     "qrcode": "^1.5.4",

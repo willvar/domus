@@ -3,8 +3,7 @@ import { ref, computed } from 'vue'
 const messages = {
   zh: {
     // App
-    'app.title': 'Dolphin',
-    'app.subtitle': '文件管理器',
+    'app.title': '云舟',
 
     // Login
     'login.title': '登录',
@@ -14,7 +13,7 @@ const messages = {
     'login.username_placeholder': '请输入用户名',
     'login.password_placeholder': '请输入密码',
     'login.required': '请输入用户名和密码',
-    'login.success': '欢迎回来！',
+    'login.success': '欢迎回来，{name}',
     'login.failed': '登录失败',
     'login.password_tab': '密码登录',
     'login.email_tab': '邮箱登录',
@@ -28,6 +27,7 @@ const messages = {
     'login.2fa_hint': '密码验证通过，请完成二次验证',
     'login.2fa_use_email': '使用邮箱验证码',
     'login.2fa_use_otp': '使用 OTP 验证码',
+    'login.welcome_back': '欢迎回来，{name}',
     'login.setup_reminder_title': '安全提醒',
     'login.setup_reminder': '建议绑定邮箱或启用 OTP 以增强账户安全',
     'login.setup_now': '立即设置',
@@ -75,6 +75,7 @@ const messages = {
     'menu.copy': '复制',
     'menu.cut': '剪切',
     'menu.paste': '粘贴',
+    'paste.partial_failed': '{n} 个文件操作失败',
     'menu.rename': '重命名 (F2)',
     'menu.delete': '删除 (Del)',
     'menu.new_folder': '新建文件夹',
@@ -207,7 +208,20 @@ const messages = {
     'admin.otp_enabled': '已启用',
     'admin.confirm_reset_otp': '确定重置 {name} 的 OTP 吗？',
     'admin.confirm_reset_email': '确定清除 {name} 的邮箱绑定吗？',
-    'admin.back_to_files': '返回文件管理器',
+    'admin.back_to_files': '返回',
+
+    // Profile
+    'profile.tab_profile': '个人资料',
+    'profile.account_name': '账户名',
+    'profile.display_name': '显示名',
+    'profile.role': '角色',
+    'profile.storage': '已用空间',
+    'profile.files': '个文件',
+    'profile.name_updated': '显示名已修改',
+    'profile.name_failed': '修改失败',
+    'profile.avatar_updated': '头像已更新',
+    'profile.avatar_failed': '上传失败',
+    'profile.avatar_too_large': '图片不能超过 10MB',
 
     // Account
     'account.security': '账户安全',
@@ -240,6 +254,14 @@ const messages = {
     'account.always_center': '窗口始终居中',
     'account.default_width': '默认宽度',
     'account.default_height': '默认高度',
+
+    // Preferences - Search
+    'prefs.search_title': '搜索',
+    'prefs.index_content': '索引文件内容',
+    'prefs.index_content_hint': '开启后上传的文本文件内容也可被搜索，可能增加上传耗时',
+    'search.results_title': '搜索结果',
+    'search.no_results': '无匹配结果',
+    'search.location': '位置',
 
     // API error keys (backend returns these, frontend maps to localized text)
     'error.invalid_credentials': '用户名或密码错误',
@@ -280,7 +302,7 @@ const messages = {
     'error.invalid_role': '无效的角色',
 
     // Desktop
-    'desktop.open_files': '打开文件管理器',
+    'desktop.open_files': '打开文件',
     'desktop.configure': '配置桌面',
     'desktop.about': '关于',
 
@@ -348,8 +370,7 @@ const messages = {
     'jobs.time_hours_ago': '{n} 小时前',
   },
   en: {
-    'app.title': 'Dolphin',
-    'app.subtitle': 'File Manager',
+    'app.title': 'ZEPHYR',
 
     'login.title': 'Sign In',
     'login.username': 'Username',
@@ -358,7 +379,7 @@ const messages = {
     'login.username_placeholder': 'Enter username',
     'login.password_placeholder': 'Enter password',
     'login.required': 'Please enter username and password',
-    'login.success': 'Welcome back!',
+    'login.success': 'Welcome back, {name}',
     'login.failed': 'Login failed',
     'login.password_tab': 'Password',
     'login.email_tab': 'Email',
@@ -372,6 +393,7 @@ const messages = {
     'login.2fa_hint': 'Password verified. Please complete 2FA.',
     'login.2fa_use_email': 'Use Email Code',
     'login.2fa_use_otp': 'Use OTP Code',
+    'login.welcome_back': 'Welcome back, {name}',
     'login.setup_reminder_title': 'Security Reminder',
     'login.setup_reminder': 'Consider binding an email or enabling OTP for better security',
     'login.setup_now': 'Set up now',
@@ -413,6 +435,7 @@ const messages = {
     'menu.copy': 'Copy',
     'menu.cut': 'Cut',
     'menu.paste': 'Paste',
+    'paste.partial_failed': '{n} file(s) failed',
     'menu.rename': 'Rename (F2)',
     'menu.delete': 'Delete (Del)',
     'menu.new_folder': 'New Folder',
@@ -542,7 +565,19 @@ const messages = {
     'admin.confirm_reset_email': 'Clear email binding for {name}?',
     'admin.back_to_files': 'Back to Files',
 
-    'account.security': 'Account Security',
+    'profile.tab_profile': 'Profile',
+    'profile.account_name': 'Account',
+    'profile.display_name': 'Display Name',
+    'profile.role': 'Role',
+    'profile.storage': 'Storage',
+    'profile.files': 'files',
+    'profile.name_updated': 'Display name updated',
+    'profile.name_failed': 'Update failed',
+    'profile.avatar_updated': 'Avatar updated',
+    'profile.avatar_failed': 'Upload failed',
+    'profile.avatar_too_large': 'Image must be under 10MB',
+
+    'account.security': 'Security',
     'account.preferences': 'Preferences',
     'account.large_file_limit': 'Large file preview limit',
     'account.change_password': 'Change Password',
@@ -572,6 +607,13 @@ const messages = {
     'account.always_center': 'Always center windows',
     'account.default_width': 'Default width',
     'account.default_height': 'Default height',
+
+    'prefs.search_title': 'Search',
+    'prefs.index_content': 'Index file content',
+    'prefs.index_content_hint': 'When enabled, text file contents are indexed for search. May slow uploads.',
+    'search.results_title': 'Search Results',
+    'search.no_results': 'No matches found',
+    'search.location': 'Location',
 
     // API error keys
     'error.invalid_credentials': 'Invalid username or password',

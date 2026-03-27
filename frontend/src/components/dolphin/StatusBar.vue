@@ -1,6 +1,5 @@
 <script setup>
 import { computed } from 'vue'
-import { NSlider } from 'naive-ui'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useUploadStore } from '../../stores/upload'
 import { useI18n } from '../../composables/useI18n'
@@ -42,12 +41,14 @@ const selectionInfo = computed(() => {
     </div>
     <div class="status-right">
       <span class="zoom-label">{{ t('status.zoom') }}:</span>
-      <NSlider
-        v-model:value="fs.iconSize"
+      <input
+        type="range"
+        class="zoom-slider"
+        :value="fs.iconSize"
         :min="32"
         :max="96"
         :step="8"
-        class="zoom-slider"
+        @input="fs.iconSize = +$event.target.value"
       />
     </div>
   </div>
@@ -81,7 +82,35 @@ const selectionInfo = computed(() => {
   gap: var(--gap-sm);
 }
 .zoom-label { white-space: nowrap; }
-.zoom-slider { width: 100px; }
+
+/* ─── Breeze-style range slider ─── */
+.zoom-slider {
+  width: 100px;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--breeze-border, #3b4045);
+  border-radius: 2px;
+  outline: none;
+  cursor: default;
+}
+.zoom-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--breeze-accent, #3daee9);
+  border: none;
+  cursor: default;
+}
+.zoom-slider::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--breeze-accent, #3daee9);
+  border: none;
+  cursor: default;
+}
 
 @media (max-width: 767px) {
   .status-right { display: none; }

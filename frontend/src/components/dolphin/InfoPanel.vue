@@ -1,9 +1,10 @@
 <script setup>
 import { computed } from 'vue'
-import { NDescriptions, NDescriptionsItem } from 'naive-ui'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useI18n } from '../../composables/useI18n'
 import { getFileIcon } from '../../composables/useFileIcon'
+import BDescriptions from '../breeze/BDescriptions.vue'
+import BDescriptionItem from '../breeze/BDescriptionItem.vue'
 import dayjs from 'dayjs'
 
 const fs = useFileSystemStore()
@@ -34,17 +35,17 @@ const iconName = computed(() => {
         <div class="info-icon"><component :is="iconName" width="64" height="64" /></div>
         <div class="info-name">{{ file.name }}</div>
       </div>
-      <NDescriptions :column="1" size="small" label-placement="left" class="info-details">
-        <NDescriptionsItem :label="t('info.type')">
+      <BDescriptions :column="1" size="small" label-placement="left" class="info-details">
+        <BDescriptionItem :label="t('info.type')">
           {{ file.is_dir ? t('info.directory') : (file.content_type || t('info.file')) }}
-        </NDescriptionsItem>
-        <NDescriptionsItem v-if="!file.is_dir" :label="t('info.size')">
+        </BDescriptionItem>
+        <BDescriptionItem v-if="!file.is_dir" :label="t('info.size')">
           {{ formatSize(file.size) }}
-        </NDescriptionsItem>
-        <NDescriptionsItem v-if="file.last_modified" :label="t('info.modified')">
+        </BDescriptionItem>
+        <BDescriptionItem v-if="file.last_modified" :label="t('info.modified')">
           {{ dayjs(file.last_modified).format('YYYY-MM-DD HH:mm:ss') }}
-        </NDescriptionsItem>
-      </NDescriptions>
+        </BDescriptionItem>
+      </BDescriptions>
     </template>
     <template v-else-if="fs.selectedFiles.length > 1">
       <div class="info-preview">
