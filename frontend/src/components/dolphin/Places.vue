@@ -1,6 +1,5 @@
 <script setup>
-import { ref, computed, onMounted, h } from 'vue'
-import { NMenu } from 'naive-ui'
+import { ref, computed, onMounted } from 'vue'
 import IconHome from '~icons/mdi/home-outline'
 import IconTrash from '~icons/mdi/delete-outline'
 import IconFolderOutline from '~icons/mdi/folder-outline'
@@ -22,25 +21,14 @@ onMounted(async () => {
   } catch { /* bookmarks stay empty on error */ }
 })
 
-function icon(comp) {
-  return () => h(comp, {
-    width: 16,
-    height: 16,
-    style: 'margin-right:8px;opacity:0.7;',
-  })
-}
-
-const menuOptions = computed(() => [
-  {
-    label: t('places.title'),
-    key: 'places-header',
-    type: 'group',
-    children: [
-      { label: t('places.home'), key: 'home', icon: icon(IconHome) },
-      { label: t('places.trash'), key: 'trash', icon: icon(IconTrash) },
-    ],
-  },
-])
+const activeKey = computed(() => {
+  if (fs.isTrash) return 'trash'
+  const homePath = `/home/${auth.username}/`
+  if (fs.currentPath === homePath || fs.currentPath === `home/${auth.username}/`) return 'home'
+  const bm = bookmarks.value.find(b => fs.currentPath === b.path)
+  if (bm) return String(bm.id)
+  return null
+})
 
 function handleSelect(key) {
   if (key === 'home') {
@@ -56,19 +44,40 @@ function handleSelect(key) {
 
 <template>
   <div class="places-panel">
-    <NMenu
-      :options="menuOptions"
-      :root-indent="12"
-      :indent="12"
-      @update:value="handleSelect"
-    />
+    <div class="section-header">{{ t('places.title') }}</div>
+    <div class="places-list">
+      <button
+        class="place-item"
+        :class="{ active: activeKey === 'home' }"
+        @click="handleSelect('home')"
+      >
+        <IconHome class="place-icon" width="16" height="16" />
+        <span class="place-label">{{ t('places.home') }}</span>
+      </button>
+      <button
+        class="place-item"
+        :class="{ active: activeKey === 'trash' }"
+        @click="handleSelect('trash')"
+      >
+        <IconTrash class="place-icon" width="16" height="16" />
+        <span class="place-label">{{ t('places.trash') }}</span>
+      </button>
+    </div>
+
     <template v-if="bookmarks.length > 0">
       <div class="section-header">{{ t('places.bookmarks') }}</div>
-      <NMenu
-        :options="bookmarks.map(b => ({ label: b.name, key: String(b.id), icon: icon(IconFolderOutline) }))"
-        :root-indent="12"
-        @update:value="handleSelect"
-      />
+      <div class="places-list">
+        <button
+          v-for="bm in bookmarks"
+          :key="bm.id"
+          class="place-item"
+          :class="{ active: activeKey === String(bm.id) }"
+          @click="handleSelect(String(bm.id))"
+        >
+          <IconFolderOutline class="place-icon" width="16" height="16" />
+          <span class="place-label">{{ bm.name }}</span>
+        </button>
+      </div>
     </template>
   </div>
 </template>
@@ -83,6 +92,7 @@ function handleSelect(key) {
   padding: var(--gap-xs) 0;
   flex-shrink: 0;
 }
+
 .section-header {
   padding: var(--gap-sm) var(--gap-md);
   font-size: var(--font-size-xs);
@@ -90,6 +100,50 @@ function handleSelect(key) {
   text-transform: uppercase;
   letter-spacing: 0.5px;
   font-weight: 600;
+}
+
+.places-list {
+  display: flex;
+  flex-direction: column;
+  padding: 0 6px;
+}
+
+.place-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 8px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--breeze-text-secondary);
+  font-size: 14px;
+  text-align: left;
+  cursor: default;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+.place-item:hover {
+  background: var(--breeze-hover);
+  color: var(--breeze-text);
+}
+.place-item.active {
+  background: var(--breeze-active);
+  color: var(--breeze-accent);
+}
+
+.place-icon {
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+.place-item.active .place-icon {
+  opacity: 1;
+}
+
+.place-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 768px) {
