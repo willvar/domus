@@ -1,9 +1,15 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
-import { NModal, NForm, NFormItem, NSelect, NSwitch, NButton, NSpace, useMessage } from 'naive-ui'
 import { useWebSocket } from '../composables/useWebSocket'
 import { useI18n } from '../composables/useI18n'
+import { useMessage } from '../composables/useMessage'
 import { useJobsStore } from '../stores/jobs'
+import BModal from './breeze/BModal.vue'
+import BForm from './breeze/BForm.vue'
+import BFormItem from './breeze/BFormItem.vue'
+import BSelect from './breeze/BSelect.vue'
+import BSwitch from './breeze/BSwitch.vue'
+import BButton from './breeze/BButton.vue'
 
 const ws = useWebSocket()
 const { t, te } = useI18n()
@@ -122,38 +128,39 @@ defineExpose({ open })
 </script>
 
 <template>
-  <NModal
-    v-model:show="show"
+  <BModal
+    :show="show"
     preset="dialog"
     :title="t('transcode.title')"
-    style="width: 480px; max-width: 95vw"
     @close="close"
+    @mask-click="close"
+    @update:show="v => { if (!v) close() }"
   >
     <div class="transcode-info">
       <span class="file-name">{{ fileName }}</span>
     </div>
 
-    <NForm label-placement="left" label-width="auto" style="margin-top: 12px">
-      <NFormItem :label="t('transcode.preset')">
-        <NSelect v-model:value="preset" :options="presetOptions" />
-      </NFormItem>
-      <NFormItem :label="t('transcode.format')">
-        <NSelect v-model:value="outputFormat" :options="formatOptions" />
-      </NFormItem>
-      <NFormItem :label="t('transcode.replace')">
-        <NSwitch v-model:value="replace" />
-      </NFormItem>
-    </NForm>
+    <BForm label-placement="left" label-width="auto" style="margin-top: 12px">
+      <BFormItem :label="t('transcode.preset')">
+        <BSelect v-model:value="preset" :options="presetOptions" />
+      </BFormItem>
+      <BFormItem :label="t('transcode.format')">
+        <BSelect v-model:value="outputFormat" :options="formatOptions" />
+      </BFormItem>
+      <BFormItem :label="t('transcode.replace')">
+        <BSwitch v-model:value="replace" />
+      </BFormItem>
+    </BForm>
 
     <template #action>
-      <NSpace justify="end">
-        <NButton @click="close">{{ t('dialog.cancel') }}</NButton>
-        <NButton type="primary" :loading="loading" @click="startTranscode">
+      <div style="display:flex;justify-content:flex-end;gap:8px">
+        <BButton @click="close">{{ t('dialog.cancel') }}</BButton>
+        <BButton type="primary" :loading="loading" @click="startTranscode">
           {{ t('transcode.start') }}
-        </NButton>
-      </NSpace>
+        </BButton>
+      </div>
     </template>
-  </NModal>
+  </BModal>
 </template>
 
 <style scoped>

@@ -1,6 +1,7 @@
 <script setup>
 import { shallowRef, ref, computed, watch } from 'vue'
-import { NDataTable, NPagination } from 'naive-ui'
+import BDataTable from '../breeze/BDataTable.vue'
+import BPagination from '../breeze/BPagination.vue'
 import SpreadsheetWorker from './spreadsheet.worker.js?worker'
 
 const PAGE_SIZE = 50
@@ -52,7 +53,7 @@ const columns = computed(() => {
   return s.headers.map((h, i) => ({
     title: h,
     key: String(i),
-    ellipsis: { tooltip: true },
+    ellipsis: true,
     resizable: true,
   }))
 })
@@ -89,7 +90,7 @@ function onSwitchSheet(name) {
       {{ name }}
     </button>
     <div v-if="totalRows > PAGE_SIZE" class="toolbar-pagination">
-      <NPagination
+      <BPagination
         :page="page"
         :page-size="PAGE_SIZE"
         :item-count="totalRows"
@@ -104,12 +105,12 @@ function onSwitchSheet(name) {
       Loading...
     </div>
     <div v-else class="xlsx-table-wrap">
-      <NDataTable
+      <BDataTable
         v-if="columns.length"
         :columns="columns"
         :data="pageRows"
         :row-key="(r) => r._key"
-        :max-height="9999"
+        max-height="9999px"
         virtual-scroll
         size="small"
         striped

@@ -27,10 +27,10 @@ onMounted(async () => {
     })
 
     rendition.themes.default({
-      body: { background: '#1e2226 !important', color: '#bfc5ca !important', 'font-family': "'Noto Sans', sans-serif !important" },
+      body: { background: '#202326 !important', color: '#fcfcfc !important', 'font-family': "'Noto Sans', sans-serif !important" },
       'a, a:link, a:visited': { color: '#3daee9 !important' },
-      'h1, h2, h3, h4, h5, h6': { color: '#ddd !important' },
-      'p, li, td, th, span, div': { color: '#bfc5ca !important' },
+      'h1, h2, h3, h4, h5, h6': { color: '#fcfcfc !important' },
+      'p, li, td, th, span, div': { color: '#fcfcfc !important' },
     })
 
     rendition.display()
@@ -80,7 +80,7 @@ onUnmounted(() => {
 .epub-toc-select:focus { border-color: #3daee9; }
 
 .viewer-body.epub-body {
-  flex: 1; display: flex; min-height: 0; overflow: hidden; background: #1e2226;
+  flex: 1; display: flex; min-height: 0; overflow: hidden; background: #202326;
 }
 .epub-container { width: 100%; height: 100%; }
 </style>

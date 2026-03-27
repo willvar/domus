@@ -1,13 +1,13 @@
 :root {
   /* Breeze Dark color palette — sampled from KDE Dolphin dark mode */
-  --breeze-bg: #1b1e20;
-  --breeze-bg-alt: #1e2226;
-  --breeze-surface: #2a2e32;
+  --breeze-bg: #141618;
+  --breeze-bg-alt: #202326;
+  --breeze-surface: #292c30;
   --breeze-surface-raised: #31363b;
   --breeze-border: #3b4045;
   --breeze-border-light: #333840;
-  --breeze-text: #bfc5ca;
-  --breeze-text-secondary: #6e7a86;
+  --breeze-text: #fcfcfc;
+  --breeze-text-secondary: #a1a9b1;
   --breeze-text-disabled: #505962;
   --breeze-accent: #3daee9;
   --breeze-accent-hover: #4dbcf5;
@@ -21,13 +21,13 @@
   --breeze-active: rgba(61, 174, 233, 0.22);
 
   /* Toolbar */
-  --toolbar-bg: #2a2e32;
-  --toolbar-border: #1b1e20;
+  --toolbar-bg: #292c30;
+  --toolbar-border: #141618;
   --toolbar-button-hover: rgba(255, 255, 255, 0.08);
   --toolbar-button-active: rgba(255, 255, 255, 0.12);
 
   /* Sidebar */
-  --sidebar-bg: #1e2226;
+  --sidebar-bg: #202326;
   --sidebar-width: 180px;
   --sidebar-item-hover: var(--breeze-hover);
   --sidebar-item-active: var(--breeze-active);
@@ -36,7 +36,7 @@
   --file-icon-size: 48px;
   --file-grid-gap: 12px;
   --file-item-padding: 8px;
-  --file-item-radius: 4px;
+  --file-item-radius: 3px;
 
   /* Info panel */
   --info-panel-width: 260px;
@@ -121,7 +121,7 @@ body {
 /* Allow selection in input fields and editors */
 input, textarea, [contenteditable],
 .cm-editor, .cm-editor *,
-.n-input, .n-input * {
+.breeze-input, .breeze-input * {
   user-select: text;
   -webkit-user-select: text;
 }

@@ -1,8 +1,12 @@
 <script setup>
 import { ref, watch, nextTick } from 'vue'
-import { NModal, NCard, NButton, NInput, NSpace, NCheckbox } from 'naive-ui'
 import { useDialogState } from '../composables/useNativeDialog'
 import { useI18n } from '../composables/useI18n'
+import BModal from './breeze/BModal.vue'
+import BCard from './breeze/BCard.vue'
+import BButton from './breeze/BButton.vue'
+import BInput from './breeze/BInput.vue'
+import BCheckbox from './breeze/BCheckbox.vue'
 
 const { t } = useI18n()
 const dialogState = useDialogState()
@@ -77,14 +81,13 @@ function formatSize(bytes) {
 </script>
 
 <template>
-  <NModal
+  <BModal
     v-if="dialogState?.type !== 'duplicate'"
     :show="visible"
     preset="dialog"
     :title="dialogState?.title ?? ''"
     :positive-text="t('dialog.ok')"
     :negative-text="dialogState?.type === 'alert' ? undefined : t('dialog.cancel')"
-    style="width: 400px"
     @positive-click="handleConfirm"
     @negative-click="handleCancel"
     @close="handleCancel"
@@ -93,28 +96,27 @@ function formatSize(bytes) {
     <div v-if="dialogState?.content" class="dialog-content">
       {{ dialogState.content }}
     </div>
-    <NInput
+    <BInput
       v-if="dialogState?.type === 'prompt'"
       ref="inputRef"
-      v-model:value="inputValue"
+      :value="inputValue"
       :placeholder="dialogState?.placeholder ?? ''"
+      @update:value="v => inputValue = v"
       @keydown="handleKeydown"
     />
-  </NModal>
+  </BModal>
 
-  <NModal
+  <BModal
     v-else
     :show="visible"
     @close="handleCancel"
     @mask-click="handleCancel"
   >
-    <NCard
+    <BCard
       style="width: 520px"
       :title="dialogState?.title ?? ''"
       :bordered="false"
       size="small"
-      role="dialog"
-      aria-modal="true"
     >
       <div class="duplicate-summary">
         {{ t('upload.duplicate_summary', { name: dialogState?.incomingName ?? '' }) }}
@@ -137,23 +139,23 @@ function formatSize(bytes) {
       </div>
 
       <div class="duplicate-options">
-        <NCheckbox v-model:checked="applyToAll">
+        <BCheckbox v-model:checked="applyToAll">
           {{ t('upload.duplicate_apply_all') }}
-        </NCheckbox>
+        </BCheckbox>
       </div>
 
       <template #footer>
         <div class="duplicate-footer">
-          <NSpace justify="end">
-            <NButton @click="handleCancel">{{ t('upload.duplicate_cancel') }}</NButton>
-            <NButton @click="handleDuplicate('skip')">{{ t('upload.duplicate_skip') }}</NButton>
-            <NButton @click="handleDuplicate('rename')">{{ t('upload.duplicate_rename') }}</NButton>
-            <NButton type="primary" @click="handleDuplicate('replace')">{{ t('upload.duplicate_replace') }}</NButton>
-          </NSpace>
+          <div style="display:flex;justify-content:flex-end;gap:8px">
+            <BButton @click="handleCancel">{{ t('upload.duplicate_cancel') }}</BButton>
+            <BButton @click="handleDuplicate('skip')">{{ t('upload.duplicate_skip') }}</BButton>
+            <BButton @click="handleDuplicate('rename')">{{ t('upload.duplicate_rename') }}</BButton>
+            <BButton type="primary" @click="handleDuplicate('replace')">{{ t('upload.duplicate_replace') }}</BButton>
+          </div>
         </div>
       </template>
-    </NCard>
-  </NModal>
+    </BCard>
+  </BModal>
 </template>
 
 <style scoped>

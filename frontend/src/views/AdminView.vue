@@ -1,12 +1,20 @@
 <script setup>
 import { ref, computed, watch, onMounted, h } from 'vue'
-import { NDataTable, NButton, NForm, NFormItem, NInput, NSelect, NCheckbox, NSpace, NModal, useMessage } from 'naive-ui'
 import { useRouter } from 'vue-router'
 import { useWebSocket } from '../composables/useWebSocket'
 import { useI18n } from '../composables/useI18n'
+import { useMessage } from '../composables/useMessage'
 import { showPrompt, showConfirm } from '../composables/useNativeDialog'
 import { PERM_READ, PERM_UPLOAD, PERM_EDIT, PERM_DELETE } from '../stores/auth'
 import dayjs from 'dayjs'
+import BButton from '../components/breeze/BButton.vue'
+import BModal from '../components/breeze/BModal.vue'
+import BForm from '../components/breeze/BForm.vue'
+import BFormItem from '../components/breeze/BFormItem.vue'
+import BInput from '../components/breeze/BInput.vue'
+import BSelect from '../components/breeze/BSelect.vue'
+import BCheckbox from '../components/breeze/BCheckbox.vue'
+import BDataTable from '../components/breeze/BDataTable.vue'
 
 const router = useRouter()
 const ws = useWebSocket()
@@ -79,15 +87,15 @@ const columns = computed(() => [
     width: 280,
     render(row) {
       const buttons = [
-        h(NButton, { size: 'tiny', onClick: () => openEdit(row) }, () => t('admin.edit')),
-        h(NButton, { size: 'tiny', onClick: () => resetPassword(row) }, () => t('admin.reset_pwd')),
-        h(NButton, { size: 'tiny', type: 'error', onClick: () => deleteUser(row) }, () => t('admin.delete')),
+        h(BButton, { size: 'tiny', onClick: () => openEdit(row) }, () => t('admin.edit')),
+        h(BButton, { size: 'tiny', onClick: () => resetPassword(row) }, () => t('admin.reset_pwd')),
+        h(BButton, { size: 'tiny', type: 'error', onClick: () => deleteUser(row) }, () => t('admin.delete')),
       ]
       if (row.totp_enabled) {
-        buttons.push(h(NButton, { size: 'tiny', type: 'warning', onClick: () => resetOTP(row) }, () => t('admin.reset_otp')))
+        buttons.push(h(BButton, { size: 'tiny', type: 'warning', onClick: () => resetOTP(row) }, () => t('admin.reset_otp')))
       }
       if (row.email) {
-        buttons.push(h(NButton, { size: 'tiny', type: 'warning', onClick: () => resetEmail(row) }, () => t('admin.reset_email')))
+        buttons.push(h(BButton, { size: 'tiny', type: 'warning', onClick: () => resetEmail(row) }, () => t('admin.reset_email')))
       }
       return h('div', { class: 'action-buttons' }, buttons)
     },
@@ -196,17 +204,17 @@ onMounted(loadUsers)
   <div class="admin-view">
     <div class="admin-header">
       <h1>{{ t('admin.title') }}</h1>
-      <NSpace>
-        <NButton type="primary" size="small" @click="showCreate = true">
+      <div style="display:flex;gap:8px">
+        <BButton type="primary" size="small" @click="showCreate = true">
           {{ t('admin.add_user') }}
-        </NButton>
-        <NButton size="small" @click="router.push('/')">
+        </BButton>
+        <BButton size="small" @click="router.push('/')">
           {{ t('admin.back_to_files') }}
-        </NButton>
-      </NSpace>
+        </BButton>
+      </div>
     </div>
 
-    <NDataTable
+    <BDataTable
       :columns="columns"
       :data="users"
       :loading="loading"
@@ -215,73 +223,73 @@ onMounted(loadUsers)
     />
 
     <!-- Create User Dialog -->
-    <NModal v-model:show="showCreate" preset="dialog" :title="t('admin.create_user')">
-      <NForm>
-        <NFormItem :label="t('admin.username')">
-          <NInput v-model:value="newUser.username" placeholder="" />
-        </NFormItem>
-        <NFormItem :label="t('admin.password')">
-          <NInput v-model:value="newUser.password" type="password" placeholder="" />
-        </NFormItem>
-        <NFormItem :label="t('admin.role')">
-          <NSelect v-model:value="newUser.role" :options="roleOptions" />
-        </NFormItem>
-        <NFormItem :label="t('admin.permissions')">
-          <NSpace>
-            <NCheckbox
+    <BModal :show="showCreate" preset="dialog" :title="t('admin.create_user')" @close="showCreate = false" @mask-click="showCreate = false">
+      <BForm>
+        <BFormItem :label="t('admin.username')">
+          <BInput :value="newUser.username" placeholder="" @update:value="v => newUser.username = v" />
+        </BFormItem>
+        <BFormItem :label="t('admin.password')">
+          <BInput :value="newUser.password" type="password" placeholder="" @update:value="v => newUser.password = v" />
+        </BFormItem>
+        <BFormItem :label="t('admin.role')">
+          <BSelect v-model:value="newUser.role" :options="roleOptions" />
+        </BFormItem>
+        <BFormItem :label="t('admin.permissions')">
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            <BCheckbox
               :checked="(newUser.permissions & PERM_READ) !== 0"
               @update:checked="v => newUser.permissions = v ? (newUser.permissions | PERM_READ) : (newUser.permissions & ~PERM_READ)"
-            >{{ t('admin.perm_read') }}</NCheckbox>
-            <NCheckbox
+            >{{ t('admin.perm_read') }}</BCheckbox>
+            <BCheckbox
               :checked="(newUser.permissions & PERM_UPLOAD) !== 0"
               @update:checked="v => newUser.permissions = v ? (newUser.permissions | PERM_UPLOAD) : (newUser.permissions & ~PERM_UPLOAD)"
-            >{{ t('admin.perm_upload') }}</NCheckbox>
-            <NCheckbox
+            >{{ t('admin.perm_upload') }}</BCheckbox>
+            <BCheckbox
               :checked="(newUser.permissions & PERM_EDIT) !== 0"
               @update:checked="v => newUser.permissions = v ? (newUser.permissions | PERM_EDIT) : (newUser.permissions & ~PERM_EDIT)"
-            >{{ t('admin.perm_edit') }}</NCheckbox>
-            <NCheckbox
+            >{{ t('admin.perm_edit') }}</BCheckbox>
+            <BCheckbox
               :checked="(newUser.permissions & PERM_DELETE) !== 0"
               @update:checked="v => newUser.permissions = v ? (newUser.permissions | PERM_DELETE) : (newUser.permissions & ~PERM_DELETE)"
-            >{{ t('admin.perm_delete') }}</NCheckbox>
-          </NSpace>
-        </NFormItem>
-        <NButton type="primary" block @click="createUser">{{ t('admin.create') }}</NButton>
-      </NForm>
-    </NModal>
+            >{{ t('admin.perm_delete') }}</BCheckbox>
+          </div>
+        </BFormItem>
+        <BButton type="primary" block @click="createUser">{{ t('admin.create') }}</BButton>
+      </BForm>
+    </BModal>
 
     <!-- Edit User Dialog -->
-    <NModal v-model:show="showEdit" preset="dialog" :title="t('admin.edit_user')">
-      <NForm v-if="editingUser">
-        <NFormItem :label="t('admin.username')">
-          <NInput :value="editingUser.username" disabled />
-        </NFormItem>
-        <NFormItem :label="t('admin.role')">
-          <NSelect v-model:value="editingUser.role" :options="roleOptions" />
-        </NFormItem>
-        <NFormItem :label="t('admin.permissions')">
-          <NSpace>
-            <NCheckbox
+    <BModal :show="showEdit" preset="dialog" :title="t('admin.edit_user')" @close="showEdit = false" @mask-click="showEdit = false">
+      <BForm v-if="editingUser">
+        <BFormItem :label="t('admin.username')">
+          <BInput :value="editingUser.username" disabled />
+        </BFormItem>
+        <BFormItem :label="t('admin.role')">
+          <BSelect v-model:value="editingUser.role" :options="roleOptions" />
+        </BFormItem>
+        <BFormItem :label="t('admin.permissions')">
+          <div style="display:flex;flex-wrap:wrap;gap:8px">
+            <BCheckbox
               :checked="(editingUser.permissions & PERM_READ) !== 0"
               @update:checked="v => editingUser.permissions = v ? (editingUser.permissions | PERM_READ) : (editingUser.permissions & ~PERM_READ)"
-            >{{ t('admin.perm_read') }}</NCheckbox>
-            <NCheckbox
+            >{{ t('admin.perm_read') }}</BCheckbox>
+            <BCheckbox
               :checked="(editingUser.permissions & PERM_UPLOAD) !== 0"
               @update:checked="v => editingUser.permissions = v ? (editingUser.permissions | PERM_UPLOAD) : (editingUser.permissions & ~PERM_UPLOAD)"
-            >{{ t('admin.perm_upload') }}</NCheckbox>
-            <NCheckbox
+            >{{ t('admin.perm_upload') }}</BCheckbox>
+            <BCheckbox
               :checked="(editingUser.permissions & PERM_EDIT) !== 0"
               @update:checked="v => editingUser.permissions = v ? (editingUser.permissions | PERM_EDIT) : (editingUser.permissions & ~PERM_EDIT)"
-            >{{ t('admin.perm_edit') }}</NCheckbox>
-            <NCheckbox
+            >{{ t('admin.perm_edit') }}</BCheckbox>
+            <BCheckbox
               :checked="(editingUser.permissions & PERM_DELETE) !== 0"
               @update:checked="v => editingUser.permissions = v ? (editingUser.permissions | PERM_DELETE) : (editingUser.permissions & ~PERM_DELETE)"
-            >{{ t('admin.perm_delete') }}</NCheckbox>
-          </NSpace>
-        </NFormItem>
-        <NButton type="primary" block @click="saveEdit">{{ t('admin.save') }}</NButton>
-      </NForm>
-    </NModal>
+            >{{ t('admin.perm_delete') }}</BCheckbox>
+          </div>
+        </BFormItem>
+        <BButton type="primary" block @click="saveEdit">{{ t('admin.save') }}</BButton>
+      </BForm>
+    </BModal>
   </div>
 </template>
 

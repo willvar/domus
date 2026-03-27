@@ -1,7 +1,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { NButton, NIcon } from 'naive-ui'
 import IconMenu from '~icons/mdi/menu'
+import BButton from '../breeze/BButton.vue'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useWindowManagerStore, FILES_ICON } from '../../stores/windowManager'
 import PlasmaWindow from '../plasma/Window.vue'
@@ -47,14 +47,14 @@ function handleClose() {
     <Breadcrumb class="mobile-hide" />
     <TabBar />
     <div class="files-main-content">
-      <NButton
+      <BButton
         class="sidebar-toggle"
         size="tiny"
         quaternary
         @click="mobileSidebar = !mobileSidebar"
       >
-        <template #icon><NIcon><IconMenu /></NIcon></template>
-      </NButton>
+        <template #icon><IconMenu width="16" height="16" /></template>
+      </BButton>
 
       <Transition name="slide-left">
         <Places

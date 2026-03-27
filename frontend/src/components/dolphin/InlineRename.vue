@@ -1,8 +1,9 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
-import { NInput, useMessage } from 'naive-ui'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useI18n } from '../../composables/useI18n'
+import { useMessage } from '../../composables/useMessage'
+import BInput from '../breeze/BInput.vue'
 
 const props = defineProps({
   file: { type: Object, required: true },
@@ -50,11 +51,12 @@ async function commit() {
 </script>
 
 <template>
-  <NInput
+  <BInput
     ref="inputRef"
-    v-model:value="newName"
+    :value="newName"
     size="tiny"
     class="rename-input"
+    @update:value="v => newName = v"
     @keyup.enter="commit"
     @keyup.escape="fs.cancelRename()"
     @blur="commit"
