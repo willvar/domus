@@ -26,8 +26,10 @@ type FileRecord struct {
 	UploadID       string `gorm:"default:'';index" json:"-"`
 	ChunkSize      int    `gorm:"not null;default:0" json:"-"`
 	CompletedParts string `gorm:"default:''" json:"-"`
-	CreatedAt      time.Time `json:"created_at"`
-	UpdatedAt      time.Time `json:"updated_at"`
+	// Full-text search
+	SearchVector string `gorm:"type:tsvector" json:"-"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
 }
 
 func (FileRecord) TableName() string { return "files" }
@@ -121,6 +123,40 @@ func DeleteFile(userID string, path string) error {
 
 func DeleteFilesByPrefix(userID string, prefix string) error {
 	return db.Where("user_id = ? AND path LIKE ?", userID, prefix+"%").Delete(&FileRecord{}).Error
+}
+
+// UpdateFileSearchVector updates the full-text search index for a file.
+// text is the combined content to index (file name, optionally + file content).
+func UpdateFileSearchVector(userID, path, text string) error {
+	return db.Exec(
+		"UPDATE files SET search_vector = to_tsvector('jiebacfg', ?) WHERE user_id = ? AND path = ?",
+		text, userID, path,
+	).Error
+}
+
+// SearchFileResult holds a search result with rank score.
+type SearchFileResult struct {
+	FileRecord
+	Rank float64 `json:"rank"`
+}
+
+// SearchFiles performs full-text search across a user's files.
+func SearchFiles(userID, query string, limit int) ([]SearchFileResult, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	var results []SearchFileResult
+	err := db.Raw(`
+		SELECT f.*, ts_rank(f.search_vector, q) AS rank
+		FROM files f, plainto_tsquery('jiebacfg', ?) q
+		WHERE f.user_id = ?
+		  AND f.status = 'ready'
+		  AND f.search_vector @@ q
+		  AND f.name NOT LIKE '.%'
+		ORDER BY rank DESC
+		LIMIT ?
+	`, query, userID, limit).Scan(&results).Error
+	return results, err
 }
 
 func MoveFile(userID string, oldPath, newPath, newName string) error {

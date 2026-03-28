@@ -39,6 +39,8 @@ func (h *Handler) registerWSActions() {
 	r.Handle("user.otpSetup", 0, h.wsOTPSetup)
 	r.Handle("user.otpEnable", 0, h.wsOTPEnable)
 	r.Handle("user.otpDisable", 0, h.wsOTPDisable)
+	r.Handle("user.updateDisplayName", 0, h.wsUpdateDisplayName)
+	r.Handle("user.storageUsage", 0, h.wsStorageUsage)
 
 	// --- Bookmarks ---
 	r.Handle("bookmark.list", 0, h.wsBookmarkList)
@@ -54,6 +56,7 @@ func (h *Handler) registerWSActions() {
 	r.Handle("file.move", ws.PermEdit, h.wsFileMove)
 	r.Handle("file.delete", ws.PermDelete, h.wsFileDelete)
 	r.Handle("file.patchContent", ws.PermEdit, h.wsFilePatchContent)
+	r.Handle("file.search", ws.PermRead, h.wsFileSearch)
 
 	// --- Upload progress ---
 	r.Handle("upload.progress", ws.PermUpload, h.wsUploadProgress)
@@ -95,6 +98,10 @@ func resolvePath(username, path string) (string, error) {
 	}
 	if len(path) == 0 || path[0] != '/' {
 		path = "/" + path
+	}
+	// Clean double slashes (but preserve trailing slash for dirs)
+	for strings.Contains(path, "//") {
+		path = strings.ReplaceAll(path, "//", "/")
 	}
 	return username + path, nil
 }
@@ -146,13 +153,20 @@ func (h *Handler) wsMe(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) 
 	if err != nil {
 		return nil, &wsError{Code: "user_not_found"}
 	}
+	avatarKey := user.Username + "/.user/avatar.webp"
+	var avatarURL string
+	if _, err := h.Store.GetObjectInfo(avatarKey); err == nil {
+		avatarURL, _ = h.Store.GeneratePresignedURL(avatarKey, 24*time.Hour)
+	}
 	return map[string]any{
 		"id":           user.ID,
 		"username":     user.Username,
+		"display_name": user.DisplayName,
 		"role":         user.Role,
 		"permissions":  user.Permissions,
 		"email":        user.Email,
 		"totp_enabled": user.TOTPEnabled,
+		"avatar_url":   avatarURL,
 	}, nil
 }
 
@@ -168,6 +182,35 @@ func (h *Handler) wsSecurityStatus(conn *ws.Conn, _ string, _ json.RawMessage) (
 		"smtp_enabled": h.Config.SMTP.Host != "",
 	}, nil
 }
+
+func (h *Handler) wsUpdateDisplayName(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
+	var p struct {
+		DisplayName string `json:"display_name"`
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		return nil, &wsError{Code: "invalid_params"}
+	}
+	if err := model.UpdateUserDisplayName(conn.Session.UserID, strings.TrimSpace(p.DisplayName)); err != nil {
+		return nil, &wsError{Code: "update_failed"}
+	}
+	return map[string]any{"ok": true}, nil
+}
+
+func (h *Handler) wsStorageUsage(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
+	user, err := model.GetUserByID(conn.Session.UserID)
+	if err != nil {
+		return nil, &wsError{Code: "user_not_found"}
+	}
+	size, count, err := h.Store.GetTotalSize(user.Username + "/")
+	if err != nil {
+		return nil, &wsError{Code: "internal_error"}
+	}
+	return map[string]any{
+		"size":  size,
+		"count": count,
+	}, nil
+}
+
 
 func (h *Handler) wsChangePassword(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
 	var p struct {
@@ -479,6 +522,12 @@ func (h *Handler) wsFileRename(conn *ws.Conn, _ string, data json.RawMessage) (a
 	} else {
 		newName := filepath.Base(newResolved)
 		_ = model.MoveFile(conn.Session.UserID, oldResolved, newResolved, newName)
+	}
+
+	// Re-index search vector with new file name
+	if !p.IsDir {
+		newName := filepath.Base(newResolved)
+		h.indexFileName(conn.Session.UserID, newResolved, newName)
 	}
 
 	h.Audit.Log(conn.Session.UserID, conn.Session.Username, "", "file_rename", p.OldPath, p.NewPath, "success", 0)
@@ -819,9 +868,45 @@ func (h *Handler) wsFilePatchContent(conn *ws.Conn, _ string, data json.RawMessa
 	ct := mime.TypeByExtension(filepath.Ext(resolvedPath))
 	_ = model.UpsertFile(conn.Session.UserID, resolvedPath, fileName, false, newSize, ct, "")
 
+	// Re-index: for inline edits we only refresh the file name index
+	// (full content re-index would require another decrypt pass, not worth it)
+	h.indexFileName(conn.Session.UserID, resolvedPath, fileName)
+
 	h.Audit.Log(conn.Session.UserID, conn.Session.Username, "", "file_write", p.Path, "", "success", 0)
 	h.notifyParentDir(conn.Session.Username, resolvedPath)
 	return map[string]any{"ok": true, "new_size": newSize}, nil
+}
+
+// --- Search ---
+
+func (h *Handler) wsFileSearch(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
+	var p struct {
+		Query string `json:"query"`
+		Limit int    `json:"limit"`
+	}
+	if err := json.Unmarshal(data, &p); err != nil || p.Query == "" {
+		return nil, &wsError{Code: "invalid_request"}
+	}
+	results, err := model.SearchFiles(conn.Session.UserID, p.Query, p.Limit)
+	if err != nil {
+		return nil, &wsError{Code: "search_failed"}
+	}
+	items := make([]map[string]any, 0, len(results))
+	for _, r := range results {
+		// Convert OSS path back to app path (strip username prefix)
+		appPath := toAppPath(r.Path, conn.Session.Username)
+		parent := toAppPath(r.Parent, conn.Session.Username)
+		items = append(items, map[string]any{
+			"path":         appPath,
+			"parent":       parent,
+			"name":         r.Name,
+			"is_dir":       r.IsDir,
+			"size":         r.Size,
+			"content_type": r.ContentType,
+			"rank":         r.Rank,
+		})
+	}
+	return map[string]any{"results": items}, nil
 }
 
 // --- Trash actions ---
