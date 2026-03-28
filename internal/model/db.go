@@ -87,5 +87,9 @@ func InitDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	// One-time migration: drop legacy uploads table (merged into files)
 	db.Exec("DROP TABLE IF EXISTS uploads")
 
+	// Ensure pg_jieba extension and GIN index for full-text search
+	db.Exec("CREATE EXTENSION IF NOT EXISTS pg_jieba")
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_fts ON files USING gin(search_vector)")
+
 	return db, nil
 }

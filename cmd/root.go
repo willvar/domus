@@ -345,7 +345,7 @@ func runServer(cfg *config.Config, configPath string) {
 	}
 
 	app := fiber.New(fiber.Config{
-		BodyLimit:             int(config.UploadChunkSize) + 1024*1024,
+		BodyLimit:             10 * 1024 * 1024,
 		DisableStartupMessage: true,
 	})
 

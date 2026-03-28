@@ -10,6 +10,7 @@ import (
 type User struct {
 	ID           string    `gorm:"primaryKey;type:varchar(36)" json:"id"`
 	Username     string    `gorm:"uniqueIndex;not null" json:"username"`
+	DisplayName  string    `gorm:"default:''" json:"display_name"`
 	PasswordHash string    `gorm:"not null" json:"-"`
 	Role         string    `gorm:"not null;default:user" json:"role"`
 	Permissions  int64     `gorm:"not null;default:15" json:"permissions"`
@@ -99,6 +100,11 @@ func UpdateUserTOTP(id string, secret string, enabled bool) error {
 		"totp_enabled": enabled,
 	}).Error
 }
+
+func UpdateUserDisplayName(id string, displayName string) error {
+	return db.Model(&User{}).Where("id = ?", id).Update("display_name", displayName).Error
+}
+
 
 func DeleteUser(id string) error {
 	return db.Where("id = ?", id).Delete(&User{}).Error

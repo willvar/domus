@@ -38,6 +38,7 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	app.Get("/auth", h.handleAuthConfig)
 	app.Post("/auth", h.handleLogin)
 	app.Post("/auth/verify", h.handleVerify)
+	app.Get("/user/avatar/:username", h.handlePublicAvatar)
 
 	authed := app.Group("", h.Mid.AuthRequired())
 	authed.Delete("/auth", h.handleLogout)
@@ -45,6 +46,9 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	// /user
 	user := authed.Group("/user")
 	user.Get("/", h.handleMe)
+	user.Post("/avatar", h.handleUploadAvatar)
+	user.Get("/store/*", h.handleUserStoreGet)
+	user.Put("/store/*", h.handleUserStorePut)
 	user.Get("/security", h.handleSecurityStatus)
 	user.Put("/security/password", h.handleChangePassword)
 	user.Post("/security/email/bind", h.handleBindEmail)
