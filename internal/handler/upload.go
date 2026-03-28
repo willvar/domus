@@ -399,6 +399,10 @@ func (h *Handler) RunOSSUploadJob(ctx context.Context, job *model.Job) error {
 		return ctx.Err()
 	}
 
+	// Index for full-text search (before encryption, file is still plaintext)
+	indexContent := h.getUserIndexContentPref(params.Username)
+	h.indexFile(params.UserID, params.OSSKey, params.FileName, localFile, indexContent)
+
 	// Encrypting
 	_ = model.UpdateJobProgress(job.JobID, 0.3, "encrypting")
 	key, err := auth.DeriveKey(h.Config.Server.EncryptionSecret, params.UserID)
@@ -449,7 +453,7 @@ func (h *Handler) RunOSSUploadJob(ctx context.Context, job *model.Job) error {
 
 	// Create thumbnail job for images/videos
 	if mediaType := service.DetectMediaType(params.FileName); mediaType == "image" || mediaType == "video" {
-		thumbKey := fmt.Sprintf("%s/.thumbnails/%s_%d.webp", params.Username, contentHash, fileSize)
+		thumbKey := fmt.Sprintf("%s/.user/thumbnails/%s_%d.webp", params.Username, contentHash, fileSize)
 		thumbJobID := uuid.New().String()
 		thumbParams := ThumbnailParams{
 			SourceKey:    params.OSSKey,
