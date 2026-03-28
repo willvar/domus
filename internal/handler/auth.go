@@ -2,7 +2,13 @@ package handler
 
 import (
 	"crypto/hmac"
+	"io"
 	"log"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -333,12 +339,139 @@ func (h *Handler) handleMe(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
 	}
 
+	avatarKey := user.Username + "/.user/avatar.webp"
+	var avatarURL string
+	if _, err := h.Store.GetObjectInfo(avatarKey); err == nil {
+		avatarURL, _ = h.Store.GeneratePresignedURL(avatarKey, 24*time.Hour)
+	}
 	return c.JSON(fiber.Map{
 		"id":           user.ID,
 		"username":     user.Username,
+		"display_name": user.DisplayName,
 		"role":         user.Role,
 		"permissions":  user.Permissions,
 		"email":        user.Email,
 		"totp_enabled": user.TOTPEnabled,
+		"avatar_url":   avatarURL,
 	})
+}
+
+// handlePublicAvatar returns the avatar presigned URL for a given username (public, no auth).
+func (h *Handler) handlePublicAvatar(c *fiber.Ctx) error {
+	username := c.Params("username")
+	if username == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "missing_username"})
+	}
+	avatarKey := username + "/.user/avatar.webp"
+	if _, err := h.Store.GetObjectInfo(avatarKey); err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "no_avatar"})
+	}
+	url, err := h.Store.GeneratePresignedURL(avatarKey, 24*time.Hour)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	}
+	return c.JSON(fiber.Map{"avatar_url": url})
+}
+
+// handleUploadAvatar receives an image, converts to webp via ffmpeg, stores to OSS.
+func (h *Handler) handleUploadAvatar(c *fiber.Ctx) error {
+	session := c.Locals("session").(*model.Session)
+	user, err := model.GetUserByID(session.UserID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
+	}
+
+	file, err := c.FormFile("file")
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "no_file"})
+	}
+
+	// Validate image content type
+	ct := file.Header.Get("Content-Type")
+	if !strings.HasPrefix(ct, "image/") {
+		return c.Status(400).JSON(fiber.Map{"error": "not_image"})
+	}
+
+	// Save to temp file
+	tmpDir, err := os.MkdirTemp("", "avatar-*")
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	}
+	defer os.RemoveAll(tmpDir)
+
+	ext := filepath.Ext(file.Filename)
+	if ext == "" {
+		ext = ".jpg"
+	}
+	inputPath := filepath.Join(tmpDir, "input"+ext)
+	if err := c.SaveFile(file, inputPath); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "save_failed"})
+	}
+
+	// Convert to webp via ffmpeg
+	outputPath := filepath.Join(tmpDir, "avatar.webp")
+	cmd := exec.Command(h.Config.Transcode.FFmpegPath,
+		"-i", inputPath,
+		"-vf", "scale='min(512,iw)':'min(512,ih)':force_original_aspect_ratio=decrease",
+		"-y", outputPath,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		log.Printf("avatar ffmpeg error: %v\n%s", err, out)
+		return c.Status(500).JSON(fiber.Map{"error": "convert_failed"})
+	}
+
+	// Upload to OSS (unencrypted)
+	avatarKey := user.Username + "/.user/avatar.webp"
+	if err := h.Store.UploadFromFile(avatarKey, outputPath); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "upload_failed"})
+	}
+
+	url, _ := h.Store.GeneratePresignedURL(avatarKey, 24*time.Hour)
+	return c.JSON(fiber.Map{"avatar_url": url})
+}
+
+// handleUserStoreGet reads a file from {username}/.user/{path} in OSS.
+func (h *Handler) handleUserStoreGet(c *fiber.Ctx) error {
+	session := c.Locals("session").(*model.Session)
+	user, err := model.GetUserByID(session.UserID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
+	}
+	subPath := c.Params("*")
+	if subPath == "" || strings.Contains(subPath, "..") {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
+	}
+	key := user.Username + "/.user/" + subPath
+	reader, err := h.Store.GetObjectContent(key)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	}
+	defer reader.Close()
+	data, err := io.ReadAll(reader)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "read_failed"})
+	}
+	// If JSON, set content type
+	if strings.HasSuffix(subPath, ".json") {
+		c.Set("Content-Type", "application/json")
+	}
+	return c.Send(data)
+}
+
+// handleUserStorePut writes a file to {username}/.user/{path} in OSS.
+func (h *Handler) handleUserStorePut(c *fiber.Ctx) error {
+	session := c.Locals("session").(*model.Session)
+	user, err := model.GetUserByID(session.UserID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
+	}
+	subPath := c.Params("*")
+	if subPath == "" || strings.Contains(subPath, "..") {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
+	}
+	key := user.Username + "/.user/" + subPath
+	if err := h.Store.PutObjectBytes(key, c.Body()); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "write_failed"})
+	}
+	return c.JSON(fiber.Map{"ok": true})
 }
