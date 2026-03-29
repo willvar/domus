@@ -1,11 +1,11 @@
 <script setup>
-import { computed, onMounted, h } from 'vue'
-import { NButton, NProgress, NEmpty, NIcon, useMessage } from 'naive-ui'
-import { usePanelResize } from '../../../composables/usePanelResize'
+import { computed, onMounted, toRef } from 'vue'
+import { useMessage } from '../../../composables/useMessage'
 import dayjs from 'dayjs'
 import { useJobsStore } from '../../../stores/jobs'
 import { useUploadStore } from '../../../stores/upload'
 import { useI18n } from '../../../composables/useI18n'
+import TrayPopup from './TrayPopup.vue'
 import IconSync from '~icons/mdi/sync'
 import IconUpload from '~icons/mdi/upload'
 import IconContentCopy from '~icons/mdi/content-copy'
@@ -17,7 +17,6 @@ const { t, te } = useI18n()
 const message = useMessage()
 const jobsStore = useJobsStore()
 const uploadStore = useUploadStore()
-const { panelSize, onMouseDown } = usePanelResize()
 
 // Filter out server tasks that have a matching local upload (avoid duplicates)
 const localTaskIds = computed(() => new Set(uploadStore.uploads.map(u => u.taskId).filter(Boolean)))
@@ -79,11 +78,6 @@ function formatSpeed(bytesPerSec) {
   return formatSize(bytesPerSec) + '/s'
 }
 
-// Find local upload entry for a server-side upload job (for pause/resume/cancel)
-function findUploadEntry(taskId) {
-  return uploadStore.uploads.find(u => u.taskId === taskId)
-}
-
 function timeAgo(ts) {
   if (!ts) return ''
   const d = dayjs(ts)
@@ -126,256 +120,140 @@ onMounted(() => {
 </script>
 
 <template>
-  <Transition name="slide-up">
-    <div v-if="jobsStore.panelOpen" class="jobs-panel" :style="{ width: panelSize.width + 'px', height: panelSize.height + 'px' }">
-      <div class="panel-resize-handle" @mousedown="onMouseDown" />
-      <div class="jobs-header">
-        <span class="jobs-title">{{ t('jobs.title') }}</span>
-        <NButton
-          v-if="jobsStore.hasCompletedTasks"
-          quaternary
-          size="tiny"
-          @click="clearCompleted"
-        >
-          {{ t('jobs.clear') }}
-        </NButton>
-      </div>
+  <TrayPopup :show="jobsStore.panelOpen" :title="t('jobs.title')" @update:show="v => jobsStore.panelOpen = v">
+    <template #actions>
+      <button v-if="jobsStore.hasCompletedTasks" class="tray-btn" @click="clearCompleted">
+        {{ t('jobs.clear') }}
+      </button>
+    </template>
 
-      <div v-if="!hasTasks" class="jobs-empty">
-        <NEmpty :description="t('jobs.no_jobs')" size="small" />
-      </div>
+    <div v-if="!hasTasks" class="jobs-empty">
+      <div class="empty-state">{{ t('jobs.no_jobs') }}</div>
+    </div>
 
-      <div v-else class="jobs-scroll">
-        <!-- Local uploads (client-side uploading) -->
-        <div v-for="u in uploadStore.uploads" :key="'upload-' + u.id" class="job-item job-item--active">
-          <div class="job-header">
-            <NIcon class="job-icon" :size="14"><IconUpload /></NIcon>
-            <span class="job-name">{{ u.fileName }}</span>
-            <span :class="['job-status', 'status-info']">
-              {{ u.status === 'paused' ? statusLabel('paused') : statusLabel('uploading') }}
-            </span>
-          </div>
-
-          <div class="job-progress">
-            <NProgress :percentage="u.progress" status="info" :show-indicator="true" :height="4" />
-            <span class="job-phase">{{ u.progress }}% · {{ formatSpeed(u.speed) }}{{ u.fileSize ? ' · ' + formatSize(u.fileSize) : '' }}</span>
-          </div>
-
-          <div class="job-footer">
-            <span class="job-time">{{ formatSize(u.bytesUploaded) }}</span>
-            <div class="job-actions">
-              <template v-if="u.status === 'uploading'">
-                <NButton quaternary size="tiny" @click="uploadStore.pauseUpload(u.id)">{{ t('upload.pause') }}</NButton>
-                <NButton quaternary size="tiny" type="error" @click="uploadStore.cancelUpload(u.id)">{{ t('jobs.cancel') }}</NButton>
-              </template>
-              <template v-if="u.status === 'paused'">
-                <NButton quaternary size="tiny" type="info" @click="uploadStore.resumeUpload(u.id)">{{ t('upload.resume') }}</NButton>
-                <NButton quaternary size="tiny" type="error" @click="uploadStore.cancelUpload(u.id)">{{ t('jobs.cancel') }}</NButton>
-              </template>
-            </div>
-          </div>
-          <div v-if="u.error" class="job-error">{{ u.error }}</div>
+    <div v-else class="jobs-scroll">
+      <!-- Local uploads (client-side uploading) -->
+      <div v-for="u in uploadStore.uploads" :key="'upload-' + u.id" class="job-item job-item--active">
+        <div class="job-header">
+          <IconUpload class="job-icon" width="14" height="14" />
+          <span class="job-name">{{ u.fileName }}</span>
+          <span :class="['job-status', 'status-info']">
+            {{ u.status === 'paused' ? statusLabel('paused') : statusLabel('uploading') }}
+          </span>
         </div>
 
-        <!-- Active server tasks (upload processing, transcode, etc.) -->
-        <div v-for="task in activeTasks" :key="task.task_id" class="job-item job-item--active">
-          <div class="job-header">
-            <NIcon class="job-icon" :size="14"><component :is="typeIcon(task.type)" /></NIcon>
-            <span class="job-name">{{ taskName(task) || typeLabel(task.type) }}</span>
-            <span :class="['job-status', `status-${statusType(task.status)}`]">
-              <template v-if="task.type === 'upload'">{{ phaseLabel(task) || statusLabel(task.status) }}</template>
-              <template v-else>{{ statusLabel(task.status) }}</template>
-            </span>
+        <div class="job-progress">
+          <div class="progress-bar">
+            <div class="progress-fill progress-info" :style="{ width: u.progress + '%' }" />
           </div>
-
-          <div v-if="task.type !== 'upload'" class="job-progress">
-            <NProgress
-              :percentage="Math.round((task.progress || 0) * 100)"
-              :status="task.status === 'running' ? 'info' : 'default'"
-              :show-indicator="true"
-              :height="4"
-            />
-            <span v-if="phaseLabel(task)" class="job-phase">{{ phaseLabel(task) }}</span>
-          </div>
-          <div v-else class="job-progress">
-            <span class="job-phase">{{ phaseLabel(task) }} {{ Math.round((task.progress || 0) * 100) }}%</span>
-          </div>
-
-          <div class="job-footer">
-            <span class="job-time">{{ timeAgo(task.created_at) }}</span>
-            <NButton
-              v-if="task.status === 'pending' || task.status === 'running'"
-              quaternary
-              size="tiny"
-              type="error"
-              @click="cancelTask(task.task_id)"
-            >
-              {{ t('jobs.cancel') }}
-            </NButton>
-          </div>
+          <span class="job-phase">{{ u.progress }}% · {{ formatSpeed(u.speed) }}{{ u.fileSize ? ' · ' + formatSize(u.fileSize) : '' }}</span>
         </div>
 
-        <!-- Completed/failed/cancelled tasks -->
-        <div v-for="task in completedTasks" :key="task.task_id" class="job-item">
-          <div class="job-header">
-            <NIcon class="job-icon" :size="14"><component :is="typeIcon(task.type)" /></NIcon>
-            <span class="job-name">{{ taskName(task) || typeLabel(task.type) }}</span>
-            <span :class="['job-status', `status-${statusType(task.status)}`]">
-              {{ statusLabel(task.status) }}
-            </span>
+        <div class="job-footer">
+          <span class="job-time">{{ formatSize(u.bytesUploaded) }}</span>
+          <div class="job-actions">
+            <template v-if="u.status === 'uploading'">
+              <button class="tray-btn" @click="uploadStore.pauseUpload(u.id)">{{ t('upload.pause') }}</button>
+              <button class="tray-btn tray-btn--danger" @click="uploadStore.cancelUpload(u.id)">{{ t('jobs.cancel') }}</button>
+            </template>
+            <template v-if="u.status === 'paused'">
+              <button class="tray-btn tray-btn--accent" @click="uploadStore.resumeUpload(u.id)">{{ t('upload.resume') }}</button>
+              <button class="tray-btn tray-btn--danger" @click="uploadStore.cancelUpload(u.id)">{{ t('jobs.cancel') }}</button>
+            </template>
           </div>
+        </div>
+        <div v-if="u.error" class="job-error">{{ u.error }}</div>
+      </div>
 
-          <div class="job-footer">
-            <span class="job-time">{{ timeAgo(task.updated_at || task.created_at) }}</span>
+      <!-- Active server tasks -->
+      <div v-for="task in activeTasks" :key="task.task_id" class="job-item job-item--active">
+        <div class="job-header">
+          <component :is="typeIcon(task.type)" class="job-icon" width="14" height="14" />
+          <span class="job-name">{{ taskName(task) || typeLabel(task.type) }}</span>
+          <span :class="['job-status', `status-${statusType(task.status)}`]">
+            <template v-if="task.type === 'upload'">{{ phaseLabel(task) || statusLabel(task.status) }}</template>
+            <template v-else>{{ statusLabel(task.status) }}</template>
+          </span>
+        </div>
+
+        <div v-if="task.type !== 'upload'" class="job-progress">
+          <div class="progress-bar">
+            <div class="progress-fill" :class="task.status === 'running' ? 'progress-info' : ''" :style="{ width: Math.round((task.progress || 0) * 100) + '%' }" />
           </div>
+          <span v-if="phaseLabel(task)" class="job-phase">{{ phaseLabel(task) }}</span>
+        </div>
+        <div v-else class="job-progress">
+          <span class="job-phase">{{ phaseLabel(task) }} {{ Math.round((task.progress || 0) * 100) }}%</span>
+        </div>
+
+        <div class="job-footer">
+          <span class="job-time">{{ timeAgo(task.created_at) }}</span>
+          <button v-if="task.status === 'pending' || task.status === 'running'" class="tray-btn tray-btn--danger" @click="cancelTask(task.task_id)">
+            {{ t('jobs.cancel') }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Completed/failed/cancelled tasks -->
+      <div v-for="task in completedTasks" :key="task.task_id" class="job-item">
+        <div class="job-header">
+          <component :is="typeIcon(task.type)" class="job-icon" width="14" height="14" />
+          <span class="job-name">{{ taskName(task) || typeLabel(task.type) }}</span>
+          <span :class="['job-status', `status-${statusType(task.status)}`]">
+            {{ statusLabel(task.status) }}
+          </span>
+        </div>
+        <div class="job-footer">
+          <span class="job-time">{{ timeAgo(task.updated_at || task.created_at) }}</span>
         </div>
       </div>
     </div>
-  </Transition>
+  </TrayPopup>
 </template>
 
 <style scoped>
-.jobs-panel {
-  position: fixed;
-  bottom: 68px;
-  right: 8px;
-  display: flex;
-  flex-direction: column;
-  z-index: 1000;
-  background: #2a2e32;
-  border: 1px solid #3b4045;
-  border-radius: 8px;
-  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.4);
-  overflow: hidden;
-}
-
-.panel-resize-handle {
-  height: 4px;
-  cursor: ns-resize;
-  flex-shrink: 0;
-  background: transparent;
-}
-.panel-resize-handle:hover {
-  background: rgba(61, 174, 233, 0.3);
-}
-
-.jobs-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border-bottom: 1px solid #3b4045;
-  flex-shrink: 0;
-}
-
-.jobs-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #bfc5ca;
-}
-
 .jobs-empty {
   padding: 24px 12px;
 }
-
-.jobs-scroll {
-  overflow-y: auto;
-  padding: 6px;
-  flex: 1;
-  min-height: 0;
+.empty-state {
+  text-align: center;
+  color: var(--breeze-text-disabled, #505962);
+  font-size: 13px;
 }
-
+.jobs-scroll {
+  padding: 6px;
+}
 .job-item {
   padding: 8px;
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.02);
   margin-bottom: 4px;
 }
-.job-item:last-child {
-  margin-bottom: 0;
-}
-
-.job-item--active {
-  background: rgba(61, 174, 233, 0.06);
-}
-
-.job-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.job-icon {
-  font-size: 13px;
-  flex-shrink: 0;
-}
-
-.job-name {
-  flex: 1;
-  font-size: 12px;
-  color: #bfc5ca;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.job-status {
-  font-size: 11px;
-  padding: 1px 6px;
-  border-radius: 3px;
-  flex-shrink: 0;
-}
-
+.job-item:last-child { margin-bottom: 0; }
+.job-item--active { background: rgba(61, 174, 233, 0.06); }
+.job-header { display: flex; align-items: center; gap: 6px; }
+.job-icon { font-size: 13px; flex-shrink: 0; }
+.job-name { flex: 1; font-size: 12px; color: #fcfcfc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-status { font-size: 11px; padding: 1px 6px; border-radius: 3px; flex-shrink: 0; }
 .status-success { color: #63e2b7; }
 .status-error { color: #e88080; }
 .status-warning { color: #f2c97d; }
 .status-info { color: #70c0e8; }
 .status-default { color: #9aa0a6; }
-
-.job-progress {
-  margin-top: 6px;
-}
-
-.job-phase {
-  font-size: 11px;
-  color: #6e7a86;
-  margin-top: 2px;
-  display: block;
-}
-
-.job-error {
-  font-size: 11px;
-  color: #e88080;
-  margin-top: 4px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.job-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-top: 4px;
-}
-
-.job-time {
-  font-size: 11px;
-  color: #505962;
-}
-
-.job-actions {
-  display: flex;
-  gap: 2px;
-}
-
-.slide-up-enter-active,
-.slide-up-leave-active {
-  transition: all 0.2s ease;
-}
-.slide-up-enter-from,
-.slide-up-leave-to {
-  opacity: 0;
-  transform: translateY(12px);
-}
+.job-progress { margin-top: 6px; }
+.progress-bar { height: 4px; background: var(--breeze-border, #3b4045); border-radius: 2px; overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 2px; background: var(--breeze-text-secondary, #a1a9b1); transition: width 0.3s ease; }
+.progress-fill.progress-info { background: var(--breeze-accent, #3daee9); }
+.progress-fill.progress-success { background: var(--breeze-success, #27ae60); }
+.progress-fill.progress-error { background: var(--breeze-danger, #da4453); }
+.job-phase { font-size: 11px; color: #6e7a86; margin-top: 2px; display: block; }
+.job-error { font-size: 11px; color: #e88080; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+.job-time { font-size: 11px; color: #505962; }
+.job-actions { display: flex; gap: 2px; }
+.tray-btn { padding: 2px 8px; border: none; border-radius: 3px; background: none; color: var(--breeze-text-secondary, #a1a9b1); font-size: 12px; cursor: default; }
+.tray-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--breeze-text, #fcfcfc); }
+.tray-btn--accent { color: var(--breeze-accent, #3daee9); }
+.tray-btn--danger { color: var(--breeze-danger, #da4453); }
+.tray-btn--danger:hover { background: rgba(218, 68, 83, 0.15); }
 </style>

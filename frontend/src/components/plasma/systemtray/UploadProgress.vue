@@ -1,6 +1,5 @@
 <script setup>
 import { ref } from 'vue'
-import { NCard, NProgress, NButton, NList, NListItem, NIcon } from 'naive-ui'
 import { useUploadStore } from '../../../stores/upload'
 import { useI18n } from '../../../composables/useI18n'
 import IconClose from '~icons/mdi/close'
@@ -59,14 +58,13 @@ function formatEta(u) {
   return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`
 }
 
-function statusColor(status) {
+function progressClass(status) {
   switch (status) {
-    case 'completed': return 'success'
-    case 'failed': return 'error'
-    case 'paused': return 'warning'
-    case 'interrupted': return 'warning'
-    case 'processing': return 'info'
-    default: return 'info'
+    case 'completed': return 'progress-success'
+    case 'failed': return 'progress-error'
+    case 'paused':
+    case 'interrupted': return 'progress-warning'
+    default: return 'progress-info'
   }
 }
 
@@ -83,82 +81,70 @@ function processingText(u) {
 
 <template>
   <Transition name="slide-up">
-    <NCard
-      v-if="upload.showPanel"
-      class="upload-panel"
-      :bordered="true"
-      size="small"
-    >
-      <template #header>
-        <div class="upload-header">
-          <span>{{ t('upload.title') }}</span>
-          <div class="upload-actions">
-            <NButton size="tiny" quaternary @click="upload.removeCompleted">
-              {{ t('upload.clear') }}
-            </NButton>
-            <NButton size="tiny" quaternary @click="upload.showPanel = false">
-              <template #icon><NIcon><IconClose /></NIcon></template>
-            </NButton>
-          </div>
+    <div v-if="upload.showPanel" class="upload-panel">
+      <div class="upload-header">
+        <span class="upload-title">{{ t('upload.title') }}</span>
+        <div class="upload-actions">
+          <button class="tray-btn" @click="upload.removeCompleted">
+            {{ t('upload.clear') }}
+          </button>
+          <button class="tray-btn tray-btn--icon" @click="upload.showPanel = false">
+            <IconClose width="14" height="14" />
+          </button>
         </div>
-      </template>
+      </div>
 
-      <NList :bordered="false" size="small">
-        <NListItem v-for="u in upload.uploads" :key="u.id">
-          <div class="upload-item">
-            <div class="upload-item-header">
-              <span class="upload-filename truncate">{{ u.fileName }}</span>
-              <span class="upload-size">{{ formatSize(u.fileSize) }}</span>
-            </div>
-            <NProgress
-              :percentage="u.progress"
-              :status="statusColor(u.status)"
-              :height="4"
-              :show-indicator="false"
-            />
-            <div class="upload-item-footer">
-              <span class="upload-status">
-                <template v-if="u.status === 'uploading'">{{ u.progress }}% · {{ formatSpeed(u.speed) }}{{ formatEta(u) ? ' · ' + formatEta(u) : '' }}</template>
-                <template v-else-if="u.status === 'processing'">{{ processingText(u) }}</template>
-                <template v-else>{{ statusText(u.status) }}</template>
-              </span>
-              <div class="upload-item-actions">
-                <template v-if="u.status === 'uploading'">
-                  <NButton size="tiny" quaternary @click="upload.pauseUpload(u.id)">
-                    {{ t('upload.pause') }}
-                  </NButton>
-                  <NButton size="tiny" quaternary @click="upload.cancelUpload(u.id)">
-                    {{ t('upload.cancel') }}
-                  </NButton>
-                </template>
-                <template v-if="u.status === 'paused'">
-                  <NButton size="tiny" quaternary type="info" @click="upload.resumeUpload(u.id)">
-                    {{ t('upload.resume') }}
-                  </NButton>
-                  <NButton size="tiny" quaternary @click="upload.cancelUpload(u.id)">
-                    {{ t('upload.cancel') }}
-                  </NButton>
-                </template>
-                <template v-if="u.status === 'interrupted'">
-                  <NButton size="tiny" quaternary type="info" @click="triggerResume(u.id)">
-                    {{ u._file ? t('upload.resume') : t('upload.reselect_resume') }}
-                  </NButton>
-                  <NButton size="tiny" quaternary @click="upload.dismissInterrupted(u.id)">
-                    {{ t('upload.dismiss') }}
-                  </NButton>
-                </template>
-                <template v-if="u.status === 'failed' && u._file">
-                  <NButton size="tiny" quaternary type="info" @click="upload.retryUpload(u.id)">
-                    {{ t('upload.retry') }}
-                  </NButton>
-                </template>
-              </div>
-            </div>
-            <div v-if="u.error" class="upload-error">{{ te({ response: { data: { error: u.error } } }) }}</div>
+      <div class="upload-scroll">
+        <div v-for="u in upload.uploads" :key="u.id" class="upload-item">
+          <div class="upload-item-header">
+            <span class="upload-filename truncate">{{ u.fileName }}</span>
+            <span class="upload-size">{{ formatSize(u.fileSize) }}</span>
           </div>
-        </NListItem>
-      </NList>
-    </NCard>
+          <div class="progress-bar">
+            <div class="progress-fill" :class="progressClass(u.status)" :style="{ width: u.progress + '%' }" />
+          </div>
+          <div class="upload-item-footer">
+            <span class="upload-status">
+              <template v-if="u.status === 'uploading'">{{ u.progress }}% · {{ formatSpeed(u.speed) }}{{ formatEta(u) ? ' · ' + formatEta(u) : '' }}</template>
+              <template v-else-if="u.status === 'processing'">{{ processingText(u) }}</template>
+              <template v-else>{{ statusText(u.status) }}</template>
+            </span>
+            <div class="upload-item-actions">
+              <template v-if="u.status === 'uploading'">
+                <button class="tray-btn" @click="upload.pauseUpload(u.id)">
+                  {{ t('upload.pause') }}
+                </button>
+                <button class="tray-btn" @click="upload.cancelUpload(u.id)">
+                  {{ t('upload.cancel') }}
+                </button>
+              </template>
+              <template v-if="u.status === 'paused'">
+                <button class="tray-btn tray-btn--accent" @click="upload.resumeUpload(u.id)">
+                  {{ t('upload.resume') }}
+                </button>
+                <button class="tray-btn" @click="upload.cancelUpload(u.id)">
+                  {{ t('upload.cancel') }}
+                </button>
+              </template>
+              <template v-if="u.status === 'interrupted'">
+                <button class="tray-btn tray-btn--accent" @click="triggerResume(u.id)">
+                  {{ u._file ? t('upload.resume') : t('upload.reselect_resume') }}
+                </button>
+                <button class="tray-btn" @click="upload.dismissInterrupted(u.id)">
+                  {{ t('upload.dismiss') }}
+                </button>
+              </template>
+              <template v-if="u.status === 'failed' && u._file">
+                <button class="tray-btn tray-btn--accent" @click="upload.retryUpload(u.id)">
+                  {{ t('upload.retry') }}
+                </button>
+              </template>
+            </div>
+          </div>
+          <div v-if="u.error" class="upload-error">{{ te({ response: { data: { error: u.error } } }) }}</div>
+        </div>
+      </div>
+    </div>
   </Transition>
   <input ref="fileInputRef" type="file" style="display:none" @change="onFileSelected">
 </template>
@@ -170,24 +156,45 @@ function processingText(u) {
   right: 16px;
   width: 360px;
   max-height: 400px;
-  overflow-y: auto;
   z-index: 200;
+  background: var(--breeze-surface, #292c30);
+  border: 1px solid var(--breeze-border, #3b4045);
+  border-radius: 8px;
   box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.12);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 .upload-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--breeze-border, #3b4045);
+  flex-shrink: 0;
+}
+.upload-title {
   font-weight: 600;
+  font-size: 13px;
 }
 .upload-actions {
   display: flex;
   gap: 4px;
 }
+.upload-scroll {
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
+}
 .upload-item {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+.upload-item:last-child {
+  border-bottom: none;
 }
 .upload-item-header {
   display: flex;
@@ -218,6 +225,47 @@ function processingText(u) {
 .upload-error {
   font-size: var(--font-size-xs);
   color: var(--breeze-danger);
+}
+
+/* ─── Progress bar ─── */
+.progress-bar {
+  height: 4px;
+  background: var(--breeze-border, #3b4045);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+.progress-info { background: var(--breeze-accent, #3daee9); }
+.progress-success { background: var(--breeze-success, #27ae60); }
+.progress-error { background: var(--breeze-danger, #da4453); }
+.progress-warning { background: var(--breeze-warning, #f67400); }
+
+/* ─── Flat tray button ─── */
+.tray-btn {
+  padding: 2px 8px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--breeze-text-secondary, #a1a9b1);
+  font-size: 12px;
+  cursor: default;
+}
+.tray-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--breeze-text, #fcfcfc);
+}
+.tray-btn--accent {
+  color: var(--breeze-accent, #3daee9);
+}
+.tray-btn--icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
 }
 
 .slide-up-enter-active, .slide-up-leave-active {
