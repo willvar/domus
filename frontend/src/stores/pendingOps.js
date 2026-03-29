@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import api from '../composables/useApi'
 import { addOp, getAllOps, deleteOp, isDBAvailable } from '../composables/useIndexedDB'
+import { useFileSystemStore } from './fileSystem'
 
 export const usePendingOpsStore = defineStore('pendingOps', () => {
   const ops = ref([])
@@ -40,7 +41,7 @@ export const usePendingOpsStore = defineStore('pendingOps', () => {
 
   async function enqueue(record) {
     const op = {
-      id: crypto.randomUUID(),
+      id: crypto?.randomUUID?.() || (Math.random().toString(36).slice(2) + Date.now().toString(36)),
       createdAt: Date.now(),
       lastAttempt: null,
       lastError: null,
@@ -81,7 +82,6 @@ export const usePendingOpsStore = defineStore('pendingOps', () => {
 
       // Refresh directory
       try {
-        const { useFileSystemStore } = await import('./fileSystem')
         const fs = useFileSystemStore()
         fs.invalidateCache()
         fs.refresh()

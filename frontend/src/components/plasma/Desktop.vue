@@ -1,10 +1,16 @@
 <script setup>
-import { useWindowManagerStore, FILES_ICON } from '../../stores/windowManager'
+import { useWindowManagerStore, FILES_ICON, PROFILE_ICON } from '../../stores/windowManager'
 import { useTouchHandlers } from '../../composables/useTouch'
 
 const wm = useWindowManagerStore()
 
 const apps = [
+  {
+    id: 'profile',
+    label: '我',
+    icon: PROFILE_ICON,
+    action: () => wm.openProfileApp(),
+  },
   {
     id: 'files',
     label: '文件',
