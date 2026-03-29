@@ -402,7 +402,7 @@ onUnmounted(() => {
       @touchstart="startDragTouch"
       @dblclick="handleTitleDblClick"
     >
-      <component :is="icon" v-if="icon" class="plasma-titlebar-icon" width="16" height="16" />
+      <component :is="icon" v-if="icon" class="plasma-titlebar-icon" width="20" height="20" />
       <span class="plasma-titlebar-title">{{ title }}</span>
       <div class="plasma-titlebar-buttons">
         <button class="plasma-btn plasma-btn-minimize" title="最小化" @click.stop="minimize">
@@ -442,26 +442,26 @@ onUnmounted(() => {
 .plasma-titlebar {
   display: flex;
   align-items: center;
-  height: 32px;
-  padding: 0 6px;
+  height: 40px;
+  padding: 0 10px;
   background: var(--breeze-surface-raised);
   border-bottom: 1px solid var(--breeze-border);
   user-select: none;
   flex-shrink: 0;
-  gap: 6px;
+  gap: 8px;
 }
 
 .plasma-titlebar-icon {
   display: flex;
   align-items: center;
-  width: 16px;
-  height: 16px;
+  width: 20px;
+  height: 20px;
   flex-shrink: 0;
 }
 
 .plasma-titlebar-title {
   flex: 1;
-  font-size: 12px;
+  font-size: 13px;
   color: var(--breeze-text);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -470,13 +470,13 @@ onUnmounted(() => {
 
 .plasma-titlebar-buttons {
   display: flex;
-  gap: 4px;
+  gap: 6px;
   flex-shrink: 0;
 }
 
 .plasma-btn {
-  width: 20px;
-  height: 20px;
+  width: 26px;
+  height: 26px;
   border: none;
   border-radius: 50%;
   background: transparent;

@@ -172,6 +172,7 @@ const touch = useTouchHandlers({
         v-if="file.thumbnail_url"
         :src="file.thumbnail_url"
         class="file-thumbnail"
+        :style="{ height: fs.iconSize + 'px' }"
         loading="lazy"
         draggable="false"
       />
@@ -287,10 +288,9 @@ const touch = useTouchHandlers({
   background: #3daee9;
 }
 .file-thumbnail {
-  width: 100%;
-  max-height: 80px;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 4px;
+  max-width: 100%;
 }
 .compact .file-thumbnail {
   width: 32px;
@@ -396,7 +396,7 @@ const touch = useTouchHandlers({
 .tooltip-name {
   font-size: 13px;
   font-weight: 500;
-  color: var(--breeze-text, #bfc5ca);
+  color: var(--breeze-text, #fcfcfc);
   margin-bottom: 4px;
   word-break: break-all;
 }

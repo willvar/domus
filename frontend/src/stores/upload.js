@@ -55,7 +55,7 @@ export const useUploadStore = defineStore('upload', () => {
     localStorage.removeItem(INTERRUPTED_KEY)
     for (const item of interrupted) {
       uploads.value.push({
-        id: crypto.randomUUID(),
+        id: crypto?.randomUUID?.() || (Math.random().toString(36).slice(2) + Date.now().toString(36)),
         fileName: item.fileName,
         fileSize: item.fileSize,
         progress: item.progress,
@@ -141,7 +141,7 @@ export const useUploadStore = defineStore('upload', () => {
 
   async function startUpload(file, targetPath, allowZeroByte = false, conflictStrategy = null) {
     const entry = {
-      id: crypto.randomUUID(),
+      id: crypto?.randomUUID?.() || (Math.random().toString(36).slice(2) + Date.now().toString(36)),
       fileName: file.name,
       fileSize: file.size,
       progress: 0,

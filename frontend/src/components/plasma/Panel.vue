@@ -1,6 +1,5 @@
 <script setup>
-import { computed, ref, provide } from 'vue'
-import { NDropdown } from 'naive-ui'
+import { computed, ref, watch, onUnmounted } from 'vue'
 import { useWindowManagerStore } from '../../stores/windowManager'
 import { useAuthStore } from '../../stores/auth'
 import { useJobsStore } from '../../stores/jobs'
@@ -10,6 +9,7 @@ import { useI18n } from '../../composables/useI18n'
 import IconGrid from '~icons/mdi/view-grid'
 import IconSync from '~icons/mdi/refresh'
 import IconAccount from '~icons/mdi/account'
+import IconCog from '~icons/mdi/cog-outline'
 
 const wm = useWindowManagerStore()
 const auth = useAuthStore()
@@ -18,26 +18,12 @@ const uploadStore = useUploadStore()
 const pendingOps = usePendingOpsStore()
 const { t, locale, setLocale } = useI18n()
 
-const emit = defineEmits(['show-account', 'update:showAccount'])
+const props = defineProps({
+  showPrefs: { type: Boolean, default: false },
+})
+const emit = defineEmits(['update:showPrefs'])
 
-// --- Tray panel size (shared across all panels, persisted) ---
-const PANEL_SIZE_KEY = 'zephyr_tray_panel_size'
-function loadPanelSize() {
-  try {
-    const raw = localStorage.getItem(PANEL_SIZE_KEY)
-    if (raw) return JSON.parse(raw)
-  } catch { /* ignore */ }
-  return { width: 360, height: 420 }
-}
-const panelSize = ref(loadPanelSize())
-
-function savePanelSize(size) {
-  panelSize.value = size
-  localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify(size))
-}
-
-provide('trayPanelSize', panelSize)
-provide('updateTrayPanelSize', savePanelSize)
+// Tray panel size is provided by PlasmaShell
 
 function handleWheel(e) {
   e.preventDefault()
@@ -69,19 +55,66 @@ function handleClick(win) {
   }
 }
 
-const userMenuOptions = computed(() => {
-  const items = [
-    { label: `${auth.username}`, key: 'user', disabled: true },
-    { type: 'divider' },
-    { label: t('account.security'), key: 'account' },
-    {
-      label: locale.value === 'zh' ? 'English' : '中文',
-      key: 'lang',
-    },
-    { type: 'divider' },
-    { label: t('titlebar.sign_out'), key: 'logout' },
-  ]
-  return items
+// --- User menu dropdown ---
+const showUserMenu = ref(false)
+const userBtnRef = ref(null)
+const userMenuRef = ref(null)
+const userMenuStyle = ref({})
+
+const userMenuItems = computed(() => [
+  { label: auth.user?.display_name || auth.username, key: 'profile' },
+  { type: 'divider' },
+  { label: locale.value === 'zh' ? 'English' : '中文', key: 'lang' },
+  { type: 'divider' },
+  { label: t('titlebar.sign_out'), key: 'logout', danger: true },
+])
+
+function toggleUserMenu() {
+  if (showUserMenu.value) {
+    showUserMenu.value = false
+    return
+  }
+  const btn = userBtnRef.value
+  if (!btn) return
+  const rect = btn.getBoundingClientRect()
+  // Position above the button, aligned to right
+  showUserMenu.value = true
+  // Defer position calculation to next tick when menu is rendered
+  requestAnimationFrame(() => {
+    const menuEl = userMenuRef.value
+    if (!menuEl) return
+    const menuRect = menuEl.getBoundingClientRect()
+    let left = rect.right - menuRect.width
+    let top = rect.top - menuRect.height - 4
+    if (left < 4) left = 4
+    if (top < 4) top = rect.bottom + 4
+    userMenuStyle.value = { left: `${left}px`, top: `${top}px` }
+  })
+}
+
+function handleUserMenu(key) {
+  showUserMenu.value = false
+  if (key === 'profile') wm.openProfileApp()
+  if (key === 'logout') auth.logout()
+  if (key === 'lang') setLocale(locale.value === 'zh' ? 'en' : 'zh')
+}
+
+function onUserMenuClickOutside(e) {
+  if (userMenuRef.value && !userMenuRef.value.contains(e.target) &&
+      userBtnRef.value && !userBtnRef.value.contains(e.target)) {
+    showUserMenu.value = false
+  }
+}
+
+watch(showUserMenu, (val) => {
+  if (val) {
+    document.addEventListener('mousedown', onUserMenuClickOutside, true)
+  } else {
+    document.removeEventListener('mousedown', onUserMenuClickOutside, true)
+  }
+})
+onUnmounted(() => {
+  document.removeEventListener('mousedown', onUserMenuClickOutside, true)
 })
 
 function toggleTasks() {
@@ -89,7 +122,7 @@ function toggleTasks() {
   jobsStore.panelOpen = opening
   if (opening) {
     pendingOps.showPanel = false
-    emit('update:showAccount', false)
+    emit('update:showPrefs', false)
   }
 }
 
@@ -98,20 +131,17 @@ function togglePending() {
   pendingOps.showPanel = opening
   if (opening) {
     jobsStore.panelOpen = false
-    emit('update:showAccount', false)
+    emit('update:showPrefs', false)
   }
 }
 
-function openAccount() {
-  jobsStore.panelOpen = false
-  pendingOps.showPanel = false
-  emit('show-account')
-}
-
-function handleUserMenu(key) {
-  if (key === 'logout') auth.logout()
-  if (key === 'account') openAccount()
-  if (key === 'lang') setLocale(locale.value === 'zh' ? 'en' : 'zh')
+function togglePrefs() {
+  const opening = !props.showPrefs
+  emit('update:showPrefs', opening)
+  if (opening) {
+    jobsStore.panelOpen = false
+    pendingOps.showPanel = false
+  }
 }
 
 const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.activeUploads.length)
@@ -141,7 +171,7 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
         :title="t('jobs.title')"
         @click="toggleTasks"
       >
-        <IconGrid width="18" height="18" />
+        <IconGrid width="22" height="22" />
         <span v-if="activeCount > 0" class="tray-badge">{{ activeCount }}</span>
       </button>
 
@@ -151,15 +181,53 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
         :title="t('pending.title')"
         @click="togglePending"
       >
-        <IconSync width="18" height="18" />
+        <IconSync width="22" height="22" />
         <span v-if="pendingOps.pendingCount > 0" class="tray-badge tray-badge--warning">{{ pendingOps.pendingCount }}</span>
       </button>
 
-      <NDropdown :options="userMenuOptions" trigger="click" placement="top-end" @select="handleUserMenu">
-        <button class="taskbar-tray-btn" :title="auth.username">
-          <IconAccount width="18" height="18" />
-        </button>
-      </NDropdown>
+      <button
+        class="taskbar-tray-btn"
+        :class="{ 'taskbar-tray-btn--active': props.showPrefs }"
+        :title="t('account.preferences')"
+        @click="togglePrefs"
+      >
+        <IconCog width="22" height="22" />
+      </button>
+
+      <button
+        ref="userBtnRef"
+        class="taskbar-tray-btn"
+        :class="{ 'taskbar-tray-btn--active': showUserMenu }"
+        :title="auth.username"
+        @click="toggleUserMenu"
+      >
+        <img v-if="auth.user?.avatar_url" :src="auth.user.avatar_url" class="tray-avatar" />
+        <IconAccount v-else width="22" height="22" />
+      </button>
+
+      <Teleport to="body">
+        <Transition name="ctx-menu">
+          <div
+            v-if="showUserMenu"
+            ref="userMenuRef"
+            class="plasma-context-menu"
+            :style="userMenuStyle"
+          >
+            <template v-for="(item, i) in userMenuItems" :key="item.key || `div-${i}`">
+              <div v-if="item.type === 'divider'" class="ctx-divider" />
+              <button
+                v-else
+                class="ctx-item"
+                :class="{ danger: item.danger, disabled: item.disabled }"
+                :disabled="item.disabled"
+                @click="!item.disabled && handleUserMenu(item.key)"
+              >
+                {{ item.label }}
+              </button>
+            </template>
+          </div>
+        </Transition>
+      </Teleport>
     </div>
   </div>
 </template>
@@ -167,7 +235,7 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
 <style scoped>
 .taskbar {
   height: 64px;
-  background: #1b1e20;
+  background: #141618;
   border-top: none;
   display: flex;
   align-items: center;
@@ -227,8 +295,8 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
+  width: 40px;
+  height: 40px;
   border: none;
   border-radius: 0;
   background: transparent;
@@ -239,6 +307,13 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
 }
 .taskbar-tray-btn--active {
   color: #3daee9;
+}
+
+.tray-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  object-fit: cover;
 }
 
 .tray-badge {
@@ -258,5 +333,62 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
 }
 .tray-badge--warning {
   background: #e6a23c;
+}
+
+/* ─── Plasma context menu (user menu) ─── */
+.plasma-context-menu {
+  position: fixed;
+  z-index: 10000;
+  min-width: 160px;
+  padding: 4px 0;
+  background: var(--breeze-surface-raised, #31363b);
+  border: 1px solid var(--breeze-border, #3b4045);
+  border-radius: 4px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
+.ctx-item {
+  display: block;
+  width: 100%;
+  padding: 5px 16px;
+  margin: 0;
+  border: none;
+  background: none;
+  color: var(--breeze-text, #fcfcfc);
+  font-size: 14px;
+  line-height: 22px;
+  text-align: left;
+  cursor: default;
+}
+.ctx-item:hover:not(:disabled) {
+  background: var(--breeze-accent, #3daee9);
+  color: #fff;
+}
+.ctx-item.danger:hover:not(:disabled) {
+  background: var(--breeze-danger, #da4453);
+}
+.ctx-item.disabled {
+  color: var(--breeze-text-disabled, #505962);
+  cursor: default;
+}
+
+.ctx-divider {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--breeze-border, #3b4045);
+}
+
+.ctx-menu-enter-active {
+  transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.ctx-menu-leave-active {
+  transition: opacity 0.08s ease;
+}
+.ctx-menu-enter-from {
+  opacity: 0;
+  transform: scale(0.96);
+}
+.ctx-menu-leave-to {
+  opacity: 0;
 }
 </style>
