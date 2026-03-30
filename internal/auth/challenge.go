@@ -66,7 +66,6 @@ type LoginChallenge struct {
 	UserID      string
 	Username    string
 	Role        string
-	Permissions int64
 	Methods     []string // [] = direct, ["email"] / ["otp"] / ["email","otp"] = need code
 	EmailCode   string   // stored email code (if methods contains "email")
 }
