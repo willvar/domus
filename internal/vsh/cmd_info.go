@@ -20,9 +20,6 @@ import (
 // --- stat ---
 
 func cmdStat(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 	if len(args) == 0 {
 		return "", errors.New("missing file operand")
 	}
@@ -57,9 +54,6 @@ func cmdStat(s *Session, args []string, redirect string) (string, error) {
 // --- du ---
 
 func cmdDu(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 
 	target := s.Cwd
 	for _, a := range args {
@@ -84,9 +78,6 @@ func cmdDu(s *Session, args []string, redirect string) (string, error) {
 // --- file ---
 
 func cmdFile(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 	if len(args) == 0 {
 		return "", errors.New("missing file operand")
 	}
@@ -172,9 +163,6 @@ func cmdWhich(s *Session, args []string, redirect string) (string, error) {
 // --- md5sum ---
 
 func cmdMd5sum(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 	if len(args) == 0 {
 		return "", errors.New("missing file operand")
 	}
@@ -209,9 +197,6 @@ func cmdMd5sum(s *Session, args []string, redirect string) (string, error) {
 // --- sha256sum ---
 
 func cmdSha256sum(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 	if len(args) == 0 {
 		return "", errors.New("missing file operand")
 	}

@@ -16,9 +16,6 @@ import (
 // --- ls ---
 
 func cmdLs(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 
 	longFormat := false
 	showAll := false
@@ -48,7 +45,7 @@ func cmdLs(s *Session, args []string, redirect string) (string, error) {
 		return "", err
 	}
 
-	records, err := model.ListDirectChildren(dirOSS)
+	records, err := model.ListDirectChildren(s.UserID, dirOSS)
 	if err != nil {
 		return "", fmt.Errorf("cannot list: %v", err)
 	}
@@ -111,7 +108,7 @@ func cmdCd(s *Session, args []string, redirect string) (string, error) {
 	// Verify it's a valid directory by checking DB
 	dirOSS := s.Username + appPath
 	if appPath != "/" {
-		records, err := model.ListDirectChildren(dirOSS)
+		records, err := model.ListDirectChildren(s.UserID, dirOSS)
 		if err != nil {
 			return "", fmt.Errorf("no such directory: %s", appPath)
 		}
@@ -138,9 +135,6 @@ func cmdPwd(s *Session, args []string, redirect string) (string, error) {
 // --- mkdir ---
 
 func cmdMkdir(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermUpload) {
-		return "", errors.New("permission denied")
-	}
 	if len(args) == 0 {
 		return "", errors.New("missing directory name")
 	}
@@ -171,9 +165,6 @@ func cmdMkdir(s *Session, args []string, redirect string) (string, error) {
 // --- touch ---
 
 func cmdTouch(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermUpload) {
-		return "", errors.New("permission denied")
-	}
 	if len(args) == 0 {
 		return "", errors.New("missing file operand")
 	}
@@ -187,12 +178,14 @@ func cmdTouch(s *Session, args []string, redirect string) (string, error) {
 		if _, getErr := model.GetFile(s.UserID, ossPath); getErr == nil {
 			continue // file exists, skip
 		}
-		if err := s.WriteFileEncrypted(ossPath, []byte{}); err != nil {
+		wrappedDEK, err := s.WriteFileEncrypted(ossPath, []byte{})
+		if err != nil {
 			return "", fmt.Errorf("cannot create %s: %v", file, err)
 		}
 		name := path.Base(ossPath)
 		ct := mime.TypeByExtension(filepath.Ext(name))
-		_ = model.UpsertFile(s.UserID, ossPath, name, false, 0, ct, "")
+		_ = model.UpsertFile(s.UserID, ossPath, name, false, 0, ct, "",
+			model.UpsertFileOpts{WrappedDEK: wrappedDEK})
 		s.notifyParentDir(ossPath, "created")
 	}
 	return "", nil
@@ -201,9 +194,6 @@ func cmdTouch(s *Session, args []string, redirect string) (string, error) {
 // --- rm ---
 
 func cmdRm(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermDelete) {
-		return "", errors.New("permission denied")
-	}
 
 	recursive := false
 	var targets []string
@@ -262,9 +252,6 @@ func cmdRm(s *Session, args []string, redirect string) (string, error) {
 // --- cp ---
 
 func cmdCp(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermEdit) {
-		return "", errors.New("permission denied")
-	}
 
 	recursive := false
 	var positional []string
@@ -312,10 +299,14 @@ func cmdCp(s *Session, args []string, redirect string) (string, error) {
 		ct := mime.TypeByExtension(filepath.Ext(name))
 		srcFile, _ := model.GetFile(s.UserID, srcOSS)
 		size := int64(0)
+		var opts []model.UpsertFileOpts
 		if srcFile != nil {
 			size = srcFile.Size
+			if srcFile.WrappedDEK != "" {
+				opts = append(opts, model.UpsertFileOpts{WrappedDEK: srcFile.WrappedDEK})
+			}
 		}
-		_ = model.UpsertFile(s.UserID, dstOSS, name, false, size, ct, "")
+		_ = model.UpsertFile(s.UserID, dstOSS, name, false, size, ct, "", opts...)
 	}
 	s.notifyParentDir(dstOSS, "created")
 	return "", nil
@@ -324,9 +315,6 @@ func cmdCp(s *Session, args []string, redirect string) (string, error) {
 // --- mv ---
 
 func cmdMv(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermEdit) {
-		return "", errors.New("permission denied")
-	}
 
 	var positional []string
 	for _, a := range args {
@@ -375,9 +363,6 @@ func cmdMv(s *Session, args []string, redirect string) (string, error) {
 // --- tree ---
 
 func cmdTree(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 
 	target := s.Cwd
 	maxDepth := 3
@@ -407,7 +392,7 @@ func treeWalk(s *Session, ossDir, prefix string, maxDepth, depth int, b *strings
 	if depth >= maxDepth {
 		return
 	}
-	records, err := model.ListDirectChildren(ossDir)
+	records, err := model.ListDirectChildren(s.UserID, ossDir)
 	if err != nil {
 		return
 	}
@@ -439,9 +424,6 @@ func treeWalk(s *Session, ossDir, prefix string, maxDepth, depth int, b *strings
 // --- find ---
 
 func cmdFind(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 
 	searchPath := s.Cwd
 	var namePattern string
