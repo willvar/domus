@@ -17,10 +17,13 @@ type FileRecord struct {
 	Size          int64     `gorm:"not null;default:0" json:"size"`
 	ContentType   string    `gorm:"default:''" json:"content_type"`
 	ContentHash   string    `gorm:"default:''" json:"-"`
-	ThumbnailKey  string    `gorm:"default:''" json:"-"`
-	MediaWidth    int       `gorm:"not null;default:0" json:"-"`
+	ThumbnailKey        string `gorm:"default:''" json:"-"`
+	ThumbnailWrappedDEK string `gorm:"default:''" json:"-"`
+	MediaWidth          int    `gorm:"not null;default:0" json:"-"`
 	MediaHeight   int       `gorm:"not null;default:0" json:"-"`
 	MediaDuration float64   `gorm:"not null;default:0" json:"-"`
+	// Envelope encryption
+	WrappedDEK string `gorm:"default:''" json:"-"`
 	// Upload-related fields
 	Status         string `gorm:"not null;default:'ready';index" json:"status"`
 	UploadID       string `gorm:"default:'';index" json:"-"`
@@ -48,7 +51,12 @@ func (TrashItem) TableName() string { return "trash" }
 
 // FileRecord operations
 
-func UpsertFile(userID string, path, name string, isDir bool, size int64, contentType, contentHash string) error {
+// UpsertFileOpts holds optional fields for UpsertFile.
+type UpsertFileOpts struct {
+	WrappedDEK string
+}
+
+func UpsertFile(userID string, path, name string, isDir bool, size int64, contentType, contentHash string, opts ...UpsertFileOpts) error {
 	record := FileRecord{
 		UserID:      userID,
 		Path:        path,
@@ -59,6 +67,9 @@ func UpsertFile(userID string, path, name string, isDir bool, size int64, conten
 		ContentType: contentType,
 		ContentHash: contentHash,
 		UpdatedAt:   time.Now(),
+	}
+	if len(opts) > 0 {
+		record.WrappedDEK = opts[0].WrappedDEK
 	}
 	// Try to find existing record
 	var existing FileRecord
@@ -80,16 +91,20 @@ func UpsertFile(userID string, path, name string, isDir bool, size int64, conten
 	if contentHash != "" {
 		updates["content_hash"] = contentHash
 	}
+	if len(opts) > 0 && opts[0].WrappedDEK != "" {
+		updates["wrapped_dek"] = opts[0].WrappedDEK
+	}
 	return db.Model(&existing).Updates(updates).Error
 }
 
-func UpdateFileThumbnail(userID, path, thumbnailKey string, width, height int, duration float64) error {
+func UpdateFileThumbnail(userID, path, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) error {
 	return db.Model(&FileRecord{}).Where("user_id = ? AND path = ?", userID, path).Updates(map[string]interface{}{
-		"thumbnail_key":  thumbnailKey,
-		"media_width":    width,
-		"media_height":   height,
-		"media_duration": duration,
-		"updated_at":     time.Now(),
+		"thumbnail_key":         thumbnailKey,
+		"thumbnail_wrapped_dek": thumbnailWrappedDEK,
+		"media_width":           width,
+		"media_height":          height,
+		"media_duration":        duration,
+		"updated_at":            time.Now(),
 	}).Error
 }
 
@@ -171,18 +186,18 @@ func parentOf(path string) string {
 
 // ListDirectChildren returns direct children (files and dirs) under a parent path.
 // Returns files in all visible statuses (ready, uploading, processing). Failed files are hidden.
-func ListDirectChildren(parent string) ([]FileRecord, error) {
+func ListDirectChildren(userID, parent string) ([]FileRecord, error) {
 	var records []FileRecord
-	err := db.Where("parent = ? AND status != ?", parent, "deleted").
+	err := db.Where("user_id = ? AND parent = ? AND status != ?", userID, parent, "deleted").
 		Order("is_dir DESC, name ASC").Find(&records).Error
 	return records, err
 }
 
 // ListAllChildren returns all direct children under a parent path regardless of status.
 // Used for conflict detection during uploads where we need to see uploading/processing files too.
-func ListAllChildren(parent string) ([]FileRecord, error) {
+func ListAllChildren(userID, parent string) ([]FileRecord, error) {
 	var records []FileRecord
-	err := db.Where("parent = ?", parent).Find(&records).Error
+	err := db.Where("user_id = ? AND parent = ?", userID, parent).Find(&records).Error
 	return records, err
 }
 

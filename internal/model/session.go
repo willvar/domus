@@ -10,22 +10,21 @@ import (
 
 // Session is the lightweight in-memory representation used by middleware/handlers.
 type Session struct {
-	UserID      string
-	Username    string
-	Role        string
-	Permissions int64
-	CreatedAt   time.Time
+	UserID    string
+	Username  string
+	Role      string
+	CreatedAt time.Time
+	KEK       []byte // per-user Key Encryption Key, cached in memory only
 }
 
 // DBSession is the GORM model for persistent sessions.
 type DBSession struct {
-	ID          string    `gorm:"primaryKey"`
-	UserID      string    `gorm:"not null;index"`
-	Username    string    `gorm:"not null"`
-	Role        string    `gorm:"not null"`
-	Permissions int64     `gorm:"not null"`
-	CreatedAt   time.Time `gorm:"not null"`
-	ExpiresAt   time.Time `gorm:"not null;index"`
+	ID        string    `gorm:"primaryKey"`
+	UserID    string    `gorm:"not null;index"`
+	Username  string    `gorm:"not null"`
+	Role      string    `gorm:"not null"`
+	CreatedAt time.Time `gorm:"not null"`
+	ExpiresAt time.Time `gorm:"not null;index"`
 }
 
 func (DBSession) TableName() string { return "sessions" }
@@ -33,7 +32,8 @@ func (DBSession) TableName() string { return "sessions" }
 // SessionStore provides database-backed session management. It holds its own
 // *gorm.DB reference for proper dependency injection.
 type SessionStore struct {
-	DB *gorm.DB
+	DB          *gorm.DB
+	PopulateKEK func(*Session) // optional hook to load KEK after session is fetched
 }
 
 // NewSessionStore creates a SessionStore with the given database connection.
@@ -49,7 +49,7 @@ func generateSessionID() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func (s *SessionStore) Create(userID string, username, role string, permissions int64) (string, error) {
+func (s *SessionStore) Create(userID string, username, role string) (string, error) {
 	id, err := generateSessionID()
 	if err != nil {
 		return "", err
@@ -57,13 +57,12 @@ func (s *SessionStore) Create(userID string, username, role string, permissions 
 
 	now := time.Now()
 	dbSession := &DBSession{
-		ID:          id,
-		UserID:      userID,
-		Username:    username,
-		Role:        role,
-		Permissions: permissions,
-		CreatedAt:   now,
-		ExpiresAt:   now.Add(7 * 24 * time.Hour),
+		ID:        id,
+		UserID:    userID,
+		Username:  username,
+		Role:      role,
+		CreatedAt: now,
+		ExpiresAt: now.Add(7 * 24 * time.Hour),
 	}
 	if err := s.DB.Create(dbSession).Error; err != nil {
 		return "", err
@@ -76,13 +75,16 @@ func (s *SessionStore) Get(id string) *Session {
 	if err := s.DB.Where("id = ? AND expires_at > ?", id, time.Now()).First(&dbSession).Error; err != nil {
 		return nil
 	}
-	return &Session{
-		UserID:      dbSession.UserID,
-		Username:    dbSession.Username,
-		Role:        dbSession.Role,
-		Permissions: dbSession.Permissions,
-		CreatedAt:   dbSession.CreatedAt,
+	session := &Session{
+		UserID:    dbSession.UserID,
+		Username:  dbSession.Username,
+		Role:      dbSession.Role,
+		CreatedAt: dbSession.CreatedAt,
 	}
+	if s.PopulateKEK != nil {
+		s.PopulateKEK(session)
+	}
+	return session
 }
 
 func (s *SessionStore) Delete(id string) {

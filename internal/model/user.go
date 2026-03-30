@@ -13,10 +13,10 @@ type User struct {
 	DisplayName  string    `gorm:"default:''" json:"display_name"`
 	PasswordHash string    `gorm:"not null" json:"-"`
 	Role         string    `gorm:"not null;default:user" json:"role"`
-	Permissions  int64     `gorm:"not null;default:15" json:"permissions"`
 	Email        string    `gorm:"default:''" json:"email"`
 	TOTPSecret   string    `gorm:"default:''" json:"-"`
 	TOTPEnabled  bool      `gorm:"default:false" json:"totp_enabled"`
+	WrappedKEK   string    `gorm:"default:''" json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 }
 
@@ -33,7 +33,7 @@ func CheckPassword(hash, password string) bool {
 
 // User operations
 
-func CreateUser(username, password, role string, permissions int64) (*User, error) {
+func CreateUser(username, password, role string, wrappedKEK string) (*User, error) {
 	hash, err := HashPassword(password)
 	if err != nil {
 		return nil, err
@@ -43,12 +43,26 @@ func CreateUser(username, password, role string, permissions int64) (*User, erro
 		Username:     username,
 		PasswordHash: hash,
 		Role:         role,
-		Permissions:  permissions,
+		WrappedKEK:   wrappedKEK,
 	}
 	if err := db.Create(user).Error; err != nil {
 		return nil, err
 	}
 	return user, nil
+}
+
+// GetUserWrappedKEK returns the wrapped KEK for a user (lightweight single-column query).
+func GetUserWrappedKEK(userID string) (string, error) {
+	var wrappedKEK string
+	err := db.Model(&User{}).Where("id = ?", userID).
+		Select("wrapped_kek").Scan(&wrappedKEK).Error
+	return wrappedKEK, err
+}
+
+// SetUserWrappedKEK updates a user's wrapped KEK.
+func SetUserWrappedKEK(userID, wrappedKEK string) error {
+	return db.Model(&User{}).Where("id = ?", userID).
+		Update("wrapped_kek", wrappedKEK).Error
 }
 
 func GetUserByUsername(username string) (*User, error) {
@@ -75,11 +89,8 @@ func ListUsers() ([]User, error) {
 	return users, nil
 }
 
-func UpdateUser(id string, role string, permissions int64) error {
-	return db.Model(&User{}).Where("id = ?", id).Updates(map[string]interface{}{
-		"role":        role,
-		"permissions": permissions,
-	}).Error
+func UpdateUser(id string, role string) error {
+	return db.Model(&User{}).Where("id = ?", id).Update("role", role).Error
 }
 
 func UpdateUserPassword(id string, password string) error {
