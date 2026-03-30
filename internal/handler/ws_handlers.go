@@ -6,6 +6,7 @@ import (
 	"io"
 	"mime"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -41,12 +42,6 @@ func (h *Handler) registerWSActions() {
 	r.Handle("user.otpDisable", 0, h.wsOTPDisable)
 	r.Handle("user.updateDisplayName", 0, h.wsUpdateDisplayName)
 	r.Handle("user.storageUsage", 0, h.wsStorageUsage)
-
-	// --- Bookmarks ---
-	r.Handle("bookmark.list", 0, h.wsBookmarkList)
-	r.Handle("bookmark.create", 0, h.wsBookmarkCreate)
-	r.Handle("bookmark.update", 0, h.wsBookmarkUpdate)
-	r.Handle("bookmark.delete", 0, h.wsBookmarkDelete)
 
 	// --- Files ---
 	r.Handle("file.list", ws.PermRead, h.wsFileList)
@@ -85,6 +80,19 @@ func (h *Handler) registerWSActions() {
 	r.HandleRoot("admin.resetUserOTP", h.wsAdminResetUserOTP)
 	r.HandleRoot("admin.resetUserEmail", h.wsAdminResetUserEmail)
 
+	// --- Terminal Session ---
+	r.Handle("session.open", 0, h.wsSessionOpen)
+	r.Handle("session.input", 0, h.wsSessionInput)
+	r.Handle("session.resize", 0, h.wsSessionResize)
+	r.Handle("session.close", 0, h.wsSessionClose)
+	r.Handle("session.complete", 0, h.wsSessionComplete)
+
+	// --- Workspace sync ---
+	r.Handle("workspace.event", 0, h.wsWorkspaceEvent)
+	r.Handle("workspace.save", 0, h.wsWorkspaceSave)
+	r.Handle("workspace.load", 0, h.wsWorkspaceLoad)
+	r.Handle("workspace.clear", 0, h.wsWorkspaceClear)
+
 	// --- Subscriptions ---
 	r.Handle("subscribe.directory", 0, h.wsSubscribeDirectory)
 	r.Handle("unsubscribe.directory", 0, h.wsUnsubscribeDirectory)
@@ -92,27 +100,31 @@ func (h *Handler) registerWSActions() {
 
 // --- Shared path resolution (no *fiber.Ctx dependency) ---
 
-func resolvePath(username, path string) (string, error) {
-	if containsDotDot(path) {
+func resolvePath(username, p string) (string, error) {
+	if len(p) == 0 || p[0] != '/' {
+		p = "/" + p
+	}
+
+	// Preserve trailing slash (directory marker) since path.Clean strips it
+	trailingSlash := strings.HasSuffix(p, "/") && p != "/"
+
+	// Clean the path (resolves /../, /./ , double slashes)
+	cleaned := path.Clean(p)
+
+	// After cleaning, reject if still contains ..
+	if strings.Contains(cleaned, "..") {
 		return "", errInvalidPath
 	}
-	if len(path) == 0 || path[0] != '/' {
-		path = "/" + path
-	}
-	// Clean double slashes (but preserve trailing slash for dirs)
-	for strings.Contains(path, "//") {
-		path = strings.ReplaceAll(path, "//", "/")
-	}
-	return username + path, nil
-}
 
-func containsDotDot(s string) bool {
-	for i := 0; i < len(s)-1; i++ {
-		if s[i] == '.' && s[i+1] == '.' {
-			return true
-		}
+	if !strings.HasPrefix(cleaned, "/") {
+		return "", errInvalidPath
 	}
-	return false
+
+	if trailingSlash {
+		cleaned += "/"
+	}
+
+	return username + cleaned, nil
 }
 
 func toAppPath(ossPath, username string) string {
@@ -325,69 +337,6 @@ func (h *Handler) wsOTPDisable(conn *ws.Conn, _ string, _ json.RawMessage) (any,
 	return map[string]any{"ok": true}, nil
 }
 
-// --- Bookmark actions ---
-
-func (h *Handler) wsBookmarkList(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	bookmarks, err := model.ListBookmarks(conn.Session.UserID)
-	if err != nil {
-		return nil, &wsError{Code: "list_bookmarks_failed"}
-	}
-	if bookmarks == nil {
-		bookmarks = []model.Bookmark{}
-	}
-	return bookmarks, nil
-}
-
-func (h *Handler) wsBookmarkCreate(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
-	var p struct {
-		Name      string `json:"name"`
-		Path      string `json:"path"`
-		Icon      string `json:"icon"`
-		SortOrder int    `json:"sort_order"`
-	}
-	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, &wsError{Code: "invalid_request"}
-	}
-	if p.Icon == "" {
-		p.Icon = "folder"
-	}
-	bookmark, err := model.CreateBookmark(conn.Session.UserID, p.Name, p.Path, p.Icon, p.SortOrder)
-	if err != nil {
-		return nil, &wsError{Code: "create_bookmark_failed"}
-	}
-	return bookmark, nil
-}
-
-func (h *Handler) wsBookmarkUpdate(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
-	var p struct {
-		ID        int64  `json:"id"`
-		Name      string `json:"name"`
-		Path      string `json:"path"`
-		Icon      string `json:"icon"`
-		SortOrder int    `json:"sort_order"`
-	}
-	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, &wsError{Code: "invalid_request"}
-	}
-	if err := model.UpdateBookmark(p.ID, conn.Session.UserID, p.Name, p.Path, p.Icon, p.SortOrder); err != nil {
-		return nil, &wsError{Code: "update_bookmark_failed"}
-	}
-	return map[string]any{"ok": true}, nil
-}
-
-func (h *Handler) wsBookmarkDelete(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
-	var p struct {
-		ID int64 `json:"id"`
-	}
-	if err := json.Unmarshal(data, &p); err != nil {
-		return nil, &wsError{Code: "invalid_request"}
-	}
-	if err := model.DeleteBookmark(p.ID, conn.Session.UserID); err != nil {
-		return nil, &wsError{Code: "delete_bookmark_failed"}
-	}
-	return map[string]any{"ok": true}, nil
-}
-
 // --- File actions ---
 
 func (h *Handler) wsFileList(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
@@ -570,11 +519,12 @@ func (h *Handler) wsFileCopy(conn *ws.Conn, _ string, data json.RawMessage) (any
 
 	srcName := filepath.Base(strings.TrimSuffix(p.SrcPath, "/"))
 	taskID := uuid.New().String()
-	_ = model.CreateTask(conn.Session.UserID, taskID, "copy", srcName)
+	userID := conn.Session.UserID
+	_ = model.CreateTask(userID, taskID, "copy", srcName)
 
 	go func() {
 		progress := func(done, total int, current string) {
-			updateTaskOp(taskID, done, total, "copying")
+			h.updateTaskOp(userID, taskID, "copy", srcName, done, total, "copying")
 		}
 		var copyErr error
 		if p.IsDir {
@@ -586,21 +536,21 @@ func (h *Handler) wsFileCopy(conn *ws.Conn, _ string, data json.RawMessage) (any
 			}
 		}
 		if copyErr != nil {
-			_ = model.UpdateTaskStatus(taskID, "failed")
+			h.finishTaskOp(userID, taskID, "copy", srcName, "failed")
 			return
 		}
 		if p.IsDir {
-			h.syncDirFiles(conn.Session.UserID, dstResolved)
+			h.syncDirFiles(userID, dstResolved)
 		} else {
 			dstName := filepath.Base(dstResolved)
 			ct := mime.TypeByExtension(filepath.Ext(dstResolved))
-			_ = model.UpsertFile(conn.Session.UserID, dstResolved, dstName, false, srcSize, ct, srcContentHash)
+			_ = model.UpsertFile(userID, dstResolved, dstName, false, srcSize, ct, srcContentHash)
 		}
-		_ = model.UpdateTaskStatus(taskID, "completed")
+		h.finishTaskOp(userID, taskID, "copy", srcName, "completed")
 		h.notifyParentDir(conn.Session.Username, dstResolved)
 	}()
 
-	return map[string]any{"task_id": taskID}, nil
+	return map[string]any{"task_id": taskID, "op_id": taskID}, nil
 }
 
 func (h *Handler) wsFileMove(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
@@ -629,11 +579,12 @@ func (h *Handler) wsFileMove(conn *ws.Conn, _ string, data json.RawMessage) (any
 
 	srcName := filepath.Base(strings.TrimSuffix(p.SrcPath, "/"))
 	taskID := uuid.New().String()
-	_ = model.CreateTask(conn.Session.UserID, taskID, "move", srcName)
+	userID := conn.Session.UserID
+	_ = model.CreateTask(userID, taskID, "move", srcName)
 
 	go func() {
 		progress := func(done, total int, current string) {
-			updateTaskOp(taskID, done, total, "moving")
+			h.updateTaskOp(userID, taskID, "move", srcName, done, total, "moving")
 		}
 		var moveErr error
 		if p.IsDir {
@@ -645,21 +596,21 @@ func (h *Handler) wsFileMove(conn *ws.Conn, _ string, data json.RawMessage) (any
 			}
 		}
 		if moveErr != nil {
-			_ = model.UpdateTaskStatus(taskID, "failed")
+			h.finishTaskOp(userID, taskID, "move", srcName, "failed")
 			return
 		}
 		if p.IsDir {
-			_ = model.MoveFilesByPrefix(conn.Session.UserID, srcResolved, dstResolved)
+			_ = model.MoveFilesByPrefix(userID, srcResolved, dstResolved)
 		} else {
 			newName := filepath.Base(dstResolved)
-			_ = model.MoveFile(conn.Session.UserID, srcResolved, dstResolved, newName)
+			_ = model.MoveFile(userID, srcResolved, dstResolved, newName)
 		}
-		_ = model.UpdateTaskStatus(taskID, "completed")
+		h.finishTaskOp(userID, taskID, "move", srcName, "completed")
 		h.notifyParentDir(conn.Session.Username, srcResolved)
 		h.notifyParentDir(conn.Session.Username, dstResolved)
 	}()
 
-	return map[string]any{"task_id": taskID}, nil
+	return map[string]any{"task_id": taskID, "op_id": taskID}, nil
 }
 
 func (h *Handler) wsFileDelete(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
@@ -727,11 +678,12 @@ func (h *Handler) wsFileDelete(conn *ws.Conn, _ string, data json.RawMessage) (a
 
 	deleteName := filepath.Base(strings.TrimSuffix(p.Path, "/"))
 	taskID := uuid.New().String()
-	_ = model.CreateTask(conn.Session.UserID, taskID, "delete", deleteName)
+	userID := conn.Session.UserID
+	_ = model.CreateTask(userID, taskID, "delete", deleteName)
 
 	go func() {
 		progress := func(done, total int, current string) {
-			updateTaskOp(taskID, done, total, "deleting")
+			h.updateTaskOp(userID, taskID, "delete", deleteName, done, total, "deleting")
 		}
 		var moveErr error
 		if isDir {
@@ -743,22 +695,22 @@ func (h *Handler) wsFileDelete(conn *ws.Conn, _ string, data json.RawMessage) (a
 			}
 		}
 		if moveErr != nil {
-			_ = model.UpdateTaskStatus(taskID, "failed")
+			h.finishTaskOp(userID, taskID, "delete", deleteName, "failed")
 			return
 		}
-		_ = model.CreateTrashRecord(conn.Session.UserID, p.Path, trashKey, totalSize, isDir)
+		_ = model.CreateTrashRecord(userID, p.Path, trashKey, totalSize, isDir)
 		if isDir {
-			_ = model.DeleteFilesByPrefix(conn.Session.UserID, resolvedPath)
+			_ = model.DeleteFilesByPrefix(userID, resolvedPath)
 		} else {
-			_ = model.DeleteFile(conn.Session.UserID, resolvedPath)
+			_ = model.DeleteFile(userID, resolvedPath)
 		}
-		_ = model.UpdateTaskStatus(taskID, "completed")
-		h.Audit.Log(conn.Session.UserID, conn.Session.Username, "", "file_delete", p.Path, "", "success", 0)
+		h.finishTaskOp(userID, taskID, "delete", deleteName, "completed")
+		h.Audit.Log(userID, conn.Session.Username, "", "file_delete", p.Path, "", "success", 0)
 		h.notifyParentDir(conn.Session.Username, resolvedPath)
-		h.notifyTrash(conn.Session.UserID)
+		h.notifyTrash(userID)
 	}()
 
-	return map[string]any{"task_id": taskID}, nil
+	return map[string]any{"task_id": taskID, "op_id": taskID}, nil
 }
 
 func (h *Handler) wsFilePatchContent(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
@@ -997,7 +949,8 @@ func (h *Handler) wsTrashClear(conn *ws.Conn, _ string, _ json.RawMessage) (any,
 	}
 
 	taskID := uuid.New().String()
-	_ = model.CreateTask(conn.Session.UserID, taskID, "clear_trash", "")
+	userID := conn.Session.UserID
+	_ = model.CreateTask(userID, taskID, "clear_trash", "")
 
 	go func() {
 		total := len(items)
@@ -1009,17 +962,17 @@ func (h *Handler) wsTrashClear(conn *ws.Conn, _ string, _ json.RawMessage) (any,
 				clearErr = h.Store.DeleteObject(item.TrashKey)
 			}
 			if clearErr != nil {
-				_ = model.UpdateTaskStatus(taskID, "failed")
+				h.finishTaskOp(userID, taskID, "clear_trash", "", "failed")
 				return
 			}
 			_ = model.DeleteTrashRecord(item.ID)
-			updateTaskOp(taskID, i+1, total, "clearing")
+			h.updateTaskOp(userID, taskID, "clear_trash", "", i+1, total, "clearing")
 		}
-		_ = model.UpdateTaskStatus(taskID, "completed")
-		h.notifyTrash(conn.Session.UserID)
+		h.finishTaskOp(userID, taskID, "clear_trash", "", "completed")
+		h.notifyTrash(userID)
 	}()
 
-	return map[string]any{"task_id": taskID}, nil
+	return map[string]any{"task_id": taskID, "op_id": taskID}, nil
 }
 
 // --- Task actions ---
@@ -1470,15 +1423,73 @@ func (h *Handler) wsUnsubscribeDirectory(conn *ws.Conn, _ string, data json.RawM
 	return map[string]any{"ok": true}, nil
 }
 
+// --- Workspace sync ---
+
+// wsWorkspaceEvent relays a workspace event to other connections of the same user.
+func (h *Handler) wsWorkspaceEvent(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
+	var payload any
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, &wsError{Code: "invalid_request"}
+	}
+	h.Hub.PushWorkspaceEvent(conn.UserID, conn.ID, payload)
+	return nil, nil
+}
+
+// wsWorkspaceSave persists the full workspace snapshot.
+func (h *Handler) wsWorkspaceSave(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
+	var p struct {
+		State json.RawMessage `json:"state"`
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		return nil, &wsError{Code: "invalid_request"}
+	}
+	if err := model.SaveWorkspaceState(conn.UserID, string(p.State)); err != nil {
+		return nil, &wsError{Code: "save_failed"}
+	}
+	return nil, nil
+}
+
+// wsWorkspaceLoad returns the saved workspace snapshot.
+func (h *Handler) wsWorkspaceLoad(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
+	state, err := model.GetWorkspaceState(conn.UserID)
+	if err != nil {
+		// No saved state — return empty
+		return map[string]any{"state": nil}, nil
+	}
+	// Return the raw JSON string so the client can parse it
+	return map[string]any{"state": json.RawMessage(state)}, nil
+}
+
+// wsWorkspaceClear deletes the saved workspace snapshot.
+func (h *Handler) wsWorkspaceClear(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
+	_ = model.DeleteWorkspaceState(conn.UserID)
+	return nil, nil
+}
+
 // --- Helpers ---
 
-// updateTaskOp updates a task's progress from a done/total count.
-func updateTaskOp(taskID string, done, total int, phase string) {
+// updateTaskOp updates a task's progress and pushes a WebSocket event.
+func (h *Handler) updateTaskOp(userID, taskID, taskType, name string, done, total int, phase string) {
 	var progress float64
 	if total > 0 {
 		progress = float64(done) / float64(total)
 	}
 	_ = model.UpdateTaskProgress(taskID, progress, phase)
+	if h.Hub != nil {
+		h.Hub.PushTaskUpdate(userID, taskID, taskType, name, "running", progress, phase)
+	}
+}
+
+// finishTaskOp marks a task as completed/failed and pushes a WebSocket event.
+func (h *Handler) finishTaskOp(userID, taskID, taskType, name, status string) {
+	_ = model.UpdateTaskStatus(taskID, status)
+	if h.Hub != nil {
+		var progress float64
+		if status == "completed" {
+			progress = 1.0
+		}
+		h.Hub.PushTaskUpdate(userID, taskID, taskType, name, status, progress, "")
+	}
 }
 
 // notifyTrash notifies all connections of a user that the trash list changed.

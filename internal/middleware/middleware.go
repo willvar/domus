@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"path"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -115,20 +116,35 @@ func (m *Middleware) WebSocketUpgrade() fiber.Handler {
 // ResolvePath converts an application-layer path (e.g. "/home/tom/file.txt")
 // to the full OSS key (e.g. "tom/home/tom/file.txt").
 // All users (including root) share the same logic.
-func ResolvePath(c *fiber.Ctx, path string) (string, error) {
+func ResolvePath(c *fiber.Ctx, p string) (string, error) {
 	session := c.Locals("session").(*model.Session)
 
-	if strings.Contains(path, "..") {
+	// Normalize: ensure leading /
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+
+	// Preserve trailing slash (directory marker) since path.Clean strips it
+	trailingSlash := strings.HasSuffix(p, "/") && p != "/"
+
+	// Clean the path (resolves /../, /./ , double slashes)
+	cleaned := path.Clean(p)
+
+	// After cleaning, reject if still contains ..
+	if strings.Contains(cleaned, "..") {
 		return "", fiber.NewError(403, "invalid path")
 	}
 
-	// Normalize: ensure leading /
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
+	if !strings.HasPrefix(cleaned, "/") {
+		return "", fiber.NewError(403, "invalid path")
+	}
+
+	if trailingSlash {
+		cleaned += "/"
 	}
 
 	// Prepend OSS namespace prefix
-	return session.Username + path, nil
+	return session.Username + cleaned, nil
 }
 
 // ToAppPath converts an OSS key back to an application-layer path.

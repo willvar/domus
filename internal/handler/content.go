@@ -2,7 +2,6 @@ package handler
 
 import (
 	"bytes"
-	"fmt"
 	"io"
 	"mime"
 	"path/filepath"
@@ -168,7 +167,7 @@ func (h *Handler) handlePatchContent(c *fiber.Ctx) error {
 	<-done3
 
 	if pipelineErr != nil {
-		return c.Status(500).JSON(fiber.Map{"error": fmt.Sprintf("pipeline_failed: %v", pipelineErr)})
+		return c.Status(500).JSON(fiber.Map{"error": "pipeline_failed"})
 	}
 
 	// Upload encrypted content to OSS

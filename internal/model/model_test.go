@@ -23,12 +23,11 @@ func setupTestDB(t *testing.T) {
 	if err != nil {
 		t.Skipf("skipping test: could not connect to PostgreSQL: %v", err)
 	}
-	if err := db.AutoMigrate(&User{}, &TrashItem{}, &Bookmark{}, &FileRecord{}, &DBSession{}, &Job{}, &AuditLog{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &TrashItem{}, &FileRecord{}, &DBSession{}, &Job{}, &AuditLog{}); err != nil {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 	db.Exec("DELETE FROM users")
 	db.Exec("DELETE FROM trash")
-	db.Exec("DELETE FROM bookmarks")
 	db.Exec("DELETE FROM files")
 	db.Exec("DELETE FROM sessions")
 	db.Exec("DELETE FROM jobs")

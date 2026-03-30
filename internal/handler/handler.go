@@ -15,6 +15,7 @@ import (
 	"zephyr/internal/model"
 	"zephyr/internal/service"
 	"zephyr/internal/store"
+	"zephyr/internal/vsh"
 	"zephyr/internal/ws"
 )
 
@@ -30,6 +31,7 @@ type Handler struct {
 	Challenges *auth.ChallengeManager
 	Mid        *middleware.Middleware
 	Hub        *ws.Hub
+	Vsh        *vsh.ShellManager
 }
 
 // RegisterRoutes registers all API routes on the Fiber app.
@@ -57,10 +59,6 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	user.Post("/security/otp/setup", h.handleOTPSetup)
 	user.Post("/security/otp/enable", h.handleOTPEnable)
 	user.Delete("/security/otp", h.handleOTPDisable)
-	user.Get("/bookmark", h.handleListBookmarks)
-	user.Post("/bookmark", h.handleCreateBookmark)
-	user.Put("/bookmark/:id", h.handleUpdateBookmark)
-	user.Delete("/bookmark/:id", h.handleDeleteBookmark)
 
 	// /audit
 	audit := authed.Group("/audit")
@@ -79,6 +77,7 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	file.Get("/", middleware.PermissionRequired(model.PermRead), h.handleList)
 	file.Get("/download", middleware.PermissionRequired(model.PermRead), h.handleDownload)
 	file.Get("/content/raw", middleware.PermissionRequired(model.PermRead), h.handleRawFile)
+	file.Get("/preview", middleware.PermissionRequired(model.PermRead), h.handlePreview)
 	file.Put("/content/diff", middleware.PermissionRequired(model.PermEdit), h.handlePatchContent)
 	file.Post("/mkdir", middleware.PermissionRequired(model.PermUpload), h.handleMkdir)
 	file.Post("/rename", middleware.PermissionRequired(model.PermEdit), h.handleRename)

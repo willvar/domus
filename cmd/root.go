@@ -24,6 +24,7 @@ import (
 	"zephyr/internal/model"
 	"zephyr/internal/service"
 	"zephyr/internal/store"
+	"zephyr/internal/vsh"
 	"zephyr/internal/ws"
 	"zephyr/shared/bootstrap"
 	"zephyr/shared/logger"
@@ -290,6 +291,27 @@ func runServer(cfg *config.Config, configPath string) {
 		hub.PushTaskUpdate(userID, taskID, taskType, name, status, progress, phase)
 	}
 
+	// Initialize virtual shell manager
+	shellMgr := vsh.NewShellManager(fileStore)
+	shellMgr.DirNotify = func(resolvedPath, appPath, changeType string) {
+		hub.PushDirChanged(resolvedPath, appPath, changeType)
+	}
+	shellMgr.OnPushOutput = func(connID, sessionID, data string) {
+		hub.PushSessionOutput(connID, sessionID, data)
+	}
+	shellMgr.OnPushDone = func(connID, sessionID, cwd string) {
+		hub.PushSessionDone(connID, sessionID, cwd)
+	}
+	shellMgr.OnPushExit = func(connID, sessionID, reason string) {
+		hub.PushSessionExit(connID, sessionID, reason)
+	}
+	shellMgr.OnPushSSH = func(connID, sessionID, status string) {
+		hub.PushSessionSSH(connID, sessionID, status)
+	}
+	hub.OnConnClose = func(connID string) {
+		shellMgr.CloseByConn(connID)
+	}
+
 	// Initialize handler
 	h := &handler.Handler{
 		Config:     cfg,
@@ -302,6 +324,7 @@ func runServer(cfg *config.Config, configPath string) {
 		Challenges: challenges,
 		Mid:        mid,
 		Hub:        hub,
+		Vsh:        shellMgr,
 	}
 
 	// Initialize and start job dispatcher

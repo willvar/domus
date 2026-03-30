@@ -17,7 +17,7 @@ const (
 	pongWait       = 40 * time.Second
 	pingPeriod     = 30 * time.Second
 	maxMessageSize = 256 * 1024
-	sendBufSize    = 64
+	sendBufSize    = 256
 )
 
 // Conn wraps a raw WebSocket connection with session info and subscription state.
