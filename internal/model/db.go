@@ -10,27 +10,6 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-// Permission bitmask constants
-const (
-	PermRead   int64 = 1
-	PermUpload int64 = 2
-	PermEdit   int64 = 4
-	PermDelete int64 = 8
-	PermAll    int64 = 15
-)
-
-// DefaultPermissions returns the default permission bitmask for a role.
-func DefaultPermissions(role string) int64 {
-	switch role {
-	case "root":
-		return PermAll
-	case "user":
-		return PermAll
-	default:
-		return PermAll
-	}
-}
-
 var db *gorm.DB
 
 // SetDB sets the package-level db variable. This is intended for use in tests
@@ -80,7 +59,7 @@ func InitDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 
-	if err := db.AutoMigrate(&User{}, &TrashItem{}, &FileRecord{}, &DBSession{}, &Job{}, &Task{}, &AuditLog{}, &WorkspaceState{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &TrashItem{}, &FileRecord{}, &DBSession{}, &Job{}, &Task{}, &AuditLog{}, &WorkspaceState{}, &Share{}); err != nil {
 		return nil, fmt.Errorf("auto migrate: %w", err)
 	}
 

@@ -48,26 +48,9 @@ func TestHashAndCheckPassword(t *testing.T) {
 	}
 }
 
-func TestDefaultPermissions(t *testing.T) {
-	tests := []struct {
-		role     string
-		expected int64
-	}{
-		{"root", PermAll},
-		{"user", PermAll},
-		{"unknown", PermAll},
-	}
-	for _, tt := range tests {
-		got := DefaultPermissions(tt.role)
-		if got != tt.expected {
-			t.Errorf("DefaultPermissions(%q) = %d, want %d", tt.role, got, tt.expected)
-		}
-	}
-}
-
 func TestCreateUser(t *testing.T) {
 	setupTestDB(t)
-	user, err := CreateUser("alice", "password123", "root", PermAll)
+	user, err := CreateUser("alice", "password123", "root", "")
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
@@ -84,11 +67,11 @@ func TestCreateUser(t *testing.T) {
 
 func TestCreateUserDuplicateUsername(t *testing.T) {
 	setupTestDB(t)
-	_, err := CreateUser("alice", "pass1", "user", PermAll)
+	_, err := CreateUser("alice", "pass1", "user", "")
 	if err != nil {
 		t.Fatalf("first create: %v", err)
 	}
-	_, err = CreateUser("alice", "pass2", "user", PermAll)
+	_, err = CreateUser("alice", "pass2", "user", "")
 	if err == nil {
 		t.Fatal("expected error for duplicate username")
 	}
@@ -96,7 +79,7 @@ func TestCreateUserDuplicateUsername(t *testing.T) {
 
 func TestGetUserByUsername(t *testing.T) {
 	setupTestDB(t)
-	_, _ = CreateUser("bob", "pass", "user", PermAll)
+	_, _ = CreateUser("bob", "pass", "user", "")
 	user, err := GetUserByUsername("bob")
 	if err != nil {
 		t.Fatalf("get user: %v", err)
@@ -108,7 +91,7 @@ func TestGetUserByUsername(t *testing.T) {
 
 func TestGetUserByID(t *testing.T) {
 	setupTestDB(t)
-	created, _ := CreateUser("charlie", "pass", "user", PermAll)
+	created, _ := CreateUser("charlie", "pass", "user", "")
 	user, err := GetUserByID(created.ID)
 	if err != nil {
 		t.Fatalf("get user: %v", err)
@@ -120,8 +103,8 @@ func TestGetUserByID(t *testing.T) {
 
 func TestUpdateUser(t *testing.T) {
 	setupTestDB(t)
-	user, _ := CreateUser("dave", "pass", "user", PermAll)
-	err := UpdateUser(user.ID, "root", PermRead)
+	user, _ := CreateUser("dave", "pass", "user", "")
+	err := UpdateUser(user.ID, "root")
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
@@ -129,14 +112,11 @@ func TestUpdateUser(t *testing.T) {
 	if updated.Role != "root" {
 		t.Fatalf("expected admin, got %s", updated.Role)
 	}
-	if updated.Permissions != PermRead {
-		t.Fatalf("expected permissions %d, got %d", PermRead, updated.Permissions)
-	}
 }
 
 func TestUpdateUserPassword(t *testing.T) {
 	setupTestDB(t)
-	user, _ := CreateUser("eve", "oldpass", "user", PermAll)
+	user, _ := CreateUser("eve", "oldpass", "user", "")
 	err := UpdateUserPassword(user.ID, "newpass")
 	if err != nil {
 		t.Fatalf("update password: %v", err)
@@ -152,7 +132,7 @@ func TestUpdateUserPassword(t *testing.T) {
 
 func TestDeleteUser(t *testing.T) {
 	setupTestDB(t)
-	user, _ := CreateUser("frank", "pass", "user", PermAll)
+	user, _ := CreateUser("frank", "pass", "user", "")
 	err := DeleteUser(user.ID)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
@@ -172,8 +152,8 @@ func TestUserCount(t *testing.T) {
 	if count != 0 {
 		t.Fatalf("expected 0, got %d", count)
 	}
-	_, _ = CreateUser("user1", "pass", "user", PermAll)
-	_, _ = CreateUser("user2", "pass", "user", PermAll)
+	_, _ = CreateUser("user1", "pass", "user", "")
+	_, _ = CreateUser("user2", "pass", "user", "")
 	count, _ = UserCount()
 	if count != 2 {
 		t.Fatalf("expected 2, got %d", count)
@@ -186,7 +166,7 @@ func TestSessionStore_CreateAndGet(t *testing.T) {
 	setupTestDB(t)
 	store := NewSessionStore(db)
 
-	id, err := store.Create("user-uuid-1", "alice", "root", PermAll)
+	id, err := store.Create("user-uuid-1", "alice", "root")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -203,16 +183,13 @@ func TestSessionStore_CreateAndGet(t *testing.T) {
 	if session.Role != "root" {
 		t.Fatalf("expected role admin, got %s", session.Role)
 	}
-	if session.Permissions != PermAll {
-		t.Fatalf("expected permissions %d, got %d", PermAll, session.Permissions)
-	}
 }
 
 func TestSessionStore_GetExpired(t *testing.T) {
 	setupTestDB(t)
 	store := NewSessionStore(db)
 
-	id, err := store.Create("user-uuid-1", "alice", "root", PermAll)
+	id, err := store.Create("user-uuid-1", "alice", "root")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -235,7 +212,7 @@ func TestSessionStore_GetNotFound(t *testing.T) {
 func TestSessionStore_Delete(t *testing.T) {
 	setupTestDB(t)
 	store := NewSessionStore(db)
-	id, _ := store.Create("user-uuid-1", "alice", "root", PermAll)
+	id, _ := store.Create("user-uuid-1", "alice", "root")
 	store.Delete(id)
 	session := store.Get(id)
 	if session != nil {
@@ -246,9 +223,9 @@ func TestSessionStore_Delete(t *testing.T) {
 func TestSessionStore_DeleteByUserID(t *testing.T) {
 	setupTestDB(t)
 	store := NewSessionStore(db)
-	id1, _ := store.Create("user-uuid-1", "alice", "root", PermAll)
-	id2, _ := store.Create("user-uuid-1", "alice", "root", PermAll)
-	id3, _ := store.Create("user-uuid-2", "bob", "user", PermAll)
+	id1, _ := store.Create("user-uuid-1", "alice", "root")
+	id2, _ := store.Create("user-uuid-1", "alice", "root")
+	id3, _ := store.Create("user-uuid-2", "bob", "user")
 	store.DeleteByUserID("user-uuid-1")
 	if store.Get(id1) != nil {
 		t.Fatal("session 1 should be deleted")
@@ -264,8 +241,8 @@ func TestSessionStore_DeleteByUserID(t *testing.T) {
 func TestCleanExpiredSessions(t *testing.T) {
 	setupTestDB(t)
 	store := NewSessionStore(db)
-	validID, _ := store.Create("user-uuid-1", "alice", "root", PermAll)
-	expiredID, _ := store.Create("user-uuid-2", "bob", "user", PermAll)
+	validID, _ := store.Create("user-uuid-1", "alice", "root")
+	expiredID, _ := store.Create("user-uuid-2", "bob", "user")
 	db.Model(&DBSession{}).Where("id = ?", expiredID).Update("expires_at", time.Now().Add(-1*time.Hour))
 	CleanExpiredSessions()
 	if store.Get(validID) == nil {
