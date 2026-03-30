@@ -40,7 +40,7 @@ func resolvePathTestApp() *fiber.App {
 		role := c.Query("role", "user")
 		username := c.Query("username", "alice")
 		c.Locals("session", &model.Session{
-			UserID: "test-user-id", Username: username, Role: role, Permissions: model.PermAll,
+			UserID: "test-user-id", Username: username, Role: role,
 		})
 		path := c.Query("path")
 		resolved, err := ResolvePath(c, path)
@@ -164,7 +164,7 @@ func TestAuthRequired_ValidSession(t *testing.T) {
 	sessions := model.NewSessionStore(testDB)
 	m := New(sessions, "test")
 
-	sessionID, _ := sessions.Create("test-user-id", "alice", "root", model.PermAll)
+	sessionID, _ := sessions.Create("test-user-id", "alice", "root")
 	cookie := auth.SignCookie(sessionID, "test")
 
 	app := fiber.New()
@@ -178,68 +178,5 @@ func TestAuthRequired_ValidSession(t *testing.T) {
 	resp, _ := app.Test(req)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-}
-
-func TestPermissionRequired_Allowed(t *testing.T) {
-	testDB := setupTestDB(t)
-	sessions := model.NewSessionStore(testDB)
-	m := New(sessions, "test")
-
-	sessionID, _ := sessions.Create("test-user-id", "alice", "user", model.PermRead|model.PermUpload)
-	cookie := auth.SignCookie(sessionID, "test")
-
-	app := fiber.New()
-	app.Get("/read", m.AuthRequired(), PermissionRequired(model.PermRead), func(c *fiber.Ctx) error {
-		return c.SendString("ok")
-	})
-
-	req := httptest.NewRequest("GET", "/read", nil)
-	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: cookie})
-	resp, _ := app.Test(req)
-	if resp.StatusCode != 200 {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-}
-
-func TestPermissionRequired_Denied(t *testing.T) {
-	testDB := setupTestDB(t)
-	sessions := model.NewSessionStore(testDB)
-	m := New(sessions, "test")
-
-	sessionID, _ := sessions.Create("test-user-id", "alice", "user", model.PermRead)
-	cookie := auth.SignCookie(sessionID, "test")
-
-	app := fiber.New()
-	app.Delete("/delete", m.AuthRequired(), PermissionRequired(model.PermDelete), func(c *fiber.Ctx) error {
-		return c.SendString("ok")
-	})
-
-	req := httptest.NewRequest("DELETE", "/delete", nil)
-	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: cookie})
-	resp, _ := app.Test(req)
-	if resp.StatusCode != 403 {
-		t.Fatalf("expected 403, got %d", resp.StatusCode)
-	}
-}
-
-func TestPermissionRequired_AdminBypass(t *testing.T) {
-	testDB := setupTestDB(t)
-	sessions := model.NewSessionStore(testDB)
-	m := New(sessions, "test")
-
-	sessionID, _ := sessions.Create("test-user-id", "root", "root", 0)
-	cookie := auth.SignCookie(sessionID, "test")
-
-	app := fiber.New()
-	app.Delete("/delete", m.AuthRequired(), PermissionRequired(model.PermDelete), func(c *fiber.Ctx) error {
-		return c.SendString("ok")
-	})
-
-	req := httptest.NewRequest("DELETE", "/delete", nil)
-	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: cookie})
-	resp, _ := app.Test(req)
-	if resp.StatusCode != 200 {
-		t.Fatalf("expected 200 (admin bypass), got %d", resp.StatusCode)
 	}
 }

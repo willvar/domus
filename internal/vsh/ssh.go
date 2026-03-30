@@ -414,8 +414,12 @@ func buildHostKeyCallback(s *Session) ssh.HostKeyCallback {
 
 		// Write file encrypted (same as cmdEcho with redirect)
 		content := existing + line + "\n"
-		_ = s.WriteFileEncrypted(knownHostsKey, []byte(content))
-		_ = model.UpsertFile(s.UserID, knownHostsKey, "known_hosts", false, int64(len(content)), "text/plain", "")
+		wrappedDEK, _ := s.WriteFileEncrypted(knownHostsKey, []byte(content))
+		var khOpts []model.UpsertFileOpts
+		if wrappedDEK != "" {
+			khOpts = append(khOpts, model.UpsertFileOpts{WrappedDEK: wrappedDEK})
+		}
+		_ = model.UpsertFile(s.UserID, knownHostsKey, "known_hosts", false, int64(len(content)), "text/plain", "", khOpts...)
 		s.notifyParentDir(knownHostsKey, "modified")
 
 		s.pushOut(s.ID, "\033[2mWarning: Permanently added '"+hostname+"' to the list of known hosts.\033[0m\r\n")

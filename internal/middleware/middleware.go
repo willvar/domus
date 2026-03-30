@@ -64,21 +64,6 @@ func RoleRequired(roles ...string) fiber.Handler {
 	}
 }
 
-// PermissionRequired checks that the user has the given permission bit(s).
-// Root role always passes regardless of bitmask.
-func PermissionRequired(perm int64) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		session := c.Locals("session").(*model.Session)
-		if session.Role == "root" {
-			return c.Next()
-		}
-		if session.Permissions&perm == perm {
-			return c.Next()
-		}
-		return c.Status(403).JSON(fiber.Map{"error": "forbidden"})
-	}
-}
-
 // RootRequired restricts to admin only.
 func RootRequired() fiber.Handler {
 	return RoleRequired("root")

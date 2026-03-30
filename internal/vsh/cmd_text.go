@@ -17,9 +17,6 @@ import (
 // --- cat ---
 
 func cmdCat(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 	if len(args) == 0 {
 		return "", errors.New("missing file operand")
 	}
@@ -56,9 +53,6 @@ func cmdCat(s *Session, args []string, redirect string) (string, error) {
 // --- head ---
 
 func cmdHead(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 
 	n := 10
 	var file string
@@ -93,9 +87,6 @@ func cmdHead(s *Session, args []string, redirect string) (string, error) {
 // --- tail ---
 
 func cmdTail(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 
 	n := 10
 	var file string
@@ -136,9 +127,6 @@ func cmdEcho(s *Session, args []string, redirect string) (string, error) {
 	text := strings.Join(args, " ")
 
 	if redirect != "" {
-		if !s.hasPerm(PermEdit) {
-			return "", errors.New("permission denied")
-		}
 
 		appendMode := strings.HasPrefix(redirect, ">>")
 		target := redirect
@@ -158,12 +146,14 @@ func cmdEcho(s *Session, args []string, redirect string) (string, error) {
 			}
 		}
 
-		if err := s.WriteFileEncrypted(ossPath, []byte(content)); err != nil {
+		wrappedDEK, err := s.WriteFileEncrypted(ossPath, []byte(content))
+		if err != nil {
 			return "", fmt.Errorf("write failed: %v", err)
 		}
 		name := path.Base(ossPath)
 		ct := mime.TypeByExtension(filepath.Ext(name))
-		_ = model.UpsertFile(s.UserID, ossPath, name, false, int64(len(content)), ct, "")
+		_ = model.UpsertFile(s.UserID, ossPath, name, false, int64(len(content)), ct, "",
+			model.UpsertFileOpts{WrappedDEK: wrappedDEK})
 		s.notifyParentDir(ossPath, "modified")
 		return "", nil
 	}
@@ -174,9 +164,6 @@ func cmdEcho(s *Session, args []string, redirect string) (string, error) {
 // --- grep ---
 
 func cmdGrep(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 
 	caseInsensitive := false
 	lineNumbers := false
@@ -250,9 +237,6 @@ func cmdGrep(s *Session, args []string, redirect string) (string, error) {
 // --- sort ---
 
 func cmdSort(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 
 	reverse := false
 	numeric := false
@@ -321,9 +305,6 @@ func cmdSort(s *Session, args []string, redirect string) (string, error) {
 // --- uniq ---
 
 func cmdUniq(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 
 	countMode := false
 	var file string
@@ -364,9 +345,6 @@ func cmdUniq(s *Session, args []string, redirect string) (string, error) {
 // --- diff ---
 
 func cmdDiff(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 
 	var positional []string
 	for _, a := range args {
@@ -424,9 +402,6 @@ func cmdDiff(s *Session, args []string, redirect string) (string, error) {
 // --- wc ---
 
 func cmdWc(s *Session, args []string, redirect string) (string, error) {
-	if !s.hasPerm(PermRead) {
-		return "", errors.New("permission denied")
-	}
 
 	linesOnly := false
 	var file string

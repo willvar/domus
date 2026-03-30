@@ -2,6 +2,7 @@ package vsh
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -21,13 +22,6 @@ const (
 	maxHistorySize = 500
 )
 
-// Permission constants (mirrored from model for convenience).
-const (
-	PermRead   = model.PermRead
-	PermUpload = model.PermUpload
-	PermEdit   = model.PermEdit
-	PermDelete = model.PermDelete
-)
 
 // DirNotifyFunc is called when a command modifies a directory.
 type DirNotifyFunc func(resolvedPath, appPath, changeType string)
@@ -50,11 +44,10 @@ type Session struct {
 	Username  string
 	ConnID    string
 	Cwd       string // current working directory (app path)
-	Perms     int64
 	Mode      string // "vsh" or "ssh"
 	Cols      int    // last known terminal width
 	Rows      int    // last known terminal height
-	EncKey    []byte // per-user file encryption key
+	EncKey    []byte // per-user KEK (Key Encryption Key) for wrapping/unwrapping per-file DEKs
 	store     store.FileStore
 	dirNotify DirNotifyFunc
 	pushOut   PushFunc  // push output to frontend
@@ -118,7 +111,7 @@ func NewShellManager(s store.FileStore) *ShellManager {
 }
 
 // Open creates a new session.
-func (m *ShellManager) Open(userID, username, connID string, perms int64, cwd string, encKey []byte) (string, error) {
+func (m *ShellManager) Open(userID, username, connID string, cwd string, encKey []byte) (string, error) {
 	count := 0
 	m.sessions.Range(func(_, v any) bool {
 		if v.(*Session).UserID == userID {
@@ -141,7 +134,6 @@ func (m *ShellManager) Open(userID, username, connID string, perms int64, cwd st
 		Username:  username,
 		ConnID:    connID,
 		Cwd:       cwd,
-		Perms:     perms,
 		Mode:      "vsh",
 		EncKey:    encKey,
 		store:     m.store,
@@ -229,7 +221,11 @@ func (m *ShellManager) AppendHistory(s *Session, cmd string) {
 	if len(lines) > maxHistorySize {
 		lines = lines[len(lines)-maxHistorySize:]
 	}
-	_ = s.WriteFileEncrypted(key, []byte(strings.Join(lines, "\n")))
+	wrappedDEK, err := s.WriteFileEncrypted(key, []byte(strings.Join(lines, "\n")))
+	if err == nil && wrappedDEK != "" {
+		_ = model.UpsertFile(s.UserID, key, historyFileName, false, 0, "", "",
+			model.UpsertFileOpts{WrappedDEK: wrappedDEK})
+	}
 }
 
 // Input handles input from the frontend. In vsh mode it's a command line,
@@ -402,7 +398,7 @@ func (s *Session) completeFiles(partial string) []string {
 		return nil
 	}
 
-	records, err := model.ListDirectChildren(ossDir)
+	records, err := model.ListDirectChildren(s.UserID, ossDir)
 	if err != nil {
 		return nil
 	}
@@ -462,11 +458,8 @@ func historyKey(username string) string {
 	return username + "/home/" + username + "/" + historyFileName
 }
 
-func (s *Session) hasPerm(p int64) bool {
-	return s.Perms&p == p
-}
 
-// ReadFileDecrypted reads a file from OSS and decrypts it. Returns plaintext.
+// ReadFileDecrypted reads a file from OSS and decrypts it using the file's per-file DEK.
 func (s *Session) ReadFileDecrypted(ossKey string) ([]byte, error) {
 	rc, err := s.store.GetObjectContent(ossKey)
 	if err != nil {
@@ -479,25 +472,63 @@ func (s *Session) ReadFileDecrypted(ossKey string) ([]byte, error) {
 		return io.ReadAll(io.LimitReader(rc, 1<<20))
 	}
 
+	// Look up the file's wrapped DEK from DB and unwrap it
+	dek, err := s.unwrapFileDEK(ossKey)
+	if err != nil {
+		return nil, fmt.Errorf("unwrap DEK for %s: %w", ossKey, err)
+	}
+
 	var plain bytes.Buffer
-	if err := auth.DecryptStream(s.EncKey, rc, &plain); err != nil {
+	if err := auth.DecryptStream(dek, rc, &plain); err != nil {
 		return nil, err
 	}
 	return plain.Bytes(), nil
 }
 
-// WriteFileEncrypted encrypts plaintext and writes to OSS.
-func (s *Session) WriteFileEncrypted(ossKey string, plaintext []byte) error {
+// WriteFileEncrypted encrypts plaintext with a new per-file DEK and writes to OSS.
+// Returns the hex-encoded wrapped DEK (for storing in the file record) and any error.
+func (s *Session) WriteFileEncrypted(ossKey string, plaintext []byte) (string, error) {
 	if len(s.EncKey) == 0 {
 		// No encryption key — write raw
-		return s.store.PutObjectBytes(ossKey, plaintext)
+		return "", s.store.PutObjectBytes(ossKey, plaintext)
 	}
 
-	var cipher bytes.Buffer
-	if err := auth.EncryptStream(s.EncKey, bytes.NewReader(plaintext), &cipher); err != nil {
-		return err
+	// Generate a new per-file DEK
+	dek, err := auth.GenerateDEK()
+	if err != nil {
+		return "", fmt.Errorf("generate DEK: %w", err)
 	}
-	return s.store.PutObjectBytes(ossKey, cipher.Bytes())
+
+	var cipherBuf bytes.Buffer
+	if err := auth.EncryptStream(dek, bytes.NewReader(plaintext), &cipherBuf); err != nil {
+		return "", err
+	}
+	if err := s.store.PutObjectBytes(ossKey, cipherBuf.Bytes()); err != nil {
+		return "", err
+	}
+
+	// Wrap the DEK with the user's KEK
+	wrapped, err := auth.WrapDEK(s.EncKey, dek)
+	if err != nil {
+		return "", fmt.Errorf("wrap DEK: %w", err)
+	}
+	return hex.EncodeToString(wrapped), nil
+}
+
+// unwrapFileDEK retrieves and unwraps the per-file DEK for the given OSS key.
+func (s *Session) unwrapFileDEK(ossKey string) ([]byte, error) {
+	rec, err := model.GetFile(s.UserID, ossKey)
+	if err != nil {
+		return nil, fmt.Errorf("get file record: %w", err)
+	}
+	if rec.WrappedDEK == "" {
+		return nil, fmt.Errorf("no wrapped DEK for file")
+	}
+	wrappedBytes, err := hex.DecodeString(rec.WrappedDEK)
+	if err != nil {
+		return nil, fmt.Errorf("decode wrapped DEK: %w", err)
+	}
+	return auth.UnwrapDEK(s.EncKey, wrappedBytes)
 }
 
 // --- Command line parsing ---
