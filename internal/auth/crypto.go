@@ -23,7 +23,98 @@ const (
 	TagSize               = 16
 )
 
-// DeriveKey derives a per-user AES-256 key from the master encryption secret and user ID.
+// DEK size for per-file data encryption keys.
+const DEKSize = 32 // AES-256
+
+// GenerateDEK generates a random 32-byte Data Encryption Key.
+func GenerateDEK() ([]byte, error) {
+	dek := make([]byte, DEKSize)
+	if _, err := rand.Read(dek); err != nil {
+		return nil, fmt.Errorf("generate DEK: %w", err)
+	}
+	return dek, nil
+}
+
+// WrapDEK encrypts a DEK with the user's KEK using AES-GCM.
+// Output format: [12-byte nonce][ciphertext+16-byte tag] = 60 bytes for a 32-byte DEK.
+func WrapDEK(kek, dek []byte) ([]byte, error) {
+	block, err := aes.NewCipher(kek)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonce := make([]byte, gcm.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		return nil, fmt.Errorf("generate nonce: %w", err)
+	}
+
+	ciphertext := gcm.Seal(nil, nonce, dek, nil)
+	return append(nonce, ciphertext...), nil
+}
+
+// UnwrapDEK decrypts a wrapped DEK using the user's KEK.
+// Input must be the output of WrapDEK: [12-byte nonce][ciphertext+tag].
+func UnwrapDEK(kek, wrappedDEK []byte) ([]byte, error) {
+	block, err := aes.NewCipher(kek)
+	if err != nil {
+		return nil, err
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, err
+	}
+
+	nonceSize := gcm.NonceSize()
+	if len(wrappedDEK) < nonceSize+gcm.Overhead() {
+		return nil, fmt.Errorf("wrapped DEK too short")
+	}
+
+	nonce := wrappedDEK[:nonceSize]
+	ciphertext := wrappedDEK[nonceSize:]
+
+	dek, err := gcm.Open(nil, nonce, ciphertext, nil)
+	if err != nil {
+		return nil, fmt.Errorf("unwrap DEK: %w", err)
+	}
+	return dek, nil
+}
+
+// GenerateKEK generates a random 32-byte Key Encryption Key for a user.
+func GenerateKEK() ([]byte, error) {
+	kek := make([]byte, DEKSize)
+	if _, err := rand.Read(kek); err != nil {
+		return nil, fmt.Errorf("generate KEK: %w", err)
+	}
+	return kek, nil
+}
+
+// WrapKEK encrypts a user KEK with the server master key using AES-GCM.
+func WrapKEK(serverKey, kek []byte) ([]byte, error) {
+	return WrapDEK(serverKey, kek)
+}
+
+// UnwrapKEK decrypts a wrapped user KEK using the server master key.
+func UnwrapKEK(serverKey, wrappedKEK []byte) ([]byte, error) {
+	return UnwrapDEK(serverKey, wrappedKEK)
+}
+
+// ServerKeyFromSecret decodes the hex-encoded encryption secret into a 32-byte server key.
+func ServerKeyFromSecret(encryptionSecret string) ([]byte, error) {
+	raw, err := hex.DecodeString(encryptionSecret)
+	if err != nil {
+		return nil, fmt.Errorf("decode server key: %w", err)
+	}
+	if len(raw) < 32 {
+		return nil, fmt.Errorf("server key too short: need 32 bytes, got %d", len(raw))
+	}
+	return raw[:32], nil
+}
+
+// Deprecated: DeriveKey derives a per-user KEK from a global secret. Use per-user random KEKs instead.
 func DeriveKey(encryptionSecret, userID string) ([]byte, error) {
 	ikm, err := hex.DecodeString(encryptionSecret)
 	if err != nil {
