@@ -67,6 +67,10 @@ function handleDuplicate(action) {
   dialogState.value = null
 }
 
+function linkify(text) {
+  return text.replace(/(https?:\/\/[^\s)]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--breeze-accent)">$1</a>')
+}
+
 function formatSize(bytes) {
   if (!bytes) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
@@ -93,9 +97,7 @@ function formatSize(bytes) {
     @close="handleCancel"
     @mask-click="handleCancel"
   >
-    <div v-if="dialogState?.content" class="dialog-content">
-      {{ dialogState.content }}
-    </div>
+    <div v-if="dialogState?.content" class="dialog-content" v-html="linkify(dialogState.content)" />
     <BInput
       v-if="dialogState?.type === 'prompt'"
       ref="inputRef"

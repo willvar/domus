@@ -49,8 +49,14 @@ function toggleViewMenu() {
   const btn = viewBtnRef.value
   if (!btn) return
   const rect = btn.getBoundingClientRect()
+  let left = rect.left
+  // Prevent overflow on mobile
+  const menuWidth = 180
+  if (left + menuWidth > window.innerWidth) {
+    left = window.innerWidth - menuWidth - 8
+  }
   viewMenuStyle.value = {
-    left: `${rect.left}px`,
+    left: `${Math.max(4, left)}px`,
     top: `${rect.bottom + 2}px`,
   }
   showViewMenu.value = true
@@ -155,6 +161,14 @@ function handleSearchKeydown(e) {
             >
               {{ t(opt.labelKey) }}
             </button>
+            <div class="dropdown-divider" />
+            <button
+              class="dropdown-item"
+              :class="{ selected: fs.showHidden }"
+              @click="fs.toggleHidden()"
+            >
+              {{ t('toolbar.show_hidden') }}
+            </button>
           </div>
         </Transition>
       </Teleport>
@@ -173,6 +187,7 @@ function handleSearchKeydown(e) {
           ref="fileInputRef"
           type="file"
           multiple
+          accept="*/*"
           style="display: none"
           @change="handleFileSelect"
         />
@@ -296,6 +311,11 @@ function handleSearchKeydown(e) {
 }
 .dropdown-item.selected:hover {
   color: #fff;
+}
+.dropdown-divider {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--breeze-border, #3b4045);
 }
 
 /* ─── Search box (Breeze-style input) ─── */

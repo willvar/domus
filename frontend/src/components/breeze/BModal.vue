@@ -156,4 +156,17 @@ watch(() => props.show, (v) => {
   opacity: 0;
   transform: scale(0.96);
 }
+
+@media (max-width: 767px) {
+  .breeze-modal-dialog {
+    max-height: 90vh;
+    overflow-y: auto;
+  }
+  .breeze-modal-dialog__footer :deep(div) {
+    flex-direction: column;
+  }
+  .breeze-modal-dialog__footer :deep(button) {
+    width: 100%;
+  }
+}
 </style>

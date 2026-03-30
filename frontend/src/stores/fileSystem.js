@@ -9,9 +9,10 @@ import { ICONS } from '../composables/useFileIcon'
 import { showPrompt, showConfirm } from '../composables/useNativeDialog'
 import { usePendingOpsStore } from './pendingOps'
 import { usePreferences } from '../composables/usePreferences'
+import { useWorkspaceSync } from '../composables/useWorkspaceSync'
 
 const TEXT_CHUNK_SIZE = 256 * 1024 // 256KB — aligns with 4 encryption chunks
-const NON_CHUNKABLE_TYPES = new Set(['notebook', 'xlsx', 'docx', 'epub', 'archive'])
+const NON_CHUNKABLE_TYPES = new Set(['notebook', 'archive'])
 
 function getLargeFileLimit() {
   const { prefs } = usePreferences()
@@ -62,6 +63,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const wm = useWindowManagerStore()
   const ws = useWebSocket()
   const { t, te } = useI18n()
+  const sync = useWorkspaceSync()
 
   // --- Multi-tab state ---
   const tabs = ref([])
@@ -91,6 +93,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const sortBy = bindActiveTabField('sortBy', 'name')
   const sortOrder = bindActiveTabField('sortOrder', 'asc')
   const searchQuery = bindActiveTabField('searchQuery', '')
+  const showHidden = ref(localStorage.getItem('zephyr_show_hidden') === '1')
 
   // --- Search state ---
   const searchMode = ref(false)
@@ -105,6 +108,8 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const renamingFile = ref(null)
   const showInfoPanel = ref(false)
   const showSidebar = ref(true)
+  const showTerminal = ref(false)
+  const terminalHeight = ref(200)
 
   // App windows (multi-window: array of { windowId, file, url, type, ... })
   const appWindows = ref([])
@@ -138,6 +143,10 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     if (searchMode.value) return searchResults.value
 
     let items = [...files.value]
+
+    if (!showHidden.value) {
+      items = items.filter(f => !f.name.startsWith('.'))
+    }
 
     items.sort((a, b) => {
       if (a.is_dir !== b.is_dir) return a.is_dir ? -1 : 1
@@ -184,7 +193,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   })
 
   // --- Tab operations ---
-  function createTab(path) {
+  function createTab(path, { remote } = {}) {
     const id = nextTabId()
     const initialPath = path || `/home/${auth.username}/`
     const tab = {
@@ -210,12 +219,18 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     ws.request('subscribe.directory', { path: initialPath }).catch(() => {})
 
     loadFiles(initialPath)
+
+    if (!remote) {
+      sync.emitEvent({ action: 'tab.open', path: initialPath })
+    }
+
     return id
   }
 
-  function closeTab(id) {
+  function closeTab(id, { remote } = {}) {
+    const idx = tabs.value.findIndex(t => t.id === id)
     if (tabs.value.length <= 1) {
-      wm.closeWindow('files')
+      wm.closeWindow('files', { remote })
       return
     }
     // Unsubscribe directory for this tab
@@ -224,8 +239,12 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       ws.request('unsubscribe.directory', { path: sub }).catch(() => {})
       tabSubs.delete(id)
     }
-    const idx = tabs.value.findIndex(t => t.id === id)
     if (idx < 0) return
+
+    if (!remote) {
+      sync.emitEvent({ action: 'tab.close', index: idx })
+    }
+
     tabs.value.splice(idx, 1)
     if (activeTabId.value === id) {
       const newIdx = Math.min(idx, tabs.value.length - 1)
@@ -233,9 +252,13 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     }
   }
 
-  function switchTab(id) {
-    if (tabs.value.find(t => t.id === id)) {
+  function switchTab(id, { remote } = {}) {
+    const idx = tabs.value.findIndex(t => t.id === id)
+    if (idx >= 0) {
       activeTabId.value = id
+      if (!remote) {
+        sync.emitEvent({ action: 'tab.switch', index: idx })
+      }
     }
   }
 
@@ -263,7 +286,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const tabSubs = new Map() // tabId -> subscribedPath
 
   // --- Navigation ---
-  async function navigate(path, addToHistory = true) {
+  async function navigate(path, addToHistory = true, { remote } = {}) {
     path = path || '/'
     if (path !== '/' && !path.endsWith('/')) path += '/'
 
@@ -289,6 +312,13 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       history.value = history.value.slice(0, historyIndex.value + 1)
       history.value.push(path)
       historyIndex.value = history.value.length - 1
+    }
+
+    if (!remote) {
+      const tabIndex = tabs.value.findIndex(t => t.id === tabId)
+      if (tabIndex >= 0) {
+        sync.emitEvent({ action: 'tab.navigate', index: tabIndex, path })
+      }
     }
 
     // Subscribe to new directory
@@ -607,9 +637,11 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const audioExts = new Set(['mp3', 'wav', 'ogg', 'aac', 'm4a', 'flac', 'opus'])
   const fontExts = new Set(['ttf', 'otf', 'woff', 'woff2'])
   const archiveExts = new Set(['zip'])
-  const epubExts = new Set(['epub'])
-  const officeSpreadsheetExts = new Set(['xlsx', 'xls'])
-  const officeDocExts = new Set(['docx'])
+  const officeExts = new Set([
+    'doc', 'docx', 'docm', 'dotm', 'dotx',
+    'xls', 'xlsx', 'xlsb', 'xlsm',
+    'ppt', 'pptx', 'ppsx', 'pps', 'pptm', 'potm', 'ppam', 'potx', 'ppsm',
+  ])
   const notebookExts = new Set(['ipynb'])
   const textExts = new Set([
     'txt', 'json', 'yaml', 'yml', 'xml', 'log', 'ini', 'conf', 'cfg',
@@ -643,9 +675,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     markdown: ICONS.markdown,
     csv: ICONS.text,
     font: ICONS.file,
-    xlsx: ICONS.spreadsheet,
-    docx: ICONS.document,
-    epub: ICONS.document,
+    office: ICONS.document,
     archive: ICONS.archive,
     notebook: ICONS.code,
   }
@@ -690,9 +720,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     if (ext === 'md') return 'markdown'
     if (ext === 'csv') return 'csv'
     if (notebookExts.has(ext)) return 'notebook'
-    if (officeSpreadsheetExts.has(ext)) return 'xlsx'
-    if (officeDocExts.has(ext)) return 'docx'
-    if (epubExts.has(ext)) return 'epub'
+    if (officeExts.has(ext)) return 'office'
     if (fontExts.has(ext)) return 'font'
     if (archiveExts.has(ext)) return 'archive'
     if (isTextFile(name)) return 'text'
@@ -709,9 +737,9 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     return appWindows.value.find(p => p.windowId === windowId)
   }
 
-  async function openViewer(file) {
-    const windowId = appWindowId(file.path)
-    const type = getViewerType(file.name) || 'image'
+  async function openViewer(file, { forceType, remote } = {}) {
+    const windowId = appWindowId(file.path) + (forceType ? `-${forceType}` : '')
+    const type = forceType || getViewerType(file.name) || 'image'
 
     // If already open, just bring to front
     const existing = findApp(windowId)
@@ -744,9 +772,9 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       icon: appIcons[type] || appIcons.image,
       type: 'viewer',
       data: { filePath: file.path },
-    })
+    }, { remote })
 
-    const blobTypes = ['video', 'image', 'pdf', 'audio', 'font', 'epub', 'archive', 'xlsx', 'docx']
+    const blobTypes = ['video', 'image', 'pdf', 'audio', 'font', 'archive']
     const textTypes = ['text', 'markdown', 'csv', 'notebook']
 
     // Size guard for non-chunkable types
@@ -765,7 +793,27 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       }
     }
 
-    if (blobTypes.includes(type)) {
+    if (type === 'office') {
+      // Privacy confirmation for Microsoft Office Online preview
+      const ok = await showConfirm(
+        t('dialog.office_privacy_title'),
+        t('dialog.office_privacy_body'),
+      )
+      if (!ok) {
+        appWindows.value = appWindows.value.filter(a => a.windowId !== windowId)
+        wm.closeWindow(windowId)
+        return
+      }
+      try {
+        const res = await api.get('/file/preview', {
+          params: { path: file.path, type: 'office' },
+        })
+        const presignedUrl = res.data.url
+        state.url = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(presignedUrl)}`
+      } catch {
+        state.url = ''
+      }
+    } else if (blobTypes.includes(type)) {
       try {
         const res = await api.get('/file/content/raw', {
           params: { path: file.path },
@@ -846,7 +894,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     }
   }
 
-  function closeViewer(windowId) {
+  function closeViewer(windowId, { remote } = {}) {
     const state = findApp(windowId)
     if (state) {
       if (state.openedAt) {
@@ -861,7 +909,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         URL.revokeObjectURL(state.url)
       }
     }
-    wm.closeWindow(windowId)
+    wm.closeWindow(windowId, { remote })
     const idx = appWindows.value.findIndex(p => p.windowId === windowId)
     if (idx >= 0) appWindows.value.splice(idx, 1)
   }
@@ -930,14 +978,57 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   })
 
   // Initialize
-  function init() {
+  function init({ skipRestore } = {}) {
     if (auth.isLoggedIn) {
       // Reset tabs
       tabs.value = []
       activeTabId.value = ''
-      createTab()
-      // Open Files app window
-      wm.openFilesApp()
+      appWindows.value = []
+    }
+  }
+
+  // Restore tabs from a serialised snapshot
+  function restoreTabs(serializedTabs, activeIndex) {
+    tabs.value = []
+    activeTabId.value = ''
+
+    for (const st of serializedTabs) {
+      const id = nextTabId()
+      const tab = {
+        id,
+        path: st.path || `/home/${auth.username}/`,
+        files: [],
+        selectedFiles: [],
+        lastSelectedIndex: -1,
+        history: [st.path || `/home/${auth.username}/`],
+        historyIndex: 0,
+        viewMode: st.viewMode || 'icons',
+        sortBy: st.sortBy || 'name',
+        sortOrder: st.sortOrder || 'asc',
+        searchQuery: '',
+        loading: false,
+        error: null,
+      }
+      tabs.value.push(tab)
+      tabSubs.set(id, tab.path)
+      ws.request('subscribe.directory', { path: tab.path }).catch(() => {})
+      loadFilesForTab(tab, tab.path)
+    }
+
+    // Set active tab
+    const idx = typeof activeIndex === 'number' ? Math.min(activeIndex, tabs.value.length - 1) : 0
+    if (tabs.value[idx]) {
+      activeTabId.value = tabs.value[idx].id
+    }
+  }
+
+  // Restore viewer windows (re-open files to fetch content)
+  function restoreViewers(viewerWindows) {
+    for (const vw of viewerWindows) {
+      const filePath = vw.data?.filePath
+      if (!filePath) continue
+      const fileName = filePath.split('/').pop() || ''
+      openViewer({ path: filePath, name: fileName, size: 0, is_dir: false }, { remote: true })
     }
   }
 
@@ -1004,6 +1095,11 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     focusSearch,
     renamingFile,
     searchQuery,
+    showHidden,
+    toggleHidden() {
+      showHidden.value = !showHidden.value
+      localStorage.setItem('zephyr_show_hidden', showHidden.value ? '1' : '0')
+    },
     searchMode,
     searchResults,
     searchLoading,
@@ -1011,6 +1107,9 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     exitSearch,
     showInfoPanel,
     showSidebar,
+    showTerminal,
+    terminalHeight,
+    toggleTerminal() { showTerminal.value = !showTerminal.value },
     sortedFiles,
     pathSegments,
     canGoBack,
@@ -1057,5 +1156,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     viewerPrevPage,
     moveTab,
     init,
+    restoreTabs,
+    restoreViewers,
   }
 })

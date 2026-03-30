@@ -78,6 +78,16 @@ watch(() => props.show, (v) => {
         </BFormItem>
         <p class="prefs-hint">{{ t('prefs.index_content_hint') }}</p>
       </BCard>
+
+      <BCard :title="t('prefs.session_title')" size="small" style="margin-top: 16px">
+        <BFormItem :label="t('prefs.session_isolation')">
+          <BSwitch
+            :value="prefs.sessionIsolation"
+            @update:value="v => update({ sessionIsolation: v })"
+          />
+        </BFormItem>
+        <p class="prefs-hint">{{ t('prefs.session_isolation_hint') }}</p>
+      </BCard>
     </div>
   </TrayPopup>
 </template>

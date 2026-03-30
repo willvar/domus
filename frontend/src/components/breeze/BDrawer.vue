@@ -46,6 +46,7 @@ function onMaskClick() {
   right: 0;
   border-radius: 12px 12px 0 0;
   max-height: 80vh;
+  padding-bottom: env(safe-area-inset-bottom);
 }
 .breeze-drawer-panel--right {
   top: 0;

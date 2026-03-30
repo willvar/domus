@@ -60,8 +60,8 @@ export const useOperationsStore = defineStore('operations', () => {
     const op = addOperation(type, description)
     try {
       const result = await ws.request(action, data)
-      if (result.op_id) {
-        op.opId = result.op_id
+      if (result.op_id || result.task_id) {
+        op.opId = result.op_id || result.task_id
       } else {
         // Immediate completion (no async op)
         completeOperation(op.id)
@@ -72,29 +72,20 @@ export const useOperationsStore = defineStore('operations', () => {
     return op
   }
 
-  // Listen for file operation push events
-  ws.on('file.op.progress', (data) => {
-    const op = findByOpId(data.op_id)
-    if (op) {
-      Object.assign(op, {
-        done: data.done,
-        total: data.total,
-        current: data.current,
-      })
-    }
-  })
-
-  ws.on('file.op.completed', (data) => {
-    const op = findByOpId(data.op_id)
-    if (op) {
+  // Listen for task.update push events to track file operation progress
+  ws.on('task.update', (data) => {
+    const op = findByOpId(data.task_id)
+    if (!op) return
+    if (data.status === 'completed') {
       completeOperation(op.id)
-    }
-  })
-
-  ws.on('file.op.error', (data) => {
-    const op = findByOpId(data.op_id)
-    if (op) {
-      failOperation(op.id, data.error)
+    } else if (data.status === 'failed') {
+      failOperation(op.id, data.error || 'operation_failed')
+    } else {
+      Object.assign(op, {
+        done: Math.round((data.progress || 0) * 100),
+        total: 100,
+        current: data.phase || '',
+      })
     }
   })
 

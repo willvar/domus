@@ -1,5 +1,5 @@
 <script setup>
-import { ref, h, provide, onMounted } from 'vue'
+import { ref, h, provide, watch } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useFileSystemStore } from '../stores/fileSystem'
 import { useUploadStore } from '../stores/upload'
@@ -8,16 +8,19 @@ import { useKeyboard } from '../composables/useKeyboard'
 import { useWindowHistory } from '../composables/useWindowHistory'
 import { useNotification } from '../composables/useNotification'
 import { useWindowManagerStore } from '../stores/windowManager'
+import { useWorkspaceSync } from '../composables/useWorkspaceSync'
 import BButton from '../components/breeze/BButton.vue'
 import { useI18n } from '../composables/useI18n'
 
 import PlasmaDesktop from '../components/plasma/Desktop.vue'
 import DolphinApp from '../components/dolphin/App.vue'
+import KonsoleApp from '../components/konsole/App.vue'
 import AppRenderer from '../components/plasma/AppRenderer.vue'
 import PlasmaPanel from '../components/plasma/Panel.vue'
 import ContextMenu from '../components/plasma/ContextMenu.vue'
 import GlobalDialog from '../components/GlobalDialog.vue'
 import TranscodeDialog from '../components/TranscodeDialog.vue'
+import WallpaperDialog from '../components/plasma/WallpaperDialog.vue'
 import JobsPanel from '../components/plasma/systemtray/JobsPanel.vue'
 import PendingOpsPanel from '../components/plasma/systemtray/PendingOpsPanel.vue'
 import ProfileApp from '../components/plasma/systemtray/ProfileApp.vue'
@@ -57,11 +60,64 @@ provide('openTranscodeDialog', (path, name, mediaType) => {
   transcodeDialogRef.value?.open(path, name, mediaType)
 })
 
-// Initialize file system and check for interrupted uploads
-fs.init()
+const wallpaperDialogRef = ref(null)
+provide('pickWallpaper', () => { wallpaperDialogRef.value?.open() })
+
+// Initialize file system with workspace restore
+const workspace = useWorkspaceSync()
+
 uploadStore.checkInterrupted()
 pendingOpsStore.init(auth.username)
-useWindowHistory()
+
+;(async () => {
+  const saved = await workspace.load()
+
+  if (saved?.version === 1 && saved.windows?.length > 0) {
+    // Restore from saved workspace
+    fs.init({ skipRestore: true })
+
+    // Restore tabs
+    if (saved.tabs?.length > 0) {
+      fs.restoreTabs(saved.tabs, saved.activeTabIndex ?? 0)
+    } else {
+      fs.createTab(undefined, { remote: true })
+    }
+
+    // Restore window frames (non-viewer)
+    const viewerWindows = saved.windows.filter(w => w.type === 'viewer')
+    const regularWindows = saved.windows.filter(w => w.type !== 'viewer')
+    workspace.restoreWindows(wm, regularWindows)
+
+    // Restore viewer windows (async content fetch)
+    if (viewerWindows.length > 0) {
+      fs.restoreViewers(viewerWindows)
+    }
+
+    // Ensure files window is open if tabs exist
+    if (saved.tabs?.length > 0 && !wm.findWindow('files')) {
+      wm.openFilesApp({ remote: true })
+    }
+  } else {
+    // Fresh start
+    fs.init()
+  }
+
+  useWindowHistory()
+
+  // Set up push event handler for cross-device sync
+  workspace.setupPushHandler(wm, fs)
+
+  // Auto-save workspace on state changes
+  watch(
+    () => JSON.stringify({
+      w: wm.windows.map(w => [w.id, w.minimized, w.maximized, w.tiled]),
+      t: fs.tabs.map(t => [t.path, t.viewMode, t.sortBy, t.sortOrder]),
+      a: fs.activeTabId,
+    }),
+    () => { workspace.scheduleSave(wm, fs) },
+    { flush: 'post' },
+  )
+})()
 
 // Show setup reminder if needed
 if (auth.needsSetup) {
@@ -88,6 +144,7 @@ if (auth.needsSetup) {
     <div class="desktop-area">
       <PlasmaDesktop />
       <DolphinApp />
+      <KonsoleApp />
       <AppRenderer />
     </div>
 
@@ -100,6 +157,7 @@ if (auth.needsSetup) {
     <GlobalDialog />
     <ProfileApp />
     <PreferencesPanel v-model:show="showPrefs" />
+    <WallpaperDialog ref="wallpaperDialogRef" />
   </div>
 </template>
 

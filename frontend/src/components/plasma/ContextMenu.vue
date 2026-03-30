@@ -12,7 +12,7 @@ const { t } = useI18n()
 
 const openTranscodeDialog = inject('openTranscodeDialog', null)
 
-const { show, x, y, targetFile } = useContextMenuState()
+const { show, x, y, targetFile, context } = useContextMenuState()
 
 const isMobile = ref(window.innerWidth < 768)
 function onResize() { isMobile.value = window.innerWidth < 768 }
@@ -24,8 +24,16 @@ const menuStyle = ref({})
 
 const dangerKeys = new Set(['delete', 'empty_trash', 'permanent_delete'])
 
+const pickWallpaper = inject('pickWallpaper', null)
+
 const options = computed(() => {
   const items = []
+
+  // Desktop context menu
+  if (context.value === 'desktop') {
+    items.push({ label: t('menu.change_wallpaper'), key: 'desktop_wallpaper' })
+    return items
+  }
 
   if (fs.isTrash) {
     if (targetFile.value) {
@@ -43,6 +51,10 @@ const options = computed(() => {
     items.push({ label: t('menu.open'), key: 'open' })
     if (!targetFile.value.is_dir) {
       items.push({ label: t('menu.download'), key: 'download' })
+      const vtype = fs.getViewerType(targetFile.value.name)
+      if (vtype !== 'text') {
+        items.push({ label: t('menu.open_as_text'), key: 'open_as_text' })
+      }
     }
 
     if (!targetFile.value.is_dir && auth.canEdit) {
@@ -64,6 +76,8 @@ const options = computed(() => {
     if (auth.canDelete) {
       items.push({ label: t('menu.delete'), key: 'delete' })
     }
+    items.push({ type: 'divider' })
+    items.push({ label: t('menu.details'), key: 'details' })
   } else {
     if (auth.canUpload) {
       items.push({ label: t('menu.new_folder'), key: 'mkdir' })
@@ -131,9 +145,14 @@ onUnmounted(() => {
 function handleSelect(key) {
   closeContextMenu()
   switch (key) {
+    // Desktop actions
+    case 'desktop_wallpaper': if (pickWallpaper) pickWallpaper(); break
     case 'open': fs.openSelected(); break
     case 'download':
       if (targetFile.value) fs.downloadFile(targetFile.value.path)
+      break
+    case 'open_as_text':
+      if (targetFile.value) fs.openViewer(targetFile.value, { forceType: 'text' })
       break
     case 'copy': fs.copySelected(); break
     case 'cut': fs.cutSelected(); break
@@ -159,6 +178,9 @@ function handleSelect(key) {
         else if (audioExts.includes(ext)) mtype = 'audio'
         openTranscodeDialog(targetFile.value.path, name, mtype)
       }
+      break
+    case 'details':
+      fs.showInfoPanel = !fs.showInfoPanel
       break
   }
 }

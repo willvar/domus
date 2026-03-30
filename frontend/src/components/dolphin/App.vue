@@ -4,6 +4,7 @@ import IconMenu from '~icons/mdi/menu'
 import BButton from '../breeze/BButton.vue'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useWindowManagerStore, FILES_ICON } from '../../stores/windowManager'
+import { useI18n } from '../../composables/useI18n'
 import PlasmaWindow from '../plasma/Window.vue'
 import ToolBar from './ToolBar.vue'
 import Breadcrumb from './Breadcrumb.vue'
@@ -11,10 +12,13 @@ import TabBar from './TabBar.vue'
 import Places from './Places.vue'
 import View from './View.vue'
 import InfoPanel from './InfoPanel.vue'
+import BDrawer from '../breeze/BDrawer.vue'
 import StatusBar from './StatusBar.vue'
+import KonsoleTerminalTabs from '../konsole/TerminalTabs.vue'
 
 const fs = useFileSystemStore()
 const wm = useWindowManagerStore()
+const { t } = useI18n()
 
 const WINDOW_ID = 'files'
 const mobileSidebar = ref(false)
@@ -28,10 +32,48 @@ const showSidebarComputed = computed(() =>
   isMobile.value ? mobileSidebar.value : fs.showSidebar
 )
 
-const windowOpen = computed(() => !!wm.findWindow(WINDOW_ID))
+const windowOpen = computed(() => {
+  const open = !!wm.findWindow(WINDOW_ID)
+  // Ensure at least one tab exists when the files window is open
+  if (open && fs.tabs.length === 0) {
+    fs.createTab()
+  }
+  return open
+})
 
 function handleClose() {
   wm.closeWindow(WINDOW_ID)
+}
+
+// --- Terminal panel resize ---
+let resizing = false
+let resizeStartY = 0
+let resizeStartH = 0
+
+function startTermResize(e) {
+  e.preventDefault()
+  resizing = true
+  resizeStartY = e.clientY
+  resizeStartH = fs.terminalHeight
+  document.addEventListener('mousemove', onTermResize)
+  document.addEventListener('mouseup', stopTermResize)
+  document.body.style.cursor = 'ns-resize'
+  document.body.style.userSelect = 'none'
+}
+
+function onTermResize(e) {
+  if (!resizing) return
+  const delta = resizeStartY - e.clientY
+  const newH = Math.max(120, Math.min(resizeStartH + delta, window.innerHeight - 200))
+  fs.terminalHeight = newH
+}
+
+function stopTermResize() {
+  resizing = false
+  document.removeEventListener('mousemove', onTermResize)
+  document.removeEventListener('mouseup', stopTermResize)
+  document.body.style.cursor = ''
+  document.body.style.userSelect = ''
 }
 </script>
 
@@ -39,12 +81,12 @@ function handleClose() {
   <PlasmaWindow
     v-if="windowOpen"
     :window-id="WINDOW_ID"
-    title="文件"
+    :title="t('app.files')"
     :icon="FILES_ICON"
     @close="handleClose"
   >
     <ToolBar />
-    <Breadcrumb class="mobile-hide" />
+    <Breadcrumb />
     <TabBar />
     <div class="files-main-content">
       <BButton
@@ -67,6 +109,26 @@ function handleClose() {
 
       <InfoPanel v-if="fs.showInfoPanel" class="info-panel-desktop" />
     </div>
+
+    <!-- Mobile: InfoPanel as bottom drawer -->
+    <BDrawer
+      v-if="isMobile"
+      :show="fs.showInfoPanel"
+      placement="bottom"
+      @close="fs.showInfoPanel = false"
+    >
+      <InfoPanel v-if="fs.showInfoPanel" class="info-panel-mobile" />
+    </BDrawer>
+
+    <div
+      v-if="fs.showTerminal"
+      class="terminal-panel"
+      :style="{ height: fs.terminalHeight + 'px' }"
+    >
+      <div class="terminal-resize-handle" @mousedown="startTermResize" />
+      <KonsoleTerminalTabs :initial-cwd="fs.currentPath" @exit="fs.toggleTerminal()" />
+    </div>
+
     <StatusBar />
   </PlasmaWindow>
 </template>
@@ -78,6 +140,26 @@ function handleClose() {
   min-height: 0;
   overflow: hidden;
   position: relative;
+}
+
+.terminal-panel {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  border-top: 1px solid var(--breeze-border);
+  min-height: 120px;
+  position: relative;
+}
+
+.terminal-resize-handle {
+  height: 4px;
+  cursor: ns-resize;
+  flex-shrink: 0;
+  background: var(--breeze-border);
+  transition: background 0.15s;
+}
+.terminal-resize-handle:hover {
+  background: var(--breeze-accent);
 }
 
 .sidebar-toggle {
@@ -94,7 +176,11 @@ function handleClose() {
 
 @media (max-width: 767px) {
   .sidebar-toggle { display: block; }
-  .mobile-hide { display: none; }
+}
+
+.info-panel-mobile {
+  max-height: 60vh;
+  overflow-y: auto;
 }
 
 .slide-left-enter-active, .slide-left-leave-active {

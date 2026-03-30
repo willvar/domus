@@ -113,6 +113,12 @@ export function useKeyboard() {
         fs.createFolder()
         break
 
+      // F4 - Toggle terminal panel
+      case e.key === 'F4':
+        e.preventDefault()
+        fs.toggleTerminal()
+        break
+
       // F5 - Refresh
       case e.key === 'F5':
         e.preventDefault()

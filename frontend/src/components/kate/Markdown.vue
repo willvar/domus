@@ -18,7 +18,7 @@ const cm = useCodeMirror()
 const cmContainer = ref(null)
 const mdWrap = ref(null)
 const editBuffer = ref('')
-const mode = ref('split')
+const mode = ref(window.innerWidth < 768 ? 'preview' : 'split')
 
 const md = new MarkdownIt({ html: false, linkify: true, typographer: true })
 
@@ -170,4 +170,10 @@ onUnmounted(() => cm.destroy())
 .markdown-body :deep(a) { color: #3daee9; }
 .markdown-body :deep(ul), .markdown-body :deep(ol) { padding-left: 2em; }
 .markdown-body :deep(hr) { border: none; border-top: 1px solid #eee; margin: 1.5em 0; }
+
+@media (max-width: 767px) {
+  .viewer-body.viewer-body-split { flex-direction: column; }
+  .viewer-pane { flex: 1 1 50%; min-height: 0; }
+  .markdown-body { padding: 16px; }
+}
 </style>
