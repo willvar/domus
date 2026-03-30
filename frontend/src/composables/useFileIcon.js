@@ -88,11 +88,11 @@ const EXT_MAP = {
   // PDF
   pdf: 'pdf',
   // Spreadsheet
-  xls: 'spreadsheet', xlsx: 'spreadsheet', ods: 'spreadsheet',
+  ods: 'spreadsheet', xls: 'spreadsheet', xlsx: 'spreadsheet', xlsb: 'spreadsheet', xlsm: 'spreadsheet',
   // Document
-  doc: 'document', docx: 'document', odt: 'document', rtf: 'document',
+  doc: 'document', docx: 'document', docm: 'document', dotm: 'document', dotx: 'document', odt: 'document', rtf: 'document',
   // Presentation
-  ppt: 'presentation', pptx: 'presentation', odp: 'presentation',
+  ppt: 'presentation', pptx: 'presentation', ppsx: 'presentation', pps: 'presentation', pptm: 'presentation', potm: 'presentation', ppam: 'presentation', potx: 'presentation', ppsm: 'presentation', odp: 'presentation',
   // Database
   db: 'database', sqlite: 'database',
   // Executable
@@ -101,8 +101,6 @@ const EXT_MAP = {
   mod: 'config', sum: 'config',
   // Font
   ttf: 'file', otf: 'file', woff: 'file', woff2: 'file',
-  // Epub
-  epub: 'document',
   // Notebook
   ipynb: 'code',
 }

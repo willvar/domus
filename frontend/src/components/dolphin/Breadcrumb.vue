@@ -282,8 +282,12 @@ onUnmounted(() => {
 }
 
 @media (max-width: 767px) {
-  .breadcrumb-bar { height: 44px; }
-  .breadcrumb-segment { padding: 8px 12px; font-size: 14px; }
-  .breadcrumb-sep { padding: 8px 4px; }
+  .breadcrumb-bar { height: 34px; }
+  .breadcrumb-segments {
+    flex-direction: row;
+    justify-content: flex-end;
+  }
+  .breadcrumb-segment { padding: 4px 8px; font-size: 13px; }
+  .breadcrumb-sep { padding: 4px 2px; }
 }
 </style>

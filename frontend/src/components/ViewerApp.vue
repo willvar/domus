@@ -4,6 +4,8 @@ import { useFileSystemStore } from '../stores/fileSystem'
 import { useWindowManagerStore } from '../stores/windowManager'
 import { useI18n } from '../composables/useI18n'
 import { useCodeMirror } from '../composables/useCodeMirror'
+import { useWorkspaceSync, registerViewerCallback, unregisterViewerCallback } from '../composables/useWorkspaceSync'
+import { usePreferences } from '../composables/usePreferences'
 import PlasmaWindow from './plasma/Window.vue'
 import IconEye from '~icons/mdi/eye-outline'
 import IconSave from '~icons/mdi/content-save'
@@ -18,9 +20,6 @@ const viewerMap = {
   markdown: defineAsyncComponent(() => import('./kate/Markdown.vue')),
   csv: defineAsyncComponent(() => import('./kate/Csv.vue')),
   font: defineAsyncComponent(() => import('./kfontview/App.vue')),
-  xlsx: defineAsyncComponent(() => import('./sheets/App.vue')),
-  docx: defineAsyncComponent(() => import('./okular/Docx.vue')),
-  epub: defineAsyncComponent(() => import('./okular/Epub.vue')),
   archive: defineAsyncComponent(() => import('./ark/App.vue')),
   notebook: defineAsyncComponent(() => import('./notebook/App.vue')),
 }
@@ -129,7 +128,75 @@ onMounted(() => {
 
 onUnmounted(() => {
   cm.destroy()
+  unregisterViewerCallback(props.windowId)
+  if (_timeSyncTimer) clearInterval(_timeSyncTimer)
 })
+
+// ─── Video playback sync ───
+const videoEl = ref(null)
+const sync = useWorkspaceSync()
+const { prefs } = usePreferences()
+let _isRemotePlayback = false
+let _timeSyncTimer = null
+
+function onVideoPlay() {
+  if (_isRemotePlayback || prefs.sessionIsolation) return
+  sync.emitEvent({ action: 'viewer.play', windowId: props.windowId, currentTime: videoEl.value?.currentTime || 0 })
+}
+
+function onVideoPause() {
+  if (_isRemotePlayback || prefs.sessionIsolation) return
+  sync.emitEvent({ action: 'viewer.pause', windowId: props.windowId, currentTime: videoEl.value?.currentTime || 0 })
+}
+
+function onVideoSeeked() {
+  if (_isRemotePlayback || prefs.sessionIsolation) return
+  sync.emitEvent({ action: 'viewer.seek', windowId: props.windowId, currentTime: videoEl.value?.currentTime || 0 })
+}
+
+// Register callback for receiving remote playback events
+registerViewerCallback(props.windowId, (action, currentTime) => {
+  const el = videoEl.value
+  if (!el) return
+  _isRemotePlayback = true
+  try {
+    switch (action) {
+      case 'play':
+        el.currentTime = currentTime
+        el.play().catch(() => {})
+        break
+      case 'pause':
+        el.pause()
+        el.currentTime = currentTime
+        break
+      case 'seek':
+        el.currentTime = currentTime
+        break
+      case 'timeSync':
+        if (Math.abs(el.currentTime - currentTime) > 2) {
+          el.currentTime = currentTime
+        }
+        break
+    }
+  } finally {
+    // Delay clearing to avoid re-triggering events from the programmatic changes
+    setTimeout(() => { _isRemotePlayback = false }, 100)
+  }
+})
+
+// Start timeSync interval when video is playing
+watch(() => state.value?.type === 'video' && state.value?.url, (ready) => {
+  if (ready) {
+    _timeSyncTimer = setInterval(() => {
+      const el = videoEl.value
+      if (!el || el.paused || _isRemotePlayback || prefs.sessionIsolation) return
+      sync.emitEvent({ action: 'viewer.timeSync', windowId: props.windowId, currentTime: el.currentTime })
+    }, 3000)
+  } else if (_timeSyncTimer) {
+    clearInterval(_timeSyncTimer)
+    _timeSyncTimer = null
+  }
+}, { immediate: true })
 </script>
 
 <template>
@@ -140,7 +207,7 @@ onUnmounted(() => {
     :icon="IconEye"
     @close="handleClose"
   >
-    <!-- Delegated viewers (audio, markdown, csv, font, xlsx, docx, epub, archive, notebook) -->
+    <!-- Delegated viewers (audio, markdown, csv, font, archive, notebook) -->
     <template v-if="delegatedViewer">
       <component :is="delegatedViewer" :state="state" :window-id="windowId" />
     </template>
@@ -193,11 +260,12 @@ onUnmounted(() => {
 
       <div class="viewer-body" :class="{ 'viewer-body-split': state.type === 'text' && isHtmlPreview && htmlPreviewMode === 'split' }">
         <img v-if="state.type === 'image' && state.url" :src="state.url" :alt="state.file.name" class="viewer-image" />
-        <video v-else-if="state.type === 'video' && state.url" :src="state.url" controls autoplay playsinline class="viewer-video" />
+        <video v-else-if="state.type === 'video' && state.url" ref="videoEl" :src="state.url" controls autoplay playsinline class="viewer-video" @play="onVideoPlay" @pause="onVideoPause" @seeked="onVideoSeeked" />
         <iframe v-else-if="state.type === 'pdf' && state.url" :src="state.url" class="viewer-pdf" />
+        <iframe v-else-if="state.type === 'office' && state.url" :src="state.url" class="viewer-pdf" allowfullscreen />
         <div v-else-if="state.type === 'text' && showCodePane" ref="cmContainer" class="viewer-cm-wrap" :class="{ 'viewer-pane': isHtmlPreview }" />
         <div v-if="state.type === 'text' && showRenderedPane" class="viewer-render-wrap" :class="{ 'viewer-pane': htmlPreviewMode === 'split' }">
-          <iframe class="viewer-render-frame" :srcdoc="iframeSrcdoc" sandbox="allow-scripts allow-forms allow-modals" title="HTML Preview" />
+          <iframe class="viewer-render-frame" :srcdoc="iframeSrcdoc" sandbox="" title="HTML Preview" />
         </div>
       </div>
     </template>

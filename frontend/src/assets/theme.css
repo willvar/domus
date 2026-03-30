@@ -112,6 +112,7 @@ body {
   background: rgba(255, 255, 255, 0.2);
 }
 
+
 /* Disable text selection globally (desktop app feel) */
 * {
   user-select: none;

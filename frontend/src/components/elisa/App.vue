@@ -1,7 +1,9 @@
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { ref, onMounted, onUnmounted, watch } from 'vue'
+import { useWorkspaceSync, registerViewerCallback, unregisterViewerCallback } from '../../composables/useWorkspaceSync'
+import { usePreferences } from '../../composables/usePreferences'
 
-defineProps({
+const props = defineProps({
   state: { type: Object, required: true },
   windowId: { type: String, required: true },
 })
@@ -12,6 +14,11 @@ let audioCtx = null
 let analyser = null
 let animFrameId = null
 let sourceConnected = false
+
+const sync = useWorkspaceSync()
+const { prefs } = usePreferences()
+let _isRemotePlayback = false
+let _timeSyncTimer = null
 
 function draw() {
   if (!analyser || !canvasEl.value) return
@@ -58,6 +65,65 @@ function initAudio() {
   } catch { /* AudioContext not available */ }
 }
 
+// ─── Playback sync ───
+
+function onAudioPlay() {
+  if (_isRemotePlayback || prefs.sessionIsolation) return
+  sync.emitEvent({ action: 'viewer.play', windowId: props.windowId, currentTime: audioEl.value?.currentTime || 0 })
+}
+
+function onAudioPause() {
+  if (_isRemotePlayback || prefs.sessionIsolation) return
+  sync.emitEvent({ action: 'viewer.pause', windowId: props.windowId, currentTime: audioEl.value?.currentTime || 0 })
+}
+
+function onAudioSeeked() {
+  if (_isRemotePlayback || prefs.sessionIsolation) return
+  sync.emitEvent({ action: 'viewer.seek', windowId: props.windowId, currentTime: audioEl.value?.currentTime || 0 })
+}
+
+registerViewerCallback(props.windowId, (action, currentTime) => {
+  const el = audioEl.value
+  if (!el) return
+  _isRemotePlayback = true
+  try {
+    switch (action) {
+      case 'play':
+        el.currentTime = currentTime
+        el.play().catch(() => {})
+        break
+      case 'pause':
+        el.pause()
+        el.currentTime = currentTime
+        break
+      case 'seek':
+        el.currentTime = currentTime
+        break
+      case 'timeSync':
+        if (Math.abs(el.currentTime - currentTime) > 2) {
+          el.currentTime = currentTime
+        }
+        break
+    }
+  } finally {
+    setTimeout(() => { _isRemotePlayback = false }, 100)
+  }
+})
+
+// TimeSync interval
+watch(() => props.state?.url, (url) => {
+  if (url) {
+    _timeSyncTimer = setInterval(() => {
+      const el = audioEl.value
+      if (!el || el.paused || _isRemotePlayback || prefs.sessionIsolation) return
+      sync.emitEvent({ action: 'viewer.timeSync', windowId: props.windowId, currentTime: el.currentTime })
+    }, 3000)
+  } else if (_timeSyncTimer) {
+    clearInterval(_timeSyncTimer)
+    _timeSyncTimer = null
+  }
+}, { immediate: true })
+
 onMounted(() => {
   if (audioEl.value) {
     audioEl.value.addEventListener('play', initAudio, { once: true })
@@ -67,6 +133,8 @@ onMounted(() => {
 onUnmounted(() => {
   if (animFrameId) cancelAnimationFrame(animFrameId)
   if (audioCtx) audioCtx.close().catch(() => {})
+  unregisterViewerCallback(props.windowId)
+  if (_timeSyncTimer) clearInterval(_timeSyncTimer)
 })
 </script>
 
@@ -76,7 +144,7 @@ onUnmounted(() => {
   </div>
   <div class="viewer-body audio-body">
     <canvas ref="canvasEl" class="audio-waveform" />
-    <audio ref="audioEl" :src="state.url" controls autoplay class="audio-player" />
+    <audio ref="audioEl" :src="state.url" controls autoplay class="audio-player" @play="onAudioPlay" @pause="onAudioPause" @seeked="onAudioSeeked" />
   </div>
 </template>
 

@@ -71,6 +71,10 @@ const selectionInfo = computed(() => {
   display: flex;
   align-items: center;
   gap: var(--gap-sm);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  min-width: 0;
 }
 .status-sep { color: var(--breeze-border); }
 .upload-indicator {

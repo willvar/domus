@@ -1,32 +1,19 @@
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { computed } from 'vue'
 import IconHome from '~icons/mdi/home-outline'
 import IconTrash from '~icons/mdi/delete-outline'
-import IconFolderOutline from '~icons/mdi/folder-outline'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useAuthStore } from '../../stores/auth'
 import { useI18n } from '../../composables/useI18n'
-import { useWebSocket } from '../../composables/useWebSocket'
 
 const fs = useFileSystemStore()
 const auth = useAuthStore()
-const ws = useWebSocket()
 const { t } = useI18n()
-
-const bookmarks = ref([])
-
-onMounted(async () => {
-  try {
-    bookmarks.value = await ws.request('bookmark.list')
-  } catch { /* bookmarks stay empty on error */ }
-})
 
 const activeKey = computed(() => {
   if (fs.isTrash) return 'trash'
   const homePath = `/home/${auth.username}/`
   if (fs.currentPath === homePath || fs.currentPath === `home/${auth.username}/`) return 'home'
-  const bm = bookmarks.value.find(b => fs.currentPath === b.path)
-  if (bm) return String(bm.id)
   return null
 })
 
@@ -35,9 +22,6 @@ function handleSelect(key) {
     fs.navigate(`/home/${auth.username}/`)
   } else if (key === 'trash') {
     fs.navigate('__trash__')
-  } else {
-    const bm = bookmarks.value.find(b => String(b.id) === key)
-    if (bm) fs.navigate(bm.path)
   }
 }
 </script>
@@ -63,22 +47,6 @@ function handleSelect(key) {
         <span class="place-label">{{ t('places.trash') }}</span>
       </button>
     </div>
-
-    <template v-if="bookmarks.length > 0">
-      <div class="section-header">{{ t('places.bookmarks') }}</div>
-      <div class="places-list">
-        <button
-          v-for="bm in bookmarks"
-          :key="bm.id"
-          class="place-item"
-          :class="{ active: activeKey === String(bm.id) }"
-          @click="handleSelect(String(bm.id))"
-        >
-          <IconFolderOutline class="place-icon" width="16" height="16" />
-          <span class="place-label">{{ bm.name }}</span>
-        </button>
-      </div>
-    </template>
   </div>
 </template>
 

@@ -1,10 +1,14 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { usePreferences } from '../composables/usePreferences'
+import { useI18n } from '../composables/useI18n'
+import { useWorkspaceSync } from '../composables/useWorkspaceSync'
 import IconFolderHome from '~icons/mdi/folder-home'
 import IconAccountCircle from '~icons/mdi/account-circle'
+import IconConsole from '~icons/mdi/console'
 export const FILES_ICON = IconFolderHome
 export const PROFILE_ICON = IconAccountCircle
+export const KONSOLE_ICON = IconConsole
 
 export const useWindowManagerStore = defineStore('windowManager', () => {
   const windows = ref([])
@@ -16,6 +20,8 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
   let _savedGeo = null // { id: { x, y, width, height, maximized } }
   let _saveTimer = null
   const { prefs: _prefs, load: loadPrefs, update: updatePrefsRemote } = usePreferences()
+  const { t } = useI18n()
+  const sync = useWorkspaceSync()
 
   const alwaysCenter = computed(() => _prefs.alwaysCenter)
   const defaultWidth = computed(() => _prefs.defaultWidth)
@@ -78,6 +84,7 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
   function clearUser() {
     _userId = null
     _savedGeo = null
+    windows.value = []
   }
 
   function updatePrefs(partial) {
@@ -94,7 +101,7 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
     return windows.value.find(w => w.id === id)
   }
 
-  function openWindow({ id, title, icon, type, data, maximized: startMaximized, width, height }) {
+  function openWindow({ id, title, icon, type, data, maximized: startMaximized, width, height }, { remote } = {}) {
     const existing = findWindow(id)
     if (existing) {
       existing.minimized = false
@@ -120,26 +127,49 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
     }
     _applySavedGeo(win)
     windows.value.push(win)
+
+    if (!remote) {
+      sync.emitEvent({ action: 'window.open', id, type: type || 'generic', title: title || 'Window', data: data || {}, maximized: !!startMaximized })
+    }
+
     return win
   }
 
-  function closeWindow(id) {
-    const idx = windows.value.findIndex(w => w.id === id)
-    if (idx >= 0) {
-      windows.value.splice(idx, 1)
+  function closeWindow(id, { remote } = {}) {
+    const win = findWindow(id)
+    if (!win) return
+    if (win._closing) return // already closing
+
+    if (!remote) {
+      sync.emitEvent({ action: 'window.close', id })
+    }
+
+    // Trigger close animation, then remove
+    win._closing = true
+    setTimeout(() => {
+      const idx = windows.value.findIndex(w => w.id === id)
+      if (idx >= 0) windows.value.splice(idx, 1)
+    }, 150)
+  }
+
+  function minimizeWindow(id, { remote } = {}) {
+    const win = findWindow(id)
+    if (win) {
+      win.minimized = true
+      if (!remote) {
+        sync.emitEvent({ action: 'window.minimize', id })
+      }
     }
   }
 
-  function minimizeWindow(id) {
-    const win = findWindow(id)
-    if (win) win.minimized = true
-  }
-
-  function restoreWindow(id) {
+  function restoreWindow(id, { remote } = {}) {
     const win = findWindow(id)
     if (win) {
       win.minimized = false
       bringToFront(id)
+      if (!remote) {
+        sync.emitEvent({ action: 'window.restore', id })
+      }
     }
   }
 
@@ -155,7 +185,7 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
     win._restoreRect = null
   }
 
-  function toggleMaximize(id) {
+  function toggleMaximize(id, { remote } = {}) {
     const win = findWindow(id)
     if (!win) return
     if (win.maximized || win.tiled) {
@@ -170,6 +200,9 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
     }
     bringToFront(id)
     _recordGeo(win)
+    if (!remote) {
+      sync.emitEvent({ action: 'window.maximize', id })
+    }
   }
 
   function tileWindow(id, side, containerWidth, containerHeight) {
@@ -217,25 +250,37 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
     }
   }
 
-  function openFilesApp() {
+  function openFilesApp({ remote } = {}) {
     return openWindow({
       id: 'files',
-      title: '文件',
+      title: t('app.files'),
       icon: FILES_ICON,
       type: 'files',
       maximized: true,
-    })
+    }, { remote })
   }
 
-  function openProfileApp(tab) {
+  function openKonsoleApp(cwd, { remote } = {}) {
+    return openWindow({
+      id: 'konsole',
+      title: t('app.terminal'),
+      icon: IconConsole,
+      type: 'generic',
+      width: 720,
+      height: 480,
+      data: { cwd },
+    }, { remote })
+  }
+
+  function openProfileApp(tab, { remote } = {}) {
     const win = openWindow({
       id: 'profile',
-      title: '我',
+      title: t('app.profile'),
       icon: PROFILE_ICON,
       type: 'generic',
       width: 480,
       height: 620,
-    })
+    }, { remote })
     if (tab) win.data = { tab }
     return win
   }
@@ -255,6 +300,7 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
     updateWindow,
     findWindow,
     openFilesApp,
+    openKonsoleApp,
     openProfileApp,
     setUser,
     clearUser,

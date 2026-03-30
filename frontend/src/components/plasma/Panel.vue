@@ -391,4 +391,12 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
 .ctx-menu-leave-to {
   opacity: 0;
 }
+
+@media (max-width: 767px) {
+  .taskbar { height: 48px; padding: 2px 2px; padding-bottom: calc(2px + env(safe-area-inset-bottom)); }
+  .taskbar-item { width: 48px; height: 44px; }
+  .taskbar-item__btn { width: 36px; height: 36px; border-radius: 6px; }
+  .taskbar-item__icon { width: 20px; height: 20px; }
+  .taskbar-right { gap: 2px; }
+}
 </style>

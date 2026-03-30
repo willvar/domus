@@ -1,6 +1,7 @@
 <script setup>
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import MarkdownIt from 'markdown-it'
+import DOMPurify from 'dompurify'
 import { useCodeMirror } from '../../composables/useCodeMirror'
 
 const props = defineProps({
@@ -70,7 +71,7 @@ watch(() => notebook.value, async () => {
 
 function renderMarkdown(source) {
   const text = Array.isArray(source) ? source.join('') : (source || '')
-  return md.render(text)
+  return DOMPurify.sanitize(md.render(text))
 }
 
 function getOutputHtml(output) {
@@ -85,7 +86,7 @@ function getOutputHtml(output) {
   const data = output.data || {}
   if (data['text/html']) {
     const html = Array.isArray(data['text/html']) ? data['text/html'].join('') : data['text/html']
-    return `<div class="nb-html-output">${html}</div>`
+    return `<div class="nb-html-output">${DOMPurify.sanitize(html)}</div>`
   }
   if (data['image/png']) {
     return `<img src="data:image/png;base64,${data['image/png']}" class="nb-img" />`

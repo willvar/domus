@@ -1,5 +1,6 @@
 import { reactive } from 'vue'
 import api from './useApi'
+import { useWebSocket } from './useWebSocket'
 
 const defaults = {
   largeFileLimitMB: 10,
@@ -7,6 +8,12 @@ const defaults = {
   defaultWidth: 800,
   defaultHeight: 600,
   indexContent: false,
+  sessionIsolation: true,
+  wallpaperType: 'builtin',
+  wallpaperBuiltinId: 0,
+  wallpaperPath: '',
+  wallpaperFit: 'cover',
+  wallpaperFiles: [],
 }
 
 const prefs = reactive({ ...defaults })
@@ -32,6 +39,9 @@ function save() {
       await api.put('/user/store/preferences.json', JSON.stringify({ ...prefs }), {
         headers: { 'Content-Type': 'application/json' },
       })
+      // Push preference changes to other devices via workspace event
+      const ws = useWebSocket()
+      ws.request('workspace.event', { action: 'prefs.changed', data: { ...prefs } }).catch(() => {})
     } catch { /* silent */ }
   }, 500)
 }

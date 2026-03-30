@@ -379,7 +379,7 @@ onUnmounted(() => {
     v-if="win"
     ref="windowEl"
     class="plasma-window"
-    :class="{ 'plasma-window--maximized': win.maximized }"
+    :class="{ 'plasma-window--maximized': win.maximized, 'plasma-window--closing': win._closing }"
     :style="windowStyle"
     @mousedown="handleMouseDown"
   >
@@ -437,6 +437,20 @@ onUnmounted(() => {
   border: 1px solid var(--breeze-border);
   border-radius: 6px;
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+  animation: window-open 0.2s ease;
+}
+.plasma-window--closing {
+  animation: window-close 0.15s ease forwards;
+  pointer-events: none;
+}
+
+@keyframes window-open {
+  from { opacity: 0; transform: scale(0.92); }
+  to   { opacity: 1; transform: scale(1); }
+}
+@keyframes window-close {
+  from { opacity: 1; transform: scale(1); }
+  to   { opacity: 0; transform: scale(0.92); }
 }
 
 .plasma-titlebar {
@@ -534,4 +548,10 @@ onUnmounted(() => {
 .snap-fade-enter-active { transition: opacity 0.15s ease; }
 .snap-fade-leave-active { transition: opacity 0.1s ease; }
 .snap-fade-enter-from, .snap-fade-leave-to { opacity: 0; }
+
+@media (max-width: 767px) {
+  .resize-edge { display: none; }
+  .plasma-titlebar-buttons { gap: 8px; }
+  .plasma-btn { width: 36px; height: 36px; }
+}
 </style>

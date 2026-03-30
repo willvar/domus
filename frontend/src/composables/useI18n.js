@@ -4,6 +4,9 @@ const messages = {
   zh: {
     // App
     'app.title': '云舟',
+    'app.profile': '我',
+    'app.files': '文件',
+    'app.terminal': '终端',
 
     // Login
     'login.title': '登录',
@@ -52,6 +55,7 @@ const messages = {
     'toolbar.view_icons': '图标 (Ctrl+1)',
     'toolbar.view_compact': '紧凑 (Ctrl+2)',
     'toolbar.view_details': '详细 (Ctrl+3)',
+    'toolbar.show_hidden': '显示隐藏文件',
 
     // Breadcrumb
     'breadcrumb.path_placeholder': '输入路径...',
@@ -60,7 +64,6 @@ const messages = {
     'places.title': '位置',
     'places.home': '主目录',
     'places.trash': '回收站',
-    'places.bookmarks': '书签',
 
     // File view
     'fileview.empty': '空文件夹',
@@ -71,6 +74,7 @@ const messages = {
 
     // Context menu
     'menu.open': '打开',
+    'menu.open_as_text': '以文本方式打开',
     'menu.download': '下载',
     'menu.copy': '复制',
     'menu.cut': '剪切',
@@ -78,6 +82,7 @@ const messages = {
     'paste.partial_failed': '{n} 个文件操作失败',
     'menu.rename': '重命名 (F2)',
     'menu.delete': '删除 (Del)',
+    'menu.details': '详细信息',
     'menu.new_folder': '新建文件夹',
     'menu.upload': '上传文件',
     'menu.restore': '还原',
@@ -85,6 +90,18 @@ const messages = {
     'menu.empty_trash': '清空回收站',
     'menu.refresh': '刷新',
     'menu.select_all': '全选',
+    'menu.change_wallpaper': '更换壁纸',
+
+    // Wallpaper
+    'wallpaper.title': '壁纸设置',
+    'wallpaper.fit': '拉伸模式',
+    'wallpaper.fit_cover': '填充',
+    'wallpaper.fit_contain': '适应',
+    'wallpaper.fit_fill': '拉伸',
+    'wallpaper.fit_none': '居中',
+    'wallpaper.upload': '上传',
+    'wallpaper.apply': '应用',
+    'wallpaper.delete': '删除',
 
     // Info panel & tooltip
     'info.type': '类型',
@@ -259,6 +276,9 @@ const messages = {
     'prefs.search_title': '搜索',
     'prefs.index_content': '索引文件内容',
     'prefs.index_content_hint': '开启后上传的文本文件内容也可被搜索，可能增加上传耗时',
+    'prefs.session_title': '会话',
+    'prefs.session_isolation': '会话隔离',
+    'prefs.session_isolation_hint': '关闭后将在多设备间实时同步窗口、标签页及播放进度，并在刷新页面后恢复工作区',
     'search.results_title': '搜索结果',
     'search.no_results': '无匹配结果',
     'search.location': '位置',
@@ -316,6 +336,8 @@ const messages = {
     'dialog.rename_failed': '重命名失败',
     'dialog.large_file_title': '文件较大',
     'dialog.large_file_body': '该文件 ({size}) 超过预览阈值 ({limit})，打开可能导致浏览器卡顿。确定继续吗？',
+    'dialog.office_privacy_title': '隐私提示',
+    'dialog.office_privacy_body': '将通过 Microsoft Office Online 预览此文件，文件内容会经过微软服务器。继续即表示你同意微软服务协议(https://www.microsoft.com/servicesagreement)。是否继续？',
 
     // Context menu - transcode
     'menu.transcode': '再编码',
@@ -371,6 +393,9 @@ const messages = {
   },
   en: {
     'app.title': 'ZEPHYR',
+    'app.profile': 'Me',
+    'app.files': 'Files',
+    'app.terminal': 'Terminal',
 
     'login.title': 'Sign In',
     'login.username': 'Username',
@@ -416,13 +441,13 @@ const messages = {
     'toolbar.view_icons': 'Icons (Ctrl+1)',
     'toolbar.view_compact': 'Compact (Ctrl+2)',
     'toolbar.view_details': 'Details (Ctrl+3)',
+    'toolbar.show_hidden': 'Show Hidden Files',
 
     'breadcrumb.path_placeholder': 'Enter path...',
 
     'places.title': 'Places',
     'places.home': 'Home',
     'places.trash': 'Trash',
-    'places.bookmarks': 'Bookmarks',
 
     'fileview.empty': 'Empty folder',
     'fileview.drop': 'Drop files to upload',
@@ -431,6 +456,7 @@ const messages = {
     'fileview.col_modified': 'Modified',
 
     'menu.open': 'Open',
+    'menu.open_as_text': 'Open as Text',
     'menu.download': 'Download',
     'menu.copy': 'Copy',
     'menu.cut': 'Cut',
@@ -438,6 +464,7 @@ const messages = {
     'paste.partial_failed': '{n} file(s) failed',
     'menu.rename': 'Rename (F2)',
     'menu.delete': 'Delete (Del)',
+    'menu.details': 'Details',
     'menu.new_folder': 'New Folder',
     'menu.upload': 'Upload Files',
     'menu.restore': 'Restore',
@@ -445,6 +472,17 @@ const messages = {
     'menu.empty_trash': 'Empty Trash',
     'menu.refresh': 'Refresh',
     'menu.select_all': 'Select All',
+    'menu.change_wallpaper': 'Change Wallpaper',
+
+    'wallpaper.title': 'Wallpaper Settings',
+    'wallpaper.fit': 'Fit Mode',
+    'wallpaper.fit_cover': 'Fill',
+    'wallpaper.fit_contain': 'Fit',
+    'wallpaper.fit_fill': 'Stretch',
+    'wallpaper.fit_none': 'Center',
+    'wallpaper.upload': 'Upload',
+    'wallpaper.apply': 'Apply',
+    'wallpaper.delete': 'Delete',
 
     'info.type': 'Type',
     'info.size': 'Size',
@@ -611,6 +649,9 @@ const messages = {
     'prefs.search_title': 'Search',
     'prefs.index_content': 'Index file content',
     'prefs.index_content_hint': 'When enabled, text file contents are indexed for search. May slow uploads.',
+    'prefs.session_title': 'Session',
+    'prefs.session_isolation': 'Session isolation',
+    'prefs.session_isolation_hint': 'When disabled, windows, tabs, and playback progress sync across devices in real time, and workspace is restored on page refresh',
     'search.results_title': 'Search Results',
     'search.no_results': 'No matches found',
     'search.location': 'Location',
@@ -666,6 +707,8 @@ const messages = {
     'dialog.rename_failed': 'Rename failed',
     'dialog.large_file_title': 'Large file',
     'dialog.large_file_body': 'This file ({size}) exceeds the preview limit ({limit}) and may cause browser lag. Continue?',
+    'dialog.office_privacy_title': 'Privacy Notice',
+    'dialog.office_privacy_body': 'This file will be previewed via Microsoft Office Online. The file content will pass through Microsoft servers. By continuing, you agree to the Microsoft Services Agreement (https://www.microsoft.com/servicesagreement). Continue?',
 
     // Context menu - transcode
     'menu.transcode': 'Transcode',

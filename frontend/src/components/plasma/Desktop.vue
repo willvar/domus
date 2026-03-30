@@ -1,23 +1,99 @@
 <script setup>
-import { useWindowManagerStore, FILES_ICON, PROFILE_ICON } from '../../stores/windowManager'
+import { computed, ref, watch, onUnmounted } from 'vue'
+import { useWindowManagerStore, FILES_ICON, PROFILE_ICON, KONSOLE_ICON } from '../../stores/windowManager'
 import { useTouchHandlers } from '../../composables/useTouch'
+import { useI18n } from '../../composables/useI18n'
+import { openContextMenu } from '../../composables/useContextMenu'
+import { usePreferences } from '../../composables/usePreferences'
+import api from '../../composables/useApi'
 
 const wm = useWindowManagerStore()
+const { t } = useI18n()
+const { prefs } = usePreferences()
 
-const apps = [
+function onDesktopContextMenu(e) {
+  e.preventDefault()
+  openContextMenu(e, null, 'desktop')
+}
+
+// --- Wallpaper rendering from preferences ---
+const customWallpaperUrl = ref('')
+let currentLoadedPath = ''
+
+const wallpaperType = computed(() => prefs.wallpaperType || 'builtin')
+const wallpaperFit = computed(() => prefs.wallpaperFit || 'cover')
+const wallpaperBuiltinId = computed(() => prefs.wallpaperBuiltinId ?? 0)
+
+const isVideo = computed(() => {
+  if (wallpaperType.value !== 'custom') return false
+  const ext = (prefs.wallpaperPath || '').split('.').pop()?.toLowerCase() || ''
+  return ['mp4', 'webm', 'mov'].includes(ext)
+})
+
+const builtinColors = [
+  ['#0d1117', '#151d28', '#0f1923', '#1a3a5c', '#1e4a6e', '#3daee9'],
+]
+
+const builtinGradients = computed(() => {
+  const c = builtinColors[wallpaperBuiltinId.value] || builtinColors[0]
+  return { bg: c.slice(0, 3), glow: c[3], spot: c[4], accent: c[5] }
+})
+
+// Load custom wallpaper blob
+watch(() => prefs.wallpaperPath, async (path) => {
+  if (!path || wallpaperType.value !== 'custom') {
+    customWallpaperUrl.value = ''
+    currentLoadedPath = ''
+    return
+  }
+  if (path === currentLoadedPath) return
+  try {
+    const res = await api.get(`/user/store/${path}`, { responseType: 'blob' })
+    if (res.data?.size > 0) {
+      if (customWallpaperUrl.value) URL.revokeObjectURL(customWallpaperUrl.value)
+      customWallpaperUrl.value = URL.createObjectURL(res.data)
+      currentLoadedPath = path
+    }
+  } catch {
+    customWallpaperUrl.value = ''
+    currentLoadedPath = ''
+  }
+}, { immediate: true })
+
+// Also reload when type changes to custom
+watch(wallpaperType, (type) => {
+  if (type === 'custom' && prefs.wallpaperPath && prefs.wallpaperPath !== currentLoadedPath) {
+    // Trigger the path watcher
+    const path = prefs.wallpaperPath
+    currentLoadedPath = ''
+    prefs.wallpaperPath = path
+  }
+})
+
+onUnmounted(() => {
+  if (customWallpaperUrl.value) URL.revokeObjectURL(customWallpaperUrl.value)
+})
+
+const apps = computed(() => [
   {
     id: 'profile',
-    label: '我',
+    label: t('app.profile'),
     icon: PROFILE_ICON,
     action: () => wm.openProfileApp(),
   },
   {
     id: 'files',
-    label: '文件',
+    label: t('app.files'),
     icon: FILES_ICON,
     action: () => wm.openFilesApp(),
   },
-]
+  {
+    id: 'konsole',
+    label: t('app.terminal'),
+    icon: KONSOLE_ICON,
+    action: () => wm.openKonsoleApp(),
+  },
+])
 
 const appTouchMap = new Map()
 function appTouch(app) {
@@ -26,48 +102,63 @@ function appTouch(app) {
   }
   return appTouchMap.get(app.id)
 }
+
+// Long-press on desktop background for mobile context menu
+const desktopTouch = useTouchHandlers({
+  onLongPress: (e) => openContextMenu(e, null, 'desktop'),
+})
 </script>
 
 <template>
-  <div class="desktop">
-    <!-- SVG Wallpaper -->
-    <svg class="wallpaper" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+  <div
+    class="desktop"
+    @contextmenu="onDesktopContextMenu"
+    @touchstart="desktopTouch.onTouchStart"
+    @touchmove="desktopTouch.onTouchMove"
+    @touchend="desktopTouch.onTouchEnd"
+  >
+    <!-- Custom image/video wallpaper -->
+    <template v-if="wallpaperType === 'custom' && customWallpaperUrl">
+      <video
+        v-if="isVideo"
+        :src="customWallpaperUrl"
+        :style="{ objectFit: wallpaperFit }"
+        class="wallpaper wallpaper-media"
+        autoplay muted loop playsinline
+      />
+      <img
+        v-else
+        :src="customWallpaperUrl"
+        :style="{ objectFit: wallpaperFit }"
+        class="wallpaper wallpaper-media"
+      />
+    </template>
+
+    <!-- Built-in SVG wallpaper -->
+    <svg v-else class="wallpaper" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
       <defs>
         <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="#0d1117" />
-          <stop offset="50%" stop-color="#151d28" />
-          <stop offset="100%" stop-color="#0f1923" />
+          <stop offset="0%" :stop-color="builtinGradients.bg[0]" />
+          <stop offset="50%" :stop-color="builtinGradients.bg[1]" />
+          <stop offset="100%" :stop-color="builtinGradients.bg[2]" />
         </linearGradient>
         <linearGradient id="glow1" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stop-color="#1a3a5c" stop-opacity="0.6" />
-          <stop offset="100%" stop-color="#0d1f33" stop-opacity="0" />
-        </linearGradient>
-        <linearGradient id="glow2" x1="100%" y1="0%" x2="0%" y2="100%">
-          <stop offset="0%" stop-color="#1e4a6e" stop-opacity="0.4" />
-          <stop offset="100%" stop-color="#0a1520" stop-opacity="0" />
+          <stop offset="0%" :stop-color="builtinGradients.glow" stop-opacity="0.6" />
+          <stop offset="100%" :stop-color="builtinGradients.bg[0]" stop-opacity="0" />
         </linearGradient>
         <radialGradient id="spot1" cx="25%" cy="35%" r="40%">
-          <stop offset="0%" stop-color="#1a3f5f" stop-opacity="0.35" />
-          <stop offset="100%" stop-color="transparent" />
-        </radialGradient>
-        <radialGradient id="spot2" cx="75%" cy="65%" r="35%">
-          <stop offset="0%" stop-color="#163050" stop-opacity="0.3" />
+          <stop offset="0%" :stop-color="builtinGradients.spot" stop-opacity="0.35" />
           <stop offset="100%" stop-color="transparent" />
         </radialGradient>
       </defs>
       <rect width="1920" height="1080" fill="url(#bg)" />
       <rect width="1920" height="1080" fill="url(#spot1)" />
-      <rect width="1920" height="1080" fill="url(#spot2)" />
-      <!-- Subtle geometric shapes -->
       <path d="M0 700 Q480 580 960 650 T1920 600 L1920 1080 L0 1080Z" fill="url(#glow1)" />
-      <path d="M1920 200 Q1440 350 960 280 T0 350 L0 0 L1920 0Z" fill="url(#glow2)" />
-      <!-- Faint accent lines -->
-      <line x1="300" y1="0" x2="900" y2="1080" stroke="#3daee9" stroke-opacity="0.04" stroke-width="1" />
-      <line x1="800" y1="0" x2="1400" y2="1080" stroke="#3daee9" stroke-opacity="0.03" stroke-width="1" />
-      <line x1="1300" y1="0" x2="1900" y2="1080" stroke="#3daee9" stroke-opacity="0.04" stroke-width="1" />
-      <!-- Subtle circles -->
-      <circle cx="350" cy="300" r="180" fill="none" stroke="#3daee9" stroke-opacity="0.03" stroke-width="0.5" />
-      <circle cx="1500" cy="750" r="250" fill="none" stroke="#3daee9" stroke-opacity="0.025" stroke-width="0.5" />
+      <line x1="300" y1="0" x2="900" y2="1080" :stroke="builtinGradients.accent" stroke-opacity="0.04" stroke-width="1" />
+      <line x1="800" y1="0" x2="1400" y2="1080" :stroke="builtinGradients.accent" stroke-opacity="0.03" stroke-width="1" />
+      <line x1="1300" y1="0" x2="1900" y2="1080" :stroke="builtinGradients.accent" stroke-opacity="0.04" stroke-width="1" />
+      <circle cx="350" cy="300" r="180" fill="none" :stroke="builtinGradients.accent" stroke-opacity="0.03" stroke-width="0.5" />
+      <circle cx="1500" cy="750" r="250" fill="none" :stroke="builtinGradients.accent" stroke-opacity="0.025" stroke-width="0.5" />
     </svg>
 
     <!-- Desktop icons -->
@@ -102,6 +193,10 @@ function appTouch(app) {
   inset: 0;
   width: 100%;
   height: 100%;
+}
+
+.wallpaper-media {
+  object-fit: cover;
 }
 
 .desktop-icons {

@@ -3,6 +3,8 @@ import { ref, computed } from 'vue'
 import api from '../composables/useApi'
 import { useWebSocket } from '../composables/useWebSocket'
 import { useWindowManagerStore } from './windowManager'
+import { useWorkspaceSync } from '../composables/useWorkspaceSync'
+import { usePreferences } from '../composables/usePreferences'
 
 // Permission bitmask constants
 export const PERM_READ = 1
@@ -63,6 +65,16 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function logout() {
+    // Only clear workspace state when session isolation is ON (default mode).
+    // When isolation is OFF (sync mode), other devices may still be active,
+    // so we preserve the workspace for them.
+    try {
+      const { prefs } = usePreferences()
+      if (prefs.sessionIsolation) {
+        const workspace = useWorkspaceSync()
+        await workspace.clear()
+      }
+    } catch { /* silent */ }
     ws.disconnect()
     try {
       await api.delete('/auth')
