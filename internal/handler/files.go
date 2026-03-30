@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -667,4 +668,80 @@ func (h *Handler) handleRawFile(c *fiber.Ctx) error {
 		_ = w.Flush()
 	})
 	return nil
+}
+
+// handlePreview generates a temporary public URL for previewing files
+// via external services (e.g., Microsoft Office Online).
+// Query params: path (file path), type (preview type, e.g. "office")
+func (h *Handler) handlePreview(c *fiber.Ctx) error {
+	path := c.Query("path", "")
+	if path == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
+	}
+	previewType := c.Query("type", "")
+	if previewType == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "type_required"})
+	}
+
+	switch previewType {
+	case "office":
+		return h.handleOfficePreview(c, path)
+	default:
+		return c.Status(400).JSON(fiber.Map{"error": "unsupported_preview_type"})
+	}
+}
+
+func (h *Handler) handleOfficePreview(c *fiber.Ctx, path string) error {
+	resolvedPath, err := middleware.ResolvePath(c, path)
+	if err != nil {
+		return err
+	}
+
+	var fileRecord model.FileRecord
+	if err := h.DB.Where("path = ?", resolvedPath).First(&fileRecord).Error; err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	}
+	if fileRecord.Status != "ready" {
+		return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
+	}
+
+	session := c.Locals("session").(*model.Session)
+	encKey, err := h.getFileEncryptionKey(session)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	}
+
+	// Decrypt file into memory
+	reader, err := h.Store.GetObjectContent(resolvedPath)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "read_file_failed"})
+	}
+	defer reader.Close()
+
+	var plainBuf bytes.Buffer
+	if err := auth.DecryptStream(encKey, reader, &plainBuf); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "decrypt_failed"})
+	}
+
+	// Upload plaintext to a temporary key
+	ext := filepath.Ext(resolvedPath)
+	tempKey := fmt.Sprintf("_tmp/preview/%s%s", uuid.New().String(), ext)
+	if err := h.Store.PutObjectBytes(tempKey, plainBuf.Bytes()); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "upload_temp_failed"})
+	}
+
+	// Generate a short-lived presigned URL
+	presignedURL, err := h.Store.GeneratePresignedURL(tempKey, 1*time.Minute)
+	if err != nil {
+		_ = h.Store.DeleteObject(tempKey)
+		return c.Status(500).JSON(fiber.Map{"error": "presign_failed"})
+	}
+
+	// Schedule cleanup of the temp file
+	go func() {
+		time.Sleep(2 * time.Minute)
+		_ = h.Store.DeleteObject(tempKey)
+	}()
+
+	return c.JSON(fiber.Map{"url": presignedURL})
 }

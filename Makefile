@@ -16,12 +16,12 @@ help:
 
 build:
 	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -trimpath -o $(BUILD_DIR)/zephyr cmd/zephyr/main.go
+	CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -trimpath -o $(BUILD_DIR)/zephyr .
 	@echo "Built: $(BUILD_DIR)/zephyr ($(VERSION))"
 
 build-win:
 	@mkdir -p $(BUILD_DIR)
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -trimpath -o $(BUILD_DIR)/zephyr.exe cmd/zephyr/main.go
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -trimpath -o $(BUILD_DIR)/zephyr.exe .
 	@echo "Built: $(BUILD_DIR)/zephyr.exe ($(VERSION))"
 
 build-prod: build
@@ -29,7 +29,7 @@ build-prod: build
 	@echo "Compressed: $(BUILD_DIR)/zephyr"
 
 dev:
-	go run cmd/zephyr/main.go start
+	go run . start
 
 tidy:
 	go mod tidy

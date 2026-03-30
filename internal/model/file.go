@@ -46,15 +46,6 @@ type TrashItem struct {
 
 func (TrashItem) TableName() string { return "trash" }
 
-type Bookmark struct {
-	ID        int64  `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID    string `gorm:"not null;uniqueIndex:idx_user_path" json:"user_id"`
-	Name      string `gorm:"not null" json:"name"`
-	Path      string `gorm:"not null;uniqueIndex:idx_user_path" json:"path"`
-	Icon      string `gorm:"default:folder" json:"icon"`
-	SortOrder int    `gorm:"default:0" json:"sort_order"`
-}
-
 // FileRecord operations
 
 func UpsertFile(userID string, path, name string, isDir bool, size int64, contentType, contentHash string) error {
@@ -264,9 +255,9 @@ func CreateUploadFile(userID, uploadID, path, name string, fileSize int64, chunk
 	}).Error
 }
 
-func GetUploadFile(uploadID string) (*FileRecord, error) {
+func GetUploadFile(userID, uploadID string) (*FileRecord, error) {
 	r := &FileRecord{}
-	if err := db.Where("upload_id = ?", uploadID).First(r).Error; err != nil {
+	if err := db.Where("upload_id = ? AND user_id = ?", uploadID, userID).First(r).Error; err != nil {
 		return nil, err
 	}
 	return r, nil
@@ -296,39 +287,3 @@ func GetStaleUploadFiles(staleAfter time.Duration) ([]FileRecord, error) {
 	return records, nil
 }
 
-// Bookmark operations
-
-func ListBookmarks(userID string) ([]Bookmark, error) {
-	var bookmarks []Bookmark
-	if err := db.Where("user_id = ?", userID).Order("sort_order, id").Find(&bookmarks).Error; err != nil {
-		return nil, err
-	}
-	return bookmarks, nil
-}
-
-func CreateBookmark(userID string, name, path, icon string, sortOrder int) (*Bookmark, error) {
-	b := &Bookmark{
-		UserID:    userID,
-		Name:      name,
-		Path:      path,
-		Icon:      icon,
-		SortOrder: sortOrder,
-	}
-	if err := db.Create(b).Error; err != nil {
-		return nil, err
-	}
-	return b, nil
-}
-
-func UpdateBookmark(id int64, userID string, name, path, icon string, sortOrder int) error {
-	return db.Model(&Bookmark{}).Where("id = ? AND user_id = ?", id, userID).Updates(map[string]interface{}{
-		"name":       name,
-		"path":       path,
-		"icon":       icon,
-		"sort_order": sortOrder,
-	}).Error
-}
-
-func DeleteBookmark(id int64, userID string) error {
-	return db.Where("id = ? AND user_id = ?", id, userID).Delete(&Bookmark{}).Error
-}

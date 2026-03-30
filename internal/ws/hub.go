@@ -20,6 +20,10 @@ type Hub struct {
 	dirSubs sync.Map
 
 	router *Router
+
+	// OnConnClose is called when a connection is unregistered, before cleanup.
+	// Can be used to clean up resources tied to a connection (e.g. vsh sessions).
+	OnConnClose func(connID string)
 }
 
 // NewHub creates a new Hub.
@@ -53,6 +57,10 @@ func (h *Hub) register(conn *Conn) {
 }
 
 func (h *Hub) unregister(conn *Conn) {
+	if h.OnConnClose != nil {
+		h.OnConnClose(conn.ID)
+	}
+
 	h.conns.Delete(conn.ID)
 
 	// Remove from user's connection set
@@ -122,6 +130,28 @@ func (h *Hub) dispatch(conn *Conn, raw []byte) {
 }
 
 // --- Send helpers ---
+
+// SendToUserExcept sends a message to all connections of a user except the one
+// identified by excludeConnID.
+func (h *Hub) SendToUserExcept(userID, excludeConnID string, msg any) {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return
+	}
+	if v, ok := h.userConns.Load(userID); ok {
+		v.(*sync.Map).Range(func(key, val any) bool {
+			if key.(string) == excludeConnID {
+				return true
+			}
+			conn := val.(*Conn)
+			select {
+			case conn.send <- data:
+			default:
+			}
+			return true
+		})
+	}
+}
 
 // SendToUser sends a message to all connections of a user.
 func (h *Hub) SendToUser(userID string, msg any) {

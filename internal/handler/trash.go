@@ -123,7 +123,7 @@ func (h *Handler) handleClearTrash(c *fiber.Ctx) error {
 			total := len(items)
 			for i, item := range items {
 				if err := clearItem(item); err != nil {
-					data, _ := json.Marshal(fiber.Map{"error": err.Error()})
+					data, _ := json.Marshal(fiber.Map{"error": "clear_item_failed"})
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 					_ = w.Flush()
 					return

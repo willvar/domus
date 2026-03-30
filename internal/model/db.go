@@ -80,7 +80,7 @@ func InitDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 		return nil, fmt.Errorf("open db: %w", err)
 	}
 
-	if err := db.AutoMigrate(&User{}, &TrashItem{}, &Bookmark{}, &FileRecord{}, &DBSession{}, &Job{}, &Task{}, &AuditLog{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &TrashItem{}, &FileRecord{}, &DBSession{}, &Job{}, &Task{}, &AuditLog{}, &WorkspaceState{}); err != nil {
 		return nil, fmt.Errorf("auto migrate: %w", err)
 	}
 

@@ -259,14 +259,9 @@ func (h *Handler) handleUploadPart(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_part_number"})
 	}
 
-	record, err := model.GetUploadFile(uploadID)
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
-	}
-
 	session := c.Locals("session").(*model.Session)
-	if record.UserID != session.UserID && session.Role != "root" {
-		return c.Status(403).JSON(fiber.Map{"error": "access_denied"})
+	if _, err := model.GetUploadFile(session.UserID, uploadID); err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}
 
 	fileHeader, err := c.FormFile("chunk")
@@ -308,7 +303,7 @@ func (h *Handler) handleUploadPart(c *fiber.Ctx) error {
 	}
 
 	// Track completed parts
-	freshRecord, err := model.GetUploadFile(uploadID)
+	freshRecord, err := model.GetUploadFile(session.UserID, uploadID)
 	if err == nil {
 		var parts []int
 		_ = json.Unmarshal([]byte(freshRecord.CompletedParts), &parts)
@@ -333,14 +328,10 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
 	}
 
-	record, err := model.GetUploadFile(body.UploadID)
+	session := c.Locals("session").(*model.Session)
+	record, err := model.GetUploadFile(session.UserID, body.UploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
-	}
-
-	session := c.Locals("session").(*model.Session)
-	if record.UserID != session.UserID && session.Role != "root" {
-		return c.Status(403).JSON(fiber.Map{"error": "access_denied"})
 	}
 
 	// Queue for async server-side processing
@@ -434,7 +425,7 @@ func (h *Handler) RunOSSUploadJob(ctx context.Context, job *model.Job) error {
 	}
 
 	// Upload succeeded, but check if file record was deleted during transfer
-	if _, err := model.GetUploadFile(params.UploadID); err != nil {
+	if _, err := model.GetUploadFile(params.UserID, params.UploadID); err != nil {
 		_ = h.Store.DeleteObject(params.OSSKey)
 		_ = os.RemoveAll(params.TempDir)
 		return fmt.Errorf("file record deleted during upload")
@@ -490,14 +481,10 @@ func (h *Handler) handleUploadAbort(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "upload_id required"})
 	}
 
-	record, err := model.GetUploadFile(uploadID)
+	session := c.Locals("session").(*model.Session)
+	record, err := model.GetUploadFile(session.UserID, uploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
-	}
-
-	session := c.Locals("session").(*model.Session)
-	if record.UserID != session.UserID && session.Role != "root" {
-		return c.Status(403).JSON(fiber.Map{"error": "access_denied"})
 	}
 
 	// Clean up temp files
@@ -517,14 +504,10 @@ func (h *Handler) handleUploadStatus(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "upload_id required"})
 	}
 
-	record, err := model.GetUploadFile(uploadID)
+	session := c.Locals("session").(*model.Session)
+	record, err := model.GetUploadFile(session.UserID, uploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
-	}
-
-	session := c.Locals("session").(*model.Session)
-	if record.UserID != session.UserID && session.Role != "root" {
-		return c.Status(403).JSON(fiber.Map{"error": "access_denied"})
 	}
 
 	// Parse completed parts from DB

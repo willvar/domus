@@ -34,12 +34,11 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Skipf("skipping test: could not connect to PostgreSQL: %v", err)
 	}
-	if err := testDB.AutoMigrate(&model.User{}, &model.TrashItem{}, &model.Bookmark{}, &model.FileRecord{}, &model.DBSession{}, &model.Job{}, &model.AuditLog{}); err != nil {
+	if err := testDB.AutoMigrate(&model.User{}, &model.TrashItem{}, &model.FileRecord{}, &model.DBSession{}, &model.Job{}, &model.AuditLog{}); err != nil {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 	testDB.Exec("DELETE FROM users")
 	testDB.Exec("DELETE FROM trash")
-	testDB.Exec("DELETE FROM bookmarks")
 	testDB.Exec("DELETE FROM files")
 	testDB.Exec("DELETE FROM sessions")
 	testDB.Exec("DELETE FROM jobs")
