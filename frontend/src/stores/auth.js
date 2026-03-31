@@ -6,12 +6,6 @@ import { useWindowManagerStore } from './windowManager'
 import { useWorkspaceSync } from '../composables/useWorkspaceSync'
 import { usePreferences } from '../composables/usePreferences'
 
-// Permission bitmask constants
-export const PERM_READ = 1
-export const PERM_UPLOAD = 2
-export const PERM_EDIT = 4
-export const PERM_DELETE = 8
-
 export const useAuthStore = defineStore('auth', () => {
   const user = ref(null)
   const loading = ref(true)
@@ -21,12 +15,6 @@ export const useAuthStore = defineStore('auth', () => {
   const isLoggedIn = computed(() => !!user.value)
   const isRoot = computed(() => user.value?.role === 'root')
   const username = computed(() => user.value?.username || '')
-
-  const canRead = computed(() => isRoot.value || ((user.value?.permissions ?? 0) & PERM_READ) !== 0)
-  const canUpload = computed(() => isRoot.value || ((user.value?.permissions ?? 0) & PERM_UPLOAD) !== 0)
-  const canEdit = computed(() => isRoot.value || ((user.value?.permissions ?? 0) & PERM_EDIT) !== 0)
-  const canDelete = computed(() => isRoot.value || ((user.value?.permissions ?? 0) & PERM_DELETE) !== 0)
-  const canWrite = computed(() => canUpload.value || canEdit.value || canDelete.value)
 
   async function checkAuth() {
     loading.value = true
@@ -84,19 +72,17 @@ export const useAuthStore = defineStore('auth', () => {
     }
   }
 
-  // Listen for auth expiry events (from HTTP 401 interceptor)
-  window.addEventListener('auth:expired', () => {
+  function clearSession() {
     ws.disconnect()
     useWindowManagerStore().clearUser()
     user.value = null
-  })
+  }
+
+  // Listen for auth expiry events (from HTTP 401 interceptor)
+  window.addEventListener('auth:expired', clearSession)
 
   // Listen for session.expired push from WebSocket
-  ws.on('session.expired', () => {
-    ws.disconnect()
-    useWindowManagerStore().clearUser()
-    user.value = null
-  })
+  ws.on('session.expired', clearSession)
 
   return {
     user,
@@ -104,12 +90,6 @@ export const useAuthStore = defineStore('auth', () => {
     needsSetup,
     isLoggedIn,
     isRoot,
-
-    canRead,
-    canUpload,
-    canEdit,
-    canDelete,
-    canWrite,
     username,
     checkAuth,
     verify,

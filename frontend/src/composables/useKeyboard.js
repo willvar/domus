@@ -56,7 +56,7 @@ export function useKeyboard() {
       // Delete
       case e.key === 'Delete':
         e.preventDefault()
-        if (auth.canDelete && fs.selectedFiles.length > 0) fs.deleteSelected()
+        if (fs.selectedFiles.length > 0) fs.deleteSelected()
         break
 
       // Ctrl+C - Copy
