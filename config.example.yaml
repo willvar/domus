@@ -1,9 +1,10 @@
 oss:
-  endpoint: "oss-cn-hangzhou.aliyuncs.com"
+  endpoint: "oss-cn-hangzhou.aliyuncs.com"  # OSS endpoint or custom domain
   access_key_id: ""
   access_key_secret: ""
   bucket: ""
   region: "cn-hangzhou"
+  cname: false  # set to true if endpoint is a custom domain
 
 server:
   port: 8080

@@ -280,6 +280,21 @@ func runServer(cfg *config.Config, configPath string) {
 
 	// Initialize services
 	sessions := model.NewSessionStore(db)
+	serverKey, err := auth.ServerKeyFromSecret(cfg.Server.EncryptionSecret)
+	if err != nil {
+		logger.Fatal("Invalid encryption secret: %v", err)
+	}
+	sessions.PopulateKEK = func(s *model.Session) {
+		wrappedHex, err := model.GetUserWrappedKEK(s.UserID)
+		if err != nil || wrappedHex == "" {
+			return
+		}
+		wrappedBytes, err := hex.DecodeString(wrappedHex)
+		if err != nil {
+			return
+		}
+		s.KEK, _ = auth.UnwrapKEK(serverKey, wrappedBytes)
+	}
 	transcoder := service.NewTranscoder(cfg.Transcode)
 	mid := middleware.New(sessions, cfg.Server.SessionSecret)
 
@@ -349,7 +364,11 @@ func runServer(cfg *config.Config, configPath string) {
 	// Auto-create root user if no users exist
 	if count, err := model.UserCount(); err == nil && count == 0 {
 		password := generateRandomPassword()
-		user, err := model.CreateUser("root", password, "root", model.PermAll)
+		wrappedKEKHex, err := generateWrappedKEKForUser(cfg.Server.EncryptionSecret)
+		if err != nil {
+			logger.Fatal("Failed to generate KEK for root user: %v", err)
+		}
+		user, err := model.CreateUser("root", password, "root", wrappedKEKHex)
 		if err != nil {
 			logger.Fatal("Failed to create root user: %v", err)
 		}
@@ -447,6 +466,22 @@ func generateRandomPassword() string {
 	b := make([]byte, 12)
 	rand.Read(b)
 	return hex.EncodeToString(b)[:16]
+}
+
+func generateWrappedKEKForUser(encryptionSecret string) (string, error) {
+	kek, err := auth.GenerateKEK()
+	if err != nil {
+		return "", err
+	}
+	serverKey, err := auth.ServerKeyFromSecret(encryptionSecret)
+	if err != nil {
+		return "", err
+	}
+	wrapped, err := auth.WrapKEK(serverKey, kek)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(wrapped), nil
 }
 
 func generateRandomSecret(length int) string {
