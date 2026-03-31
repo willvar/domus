@@ -24,7 +24,7 @@ func (h *Handler) issueSession(c *fiber.Ctx, user *model.User, method string) er
 	h.Challenges.ClearLoginAttempts(c.IP(), method, user.Username)
 	h.Audit.Log(user.ID, user.Username, c.IP(), "login", "", method, "success", 0)
 
-	sessionID, err := h.Sessions.Create(user.ID, user.Username, user.Role, user.Permissions)
+	sessionID, err := h.Sessions.Create(user.ID, user.Username, user.Role)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "session_creation_failed"})
 	}
@@ -45,7 +45,6 @@ func (h *Handler) issueSession(c *fiber.Ctx, user *model.User, method string) er
 			"id":           user.ID,
 			"username":     user.Username,
 			"role":         user.Role,
-			"permissions":  user.Permissions,
 			"email":        user.Email,
 			"totp_enabled": user.TOTPEnabled,
 		},
@@ -77,12 +76,11 @@ func (h *Handler) loginFail(c *fiber.Ctx, method, username string) error {
 
 func (h *Handler) createChallengeForUser(user *model.User, methods []string, emailCode string) (string, error) {
 	return h.Challenges.CreateLoginChallenge(&auth.LoginChallenge{
-		UserID:      user.ID,
-		Username:    user.Username,
-		Role:        user.Role,
-		Permissions: user.Permissions,
-		Methods:     methods,
-		EmailCode:   emailCode,
+		UserID:    user.ID,
+		Username:  user.Username,
+		Role:      user.Role,
+		Methods:   methods,
+		EmailCode: emailCode,
 	})
 }
 
@@ -344,12 +342,12 @@ func (h *Handler) handleMe(c *fiber.Ctx) error {
 	if _, err := h.Store.GetObjectInfo(avatarKey); err == nil {
 		avatarURL, _ = h.Store.GeneratePresignedURL(avatarKey, 24*time.Hour)
 	}
+
 	return c.JSON(fiber.Map{
 		"id":           user.ID,
 		"username":     user.Username,
 		"display_name": user.DisplayName,
 		"role":         user.Role,
-		"permissions":  user.Permissions,
 		"email":        user.Email,
 		"totp_enabled": user.TOTPEnabled,
 		"avatar_url":   avatarURL,

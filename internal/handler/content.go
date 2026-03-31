@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"encoding/hex"
 	"io"
 	"mime"
 	"path/filepath"
@@ -116,7 +117,15 @@ func (h *Handler) handlePatchContent(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	encKey, err := h.getFileEncryptionKey(session)
+	kek, err := h.getFileEncryptionKey(session)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	}
+	wrappedDEKBytes, err := hex.DecodeString(fileRecord.WrappedDEK)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	}
+	dek, err := auth.UnwrapDEK(kek, wrappedDEKBytes)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
@@ -142,7 +151,7 @@ func (h *Handler) handlePatchContent(c *fiber.Ctx) error {
 	done1 := make(chan struct{})
 	go func() {
 		defer close(done1)
-		err := auth.DecryptStream(encKey, reader, decW)
+		err := auth.DecryptStream(dek, reader, decW)
 		_ = reader.Close()
 		_ = decW.CloseWithError(err)
 	}()
@@ -159,7 +168,7 @@ func (h *Handler) handlePatchContent(c *fiber.Ctx) error {
 	done3 := make(chan struct{})
 	go func() {
 		defer close(done3)
-		pipelineErr = auth.EncryptStream(encKey, editR, &encryptedBuf)
+		pipelineErr = auth.EncryptStream(dek, editR, &encryptedBuf)
 	}()
 
 	<-done1
@@ -179,6 +188,12 @@ func (h *Handler) handlePatchContent(c *fiber.Ctx) error {
 	fileName := filepath.Base(resolvedPath)
 	ct := mime.TypeByExtension(filepath.Ext(resolvedPath))
 	_ = model.UpsertFile(session.UserID, resolvedPath, fileName, false, newSize, ct, "")
+
+	// Notify WebSocket subscribers of the parent directory
+	if parent := parentDirOf(resolvedPath); parent != "" {
+		appPath := toAppPath(parent, session.Username)
+		h.Hub.PushDirChanged(parent, appPath, "modified")
+	}
 
 	h.Audit.LogFromCtx(c, "file_write", body.Path, "", "success", 0)
 	return c.JSON(fiber.Map{"ok": true, "new_size": newSize})

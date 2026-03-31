@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"mime"
@@ -27,49 +28,49 @@ func (h *Handler) registerWSActions() {
 	r := h.Hub.Router()
 
 	// --- Auth ---
-	r.Handle("auth.config", 0, h.wsAuthConfig)
-	r.Handle("auth.logout", 0, h.wsLogout)
+	r.Handle("auth.config", h.wsAuthConfig)
+	r.Handle("auth.logout", h.wsLogout)
 
 	// --- User ---
-	r.Handle("user.me", 0, h.wsMe)
-	r.Handle("user.security", 0, h.wsSecurityStatus)
-	r.Handle("user.changePassword", 0, h.wsChangePassword)
-	r.Handle("user.bindEmail", 0, h.wsBindEmail)
-	r.Handle("user.verifyBindEmail", 0, h.wsVerifyBindEmail)
-	r.Handle("user.unbindEmail", 0, h.wsUnbindEmail)
-	r.Handle("user.otpSetup", 0, h.wsOTPSetup)
-	r.Handle("user.otpEnable", 0, h.wsOTPEnable)
-	r.Handle("user.otpDisable", 0, h.wsOTPDisable)
-	r.Handle("user.updateDisplayName", 0, h.wsUpdateDisplayName)
-	r.Handle("user.storageUsage", 0, h.wsStorageUsage)
+	r.Handle("user.me", h.wsMe)
+	r.Handle("user.security", h.wsSecurityStatus)
+	r.Handle("user.changePassword", h.wsChangePassword)
+	r.Handle("user.bindEmail", h.wsBindEmail)
+	r.Handle("user.verifyBindEmail", h.wsVerifyBindEmail)
+	r.Handle("user.unbindEmail", h.wsUnbindEmail)
+	r.Handle("user.otpSetup", h.wsOTPSetup)
+	r.Handle("user.otpEnable", h.wsOTPEnable)
+	r.Handle("user.otpDisable", h.wsOTPDisable)
+	r.Handle("user.updateDisplayName", h.wsUpdateDisplayName)
+	r.Handle("user.storageUsage", h.wsStorageUsage)
 
 	// --- Files ---
-	r.Handle("file.list", ws.PermRead, h.wsFileList)
-	r.Handle("file.mkdir", ws.PermUpload, h.wsFileMkdir)
-	r.Handle("file.rename", ws.PermEdit, h.wsFileRename)
-	r.Handle("file.copy", ws.PermEdit, h.wsFileCopy)
-	r.Handle("file.move", ws.PermEdit, h.wsFileMove)
-	r.Handle("file.delete", ws.PermDelete, h.wsFileDelete)
-	r.Handle("file.patchContent", ws.PermEdit, h.wsFilePatchContent)
-	r.Handle("file.search", ws.PermRead, h.wsFileSearch)
+	r.Handle("file.list", h.wsFileList)
+	r.Handle("file.mkdir", h.wsFileMkdir)
+	r.Handle("file.rename", h.wsFileRename)
+	r.Handle("file.copy", h.wsFileCopy)
+	r.Handle("file.move", h.wsFileMove)
+	r.Handle("file.delete", h.wsFileDelete)
+	r.Handle("file.patchContent", h.wsFilePatchContent)
+	r.Handle("file.search", h.wsFileSearch)
 
 	// --- Upload progress ---
-	r.Handle("upload.progress", ws.PermUpload, h.wsUploadProgress)
+	r.Handle("upload.progress", h.wsUploadProgress)
 
 	// --- Trash ---
-	r.Handle("trash.list", ws.PermRead, h.wsTrashList)
-	r.Handle("trash.restore", ws.PermDelete, h.wsTrashRestore)
-	r.Handle("trash.delete", ws.PermDelete, h.wsTrashDelete)
-	r.Handle("trash.clear", ws.PermDelete, h.wsTrashClear)
+	r.Handle("trash.list", h.wsTrashList)
+	r.Handle("trash.restore", h.wsTrashRestore)
+	r.Handle("trash.delete", h.wsTrashDelete)
+	r.Handle("trash.clear", h.wsTrashClear)
 
 	// --- Tasks ---
-	r.Handle("task.list", 0, h.wsTaskList)
-	r.Handle("task.create", ws.PermEdit, h.wsTaskCreate)
-	r.Handle("task.cancel", 0, h.wsTaskCancel)
-	r.Handle("task.clearDone", 0, h.wsTaskClearDone)
+	r.Handle("task.list", h.wsTaskList)
+	r.Handle("task.create", h.wsTaskCreate)
+	r.Handle("task.cancel", h.wsTaskCancel)
+	r.Handle("task.clearDone", h.wsTaskClearDone)
 
 	// --- Audit ---
-	r.Handle("audit.preview", 0, h.wsAuditPreview)
+	r.Handle("audit.preview", h.wsAuditPreview)
 	r.HandleRoot("audit.logs", h.wsAuditLogs)
 
 	// --- Admin ---
@@ -81,21 +82,21 @@ func (h *Handler) registerWSActions() {
 	r.HandleRoot("admin.resetUserEmail", h.wsAdminResetUserEmail)
 
 	// --- Terminal Session ---
-	r.Handle("session.open", 0, h.wsSessionOpen)
-	r.Handle("session.input", 0, h.wsSessionInput)
-	r.Handle("session.resize", 0, h.wsSessionResize)
-	r.Handle("session.close", 0, h.wsSessionClose)
-	r.Handle("session.complete", 0, h.wsSessionComplete)
+	r.Handle("session.open", h.wsSessionOpen)
+	r.Handle("session.input", h.wsSessionInput)
+	r.Handle("session.resize", h.wsSessionResize)
+	r.Handle("session.close", h.wsSessionClose)
+	r.Handle("session.complete", h.wsSessionComplete)
 
 	// --- Workspace sync ---
-	r.Handle("workspace.event", 0, h.wsWorkspaceEvent)
-	r.Handle("workspace.save", 0, h.wsWorkspaceSave)
-	r.Handle("workspace.load", 0, h.wsWorkspaceLoad)
-	r.Handle("workspace.clear", 0, h.wsWorkspaceClear)
+	r.Handle("workspace.event", h.wsWorkspaceEvent)
+	r.Handle("workspace.save", h.wsWorkspaceSave)
+	r.Handle("workspace.load", h.wsWorkspaceLoad)
+	r.Handle("workspace.clear", h.wsWorkspaceClear)
 
 	// --- Subscriptions ---
-	r.Handle("subscribe.directory", 0, h.wsSubscribeDirectory)
-	r.Handle("unsubscribe.directory", 0, h.wsUnsubscribeDirectory)
+	r.Handle("subscribe.directory", h.wsSubscribeDirectory)
+	r.Handle("unsubscribe.directory", h.wsUnsubscribeDirectory)
 }
 
 // --- Shared path resolution (no *fiber.Ctx dependency) ---
@@ -175,7 +176,6 @@ func (h *Handler) wsMe(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) 
 		"username":     user.Username,
 		"display_name": user.DisplayName,
 		"role":         user.Role,
-		"permissions":  user.Permissions,
 		"email":        user.Email,
 		"totp_enabled": user.TOTPEnabled,
 		"avatar_url":   avatarURL,
@@ -352,7 +352,7 @@ func (h *Handler) wsFileList(conn *ws.Conn, _ string, data json.RawMessage) (any
 		return nil, err
 	}
 
-	records, err := model.ListDirectChildren(resolvedPath)
+	records, err := model.ListDirectChildren(conn.Session.UserID, resolvedPath)
 	if err != nil {
 		return nil, &wsError{Code: "list_failed"}
 	}
@@ -403,9 +403,8 @@ func (h *Handler) wsFileList(conn *ws.Conn, _ string, data json.RawMessage) (any
 			}
 		}
 		if r.ThumbnailKey != "" {
-			if url, err := h.Store.GeneratePresignedURL(r.ThumbnailKey, 1*time.Hour); err == nil {
-				fi.ThumbnailURL = url
-			}
+			appPath := toAppPath(r.Path, conn.Session.Username)
+			fi.ThumbnailURL = "/file/thumbnail?path=" + appPath
 		}
 		files = append(files, fi)
 	}
@@ -734,8 +733,8 @@ func (h *Handler) wsFilePatchContent(conn *ws.Conn, _ string, data json.RawMessa
 		return nil, err
 	}
 
-	var fileRecord model.FileRecord
-	if err := h.DB.Where("path = ?", resolvedPath).First(&fileRecord).Error; err != nil {
+	fileRecord, err := model.GetFile(conn.Session.UserID, resolvedPath)
+	if err != nil {
 		return nil, &wsError{Code: "file_not_found"}
 	}
 	if p.BaseSize != fileRecord.Size {
@@ -768,7 +767,15 @@ func (h *Handler) wsFilePatchContent(conn *ws.Conn, _ string, data json.RawMessa
 		return nil, &wsError{Code: "invalid_result_size"}
 	}
 
-	encKey, err := h.getFileEncryptionKey(conn.Session)
+	kek, err := h.getFileEncryptionKey(conn.Session)
+	if err != nil {
+		return nil, &wsError{Code: "internal_error"}
+	}
+	wrappedDEKBytes, err := hex.DecodeString(fileRecord.WrappedDEK)
+	if err != nil {
+		return nil, &wsError{Code: "internal_error"}
+	}
+	dek, err := auth.UnwrapDEK(kek, wrappedDEKBytes)
 	if err != nil {
 		return nil, &wsError{Code: "internal_error"}
 	}
@@ -786,7 +793,7 @@ func (h *Handler) wsFilePatchContent(conn *ws.Conn, _ string, data json.RawMessa
 	done1 := make(chan struct{})
 	go func() {
 		defer close(done1)
-		err := auth.DecryptStream(encKey, reader, decW)
+		err := auth.DecryptStream(dek, reader, decW)
 		_ = reader.Close()
 		_ = decW.CloseWithError(err)
 	}()
@@ -801,7 +808,7 @@ func (h *Handler) wsFilePatchContent(conn *ws.Conn, _ string, data json.RawMessa
 	done3 := make(chan struct{})
 	go func() {
 		defer close(done3)
-		pipelineErr = auth.EncryptStream(encKey, editR, &encryptedBuf)
+		pipelineErr = auth.EncryptStream(dek, editR, &encryptedBuf)
 	}()
 
 	<-done1
@@ -1213,10 +1220,9 @@ func (h *Handler) wsAdminListUsers(_ *ws.Conn, _ string, _ json.RawMessage) (any
 
 func (h *Handler) wsAdminCreateUser(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
 	var p struct {
-		Username    string `json:"username"`
-		Password    string `json:"password"`
-		Role        string `json:"role"`
-		Permissions *int64 `json:"permissions"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Role     string `json:"role"`
 	}
 	if err := json.Unmarshal(data, &p); err != nil {
 		return nil, &wsError{Code: "invalid_request"}
@@ -1231,12 +1237,12 @@ func (h *Handler) wsAdminCreateUser(conn *ws.Conn, _ string, data json.RawMessag
 		return nil, &wsError{Code: "invalid_role"}
 	}
 
-	permissions := model.DefaultPermissions(p.Role)
-	if p.Permissions != nil {
-		permissions = *p.Permissions
+	wrappedKEKHex, err := h.generateWrappedKEK()
+	if err != nil {
+		return nil, &wsError{Code: "key_generation_failed"}
 	}
 
-	user, err := model.CreateUser(p.Username, p.Password, p.Role, permissions)
+	user, err := model.CreateUser(p.Username, p.Password, p.Role, wrappedKEKHex)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return nil, &wsError{Code: "username_exists"}
@@ -1256,10 +1262,9 @@ func (h *Handler) wsAdminCreateUser(conn *ws.Conn, _ string, data json.RawMessag
 
 func (h *Handler) wsAdminUpdateUser(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
 	var p struct {
-		ID          string `json:"id"`
-		Role        string `json:"role"`
-		Password    string `json:"password"`
-		Permissions *int64 `json:"permissions"`
+		ID       string `json:"id"`
+		Role     string `json:"role"`
+		Password string `json:"password"`
 	}
 	if err := json.Unmarshal(data, &p); err != nil {
 		return nil, &wsError{Code: "invalid_request"}
@@ -1280,19 +1285,12 @@ func (h *Handler) wsAdminUpdateUser(conn *ws.Conn, _ string, data json.RawMessag
 	if p.Role != "" {
 		role = p.Role
 	}
-	permissions := user.Permissions
-	if p.Role != "" && p.Role != user.Role && p.Permissions == nil {
-		permissions = model.DefaultPermissions(role)
-	}
-	if p.Permissions != nil {
-		permissions = *p.Permissions
-	}
 
-	if err := model.UpdateUser(user.ID, role, permissions); err != nil {
+	if err := model.UpdateUser(user.ID, role); err != nil {
 		return nil, &wsError{Code: "update_user_failed"}
 	}
 
-	if (p.Role != "" && p.Role != user.Role) || (p.Permissions != nil && *p.Permissions != user.Permissions) {
+	if p.Role != "" && p.Role != user.Role {
 		h.Sessions.DeleteByUserID(user.ID)
 		h.Hub.PushSessionExpired(user.ID)
 	}

@@ -22,10 +22,9 @@ func (h *Handler) handleListUsers(c *fiber.Ctx) error {
 
 func (h *Handler) handleCreateUser(c *fiber.Ctx) error {
 	var body struct {
-		Username    string `json:"username"`
-		Password    string `json:"password"`
-		Role        string `json:"role"`
-		Permissions *int64 `json:"permissions"`
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Role     string `json:"role"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
@@ -41,12 +40,12 @@ func (h *Handler) handleCreateUser(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_role"})
 	}
 
-	permissions := model.DefaultPermissions(body.Role)
-	if body.Permissions != nil {
-		permissions = *body.Permissions
+	wrappedKEKHex, err := h.generateWrappedKEK()
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "key_generation_failed"})
 	}
 
-	user, err := model.CreateUser(body.Username, body.Password, body.Role, permissions)
+	user, err := model.CreateUser(body.Username, body.Password, body.Role, wrappedKEKHex)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return c.Status(409).JSON(fiber.Map{"error": "username_exists"})
@@ -72,9 +71,8 @@ func (h *Handler) handleUpdateUser(c *fiber.Ctx) error {
 	}
 
 	var body struct {
-		Role        string `json:"role"`
-		Password    string `json:"password"`
-		Permissions *int64 `json:"permissions"`
+		Role     string `json:"role"`
+		Password string `json:"password"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
@@ -96,21 +94,12 @@ func (h *Handler) handleUpdateUser(c *fiber.Ctx) error {
 		role = body.Role
 	}
 
-	permissions := user.Permissions
-	if body.Role != "" && body.Role != user.Role && body.Permissions == nil {
-		// Role changed without explicit permissions: reset to role default
-		permissions = model.DefaultPermissions(role)
-	}
-	if body.Permissions != nil {
-		permissions = *body.Permissions
-	}
-
-	if err := model.UpdateUser(user.ID, role, permissions); err != nil {
+	if err := model.UpdateUser(user.ID, role); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "update_user_failed"})
 	}
 
-	// If role or permissions changed, invalidate sessions
-	if (body.Role != "" && body.Role != user.Role) || (body.Permissions != nil && *body.Permissions != user.Permissions) {
+	// If role changed, invalidate sessions
+	if body.Role != "" && body.Role != user.Role {
 		h.Sessions.DeleteByUserID(user.ID)
 	}
 

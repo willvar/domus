@@ -42,10 +42,6 @@ func (h *Handler) handleJobDispatch(c *fiber.Ctx) error {
 	}
 	switch peek.Type {
 	case "transcode":
-		session := c.Locals("session").(*model.Session)
-		if session.Role != "root" && session.Permissions&model.PermEdit != model.PermEdit {
-			return c.Status(403).JSON(fiber.Map{"error": "forbidden"})
-		}
 		return h.handleTranscodeStart(c)
 	default:
 		return c.Status(400).JSON(fiber.Map{"error": "unknown_job_type"})

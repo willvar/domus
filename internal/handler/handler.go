@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"encoding/hex"
+	"fmt"
 	"mime"
 	"path/filepath"
 	"strings"
@@ -41,6 +43,7 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	app.Post("/auth", h.handleLogin)
 	app.Post("/auth/verify", h.handleVerify)
 	app.Get("/user/avatar/:username", h.handlePublicAvatar)
+	app.Get("/share/:share_id/info", h.handleShareInfo)
 
 	authed := app.Group("", h.Mid.AuthRequired())
 	authed.Delete("/auth", h.handleLogout)
@@ -74,28 +77,34 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 
 	// /file
 	file := authed.Group("/file")
-	file.Get("/", middleware.PermissionRequired(model.PermRead), h.handleList)
-	file.Get("/download", middleware.PermissionRequired(model.PermRead), h.handleDownload)
-	file.Get("/content/raw", middleware.PermissionRequired(model.PermRead), h.handleRawFile)
-	file.Get("/preview", middleware.PermissionRequired(model.PermRead), h.handlePreview)
-	file.Put("/content/diff", middleware.PermissionRequired(model.PermEdit), h.handlePatchContent)
-	file.Post("/mkdir", middleware.PermissionRequired(model.PermUpload), h.handleMkdir)
-	file.Post("/rename", middleware.PermissionRequired(model.PermEdit), h.handleRename)
-	file.Post("/copy", middleware.PermissionRequired(model.PermEdit), h.handleCopy)
-	file.Post("/move", middleware.PermissionRequired(model.PermEdit), h.handleMove)
-	file.Delete("/delete", middleware.PermissionRequired(model.PermDelete), h.handleDelete)
+	file.Get("/", h.handleList)
+	file.Get("/access", h.handleFileAccess)
+	file.Get("/preview", h.handlePreview)
+	file.Get("/thumbnail", h.handleThumbnail)
+	file.Put("/content/diff", h.handlePatchContent)
+	file.Post("/mkdir", h.handleMkdir)
+	file.Post("/rename", h.handleRename)
+	file.Post("/copy", h.handleCopy)
+	file.Post("/move", h.handleMove)
+	file.Delete("/delete", h.handleDelete)
 
 	fileUpload := file.Group("/upload")
-	fileUpload.Get("/", middleware.PermissionRequired(model.PermRead), h.handleUploadStatus)
-	fileUpload.Post("/", middleware.PermissionRequired(model.PermUpload), h.handleUploadDispatch)
-	fileUpload.Put("/part", middleware.PermissionRequired(model.PermUpload), h.handleUploadPart)
-	fileUpload.Delete("/", middleware.PermissionRequired(model.PermUpload), h.handleUploadAbort)
+	fileUpload.Get("/", h.handleUploadStatus)
+	fileUpload.Post("/", h.handleUploadDispatch)
+	fileUpload.Put("/part", h.handleUploadPart)
+	fileUpload.Delete("/", h.handleUploadAbort)
+
+	// /file/share (authenticated)
+	file.Post("/share", h.handleCreateShare)
+	file.Get("/shares", h.handleListShares)
+	file.Delete("/share/:id", h.handleDeleteShare)
+	file.Get("/shared", h.handleListSharedWithMe)
 
 	fileTrash := file.Group("/trash")
-	fileTrash.Get("/", middleware.PermissionRequired(model.PermRead), h.handleListTrash)
-	fileTrash.Post("/restore", middleware.PermissionRequired(model.PermDelete), h.handleRestoreTrash)
-	fileTrash.Delete("/:id", middleware.PermissionRequired(model.PermDelete), h.handleDeleteTrashItem)
-	fileTrash.Delete("/", middleware.PermissionRequired(model.PermDelete), h.handleClearTrash)
+	fileTrash.Get("/", h.handleListTrash)
+	fileTrash.Post("/restore", h.handleRestoreTrash)
+	fileTrash.Delete("/:id", h.handleDeleteTrashItem)
+	fileTrash.Delete("/", h.handleClearTrash)
 
 	// /job
 	job := authed.Group("/job")
@@ -117,9 +126,51 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	h.registerWSActions()
 }
 
-// getFileEncryptionKey derives the encryption key for the current user's files.
+// getFileEncryptionKey returns the cached KEK for the current user's files.
 func (h *Handler) getFileEncryptionKey(session *model.Session) ([]byte, error) {
-	return auth.DeriveKey(h.Config.Server.EncryptionSecret, session.UserID)
+	if session.KEK != nil {
+		return session.KEK, nil
+	}
+	return h.loadUserKEK(session.UserID)
+}
+
+// loadUserKEK loads and unwraps a user's KEK from the database.
+// Used by background jobs (no session) and for target user KEK in sharing.
+func (h *Handler) loadUserKEK(userID string) ([]byte, error) {
+	wrappedHex, err := model.GetUserWrappedKEK(userID)
+	if err != nil {
+		return nil, fmt.Errorf("load wrapped KEK: %w", err)
+	}
+	if wrappedHex == "" {
+		return nil, fmt.Errorf("user %s has no wrapped KEK", userID)
+	}
+	serverKey, err := auth.ServerKeyFromSecret(h.Config.Server.EncryptionSecret)
+	if err != nil {
+		return nil, err
+	}
+	wrappedBytes, err := hex.DecodeString(wrappedHex)
+	if err != nil {
+		return nil, fmt.Errorf("decode wrapped KEK: %w", err)
+	}
+	return auth.UnwrapKEK(serverKey, wrappedBytes)
+}
+
+// generateWrappedKEK creates a new random KEK and wraps it with the server key.
+// Returns the hex-encoded wrapped KEK for storage in the users table.
+func (h *Handler) generateWrappedKEK() (string, error) {
+	kek, err := auth.GenerateKEK()
+	if err != nil {
+		return "", fmt.Errorf("generate KEK: %w", err)
+	}
+	serverKey, err := auth.ServerKeyFromSecret(h.Config.Server.EncryptionSecret)
+	if err != nil {
+		return "", err
+	}
+	wrapped, err := auth.WrapKEK(serverKey, kek)
+	if err != nil {
+		return "", fmt.Errorf("wrap KEK: %w", err)
+	}
+	return hex.EncodeToString(wrapped), nil
 }
 
 // syncDirFiles scans OSS objects under a prefix and upserts them all into the files table.

@@ -118,7 +118,7 @@ func (h *Handler) handleUploadConflictCheck(c *fiber.Ctx) error {
 		return err
 	}
 
-	allFiles, _ := model.ListAllChildren(resolvedDir)
+	allFiles, _ := model.ListAllChildren(session.UserID, resolvedDir)
 	existingByName := make(map[string]*model.FileRecord, len(allFiles))
 	for i := range allFiles {
 		existingByName[allFiles[i].Name] = &allFiles[i]
@@ -186,7 +186,7 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 			if dirErr != nil {
 				return dirErr
 			}
-			allFiles, _ := model.ListAllChildren(resolvedDir)
+			allFiles, _ := model.ListAllChildren(session.UserID, resolvedDir)
 			usedNames := make(map[string]struct{})
 			for _, f := range allFiles {
 				usedNames[f.Name] = struct{}{}
@@ -394,18 +394,49 @@ func (h *Handler) RunOSSUploadJob(ctx context.Context, job *model.Job) error {
 	indexContent := h.getUserIndexContentPref(params.Username)
 	h.indexFile(params.UserID, params.OSSKey, params.FileName, localFile, indexContent)
 
+	// Generate thumbnail before encryption (while plaintext is still on disk)
+	var thumbnailKey, thumbnailWrappedDEKHex string
+	var mediaWidth, mediaHeight int
+	var mediaDuration float64
+	if mediaType := service.DetectMediaType(params.FileName); mediaType == "image" || mediaType == "video" {
+		_ = model.UpdateJobProgress(job.JobID, 0.25, "thumbnail")
+		thumbKey := fmt.Sprintf("%s/.user/thumbnails/%s_%d.webp", params.Username, contentHash, params.FileSize)
+
+		result, err := h.GenerateThumbnailFromPlaintext(ctx, localFile, mediaType, params.TempDir)
+		if err == nil && result != nil {
+			if encHex, uploadErr := h.encryptAndUploadThumbnail(params.UserID, thumbKey, result.ThumbPath); uploadErr == nil {
+				thumbnailKey = thumbKey
+				thumbnailWrappedDEKHex = encHex
+				mediaWidth = result.Width
+				mediaHeight = result.Height
+				mediaDuration = result.Duration
+			}
+		}
+	}
+
 	// Encrypting
 	_ = model.UpdateJobProgress(job.JobID, 0.3, "encrypting")
-	key, err := auth.DeriveKey(h.Config.Server.EncryptionSecret, params.UserID)
+	kek, err := h.loadUserKEK(params.UserID)
 	if err != nil {
 		_ = model.UpdateFileStatus(params.UploadID, "failed")
-		return fmt.Errorf("derive key: %w", err)
+		return fmt.Errorf("load user KEK: %w", err)
+	}
+	dek, err := auth.GenerateDEK()
+	if err != nil {
+		_ = model.UpdateFileStatus(params.UploadID, "failed")
+		return fmt.Errorf("generate DEK: %w", err)
 	}
 	encFile := localFile + ".enc"
-	if err := auth.EncryptFile(key, localFile, encFile); err != nil {
+	if err := auth.EncryptFile(dek, localFile, encFile); err != nil {
 		_ = model.UpdateFileStatus(params.UploadID, "failed")
 		return fmt.Errorf("encrypt: %w", err)
 	}
+	wrappedDEK, err := auth.WrapDEK(kek, dek)
+	if err != nil {
+		_ = model.UpdateFileStatus(params.UploadID, "failed")
+		return fmt.Errorf("wrap DEK: %w", err)
+	}
+	wrappedDEKHex := hex.EncodeToString(wrappedDEK)
 	defer func() { _ = os.Remove(encFile) }()
 
 	if ctx.Err() != nil {
@@ -439,22 +470,12 @@ func (h *Handler) RunOSSUploadJob(ctx context.Context, job *model.Job) error {
 		}
 	}
 	ct := mime.TypeByExtension(filepath.Ext(params.FileName))
-	_ = model.UpsertFile(params.UserID, params.OSSKey, params.FileName, false, fileSize, ct, contentHash)
+	_ = model.UpsertFile(params.UserID, params.OSSKey, params.FileName, false, fileSize, ct, contentHash, model.UpsertFileOpts{WrappedDEK: wrappedDEKHex})
 	_ = model.UpdateFileStatus(params.UploadID, "ready")
 
-	// Create thumbnail job for images/videos
-	if mediaType := service.DetectMediaType(params.FileName); mediaType == "image" || mediaType == "video" {
-		thumbKey := fmt.Sprintf("%s/.user/thumbnails/%s_%d.webp", params.Username, contentHash, fileSize)
-		thumbJobID := uuid.New().String()
-		thumbParams := ThumbnailParams{
-			SourceKey:    params.OSSKey,
-			ThumbnailKey: thumbKey,
-			FileName:     params.FileName,
-			MediaType:    mediaType,
-			TempDir:      filepath.Join(config.TempDir, "thumbnail", thumbJobID),
-		}
-		thumbParamsJSON, _ := json.Marshal(thumbParams)
-		_, _ = model.CreateJob(params.UserID, thumbJobID, "thumbnail", string(thumbParamsJSON))
+	// Update thumbnail info (generated before encryption)
+	if thumbnailKey != "" {
+		_ = model.UpdateFileThumbnail(params.UserID, params.OSSKey, thumbnailKey, thumbnailWrappedDEKHex, mediaWidth, mediaHeight, mediaDuration)
 	}
 
 	// Clean up temp files

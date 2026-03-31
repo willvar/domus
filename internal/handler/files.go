@@ -3,14 +3,12 @@ package handler
 import (
 	"bufio"
 	"bytes"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"log"
 	"mime"
-	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -33,7 +31,7 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	records, err := model.ListDirectChildren(resolvedPath)
+	records, err := model.ListDirectChildren(session.UserID, resolvedPath)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "list_failed"})
 	}
@@ -82,9 +80,8 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 			}
 		}
 		if r.ThumbnailKey != "" {
-			if url, err := h.Store.GeneratePresignedURL(r.ThumbnailKey, 1*time.Hour); err == nil {
-				fi.ThumbnailURL = url
-			}
+			appPath := middleware.ToAppPath(r.Path, session.Username)
+			fi.ThumbnailURL = "/file/thumbnail?path=" + appPath
 		}
 		files = append(files, fi)
 	}
@@ -112,6 +109,12 @@ func (h *Handler) handleMkdir(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
 	dirName := filepath.Base(strings.TrimSuffix(resolvedPath, "/"))
 	_ = model.UpsertFile(session.UserID, resolvedPath, dirName, true, 0, "", "")
+
+	// Notify WebSocket subscribers of the parent directory
+	if parent := parentDirOf(resolvedPath); parent != "" {
+		appPath := toAppPath(parent, session.Username)
+		h.Hub.PushDirChanged(parent, appPath, "created")
+	}
 
 	return c.JSON(fiber.Map{"ok": true})
 }
@@ -156,6 +159,16 @@ func (h *Handler) handleRename(c *fiber.Ctx) error {
 		_ = model.MoveFile(session.UserID, oldResolved, newResolved, newName)
 	}
 
+	// Notify WebSocket subscribers of both old and new parent directories
+	if parent := parentDirOf(oldResolved); parent != "" {
+		appPath := toAppPath(parent, session.Username)
+		h.Hub.PushDirChanged(parent, appPath, "refresh")
+	}
+	if parent := parentDirOf(newResolved); parent != "" {
+		appPath := toAppPath(parent, session.Username)
+		h.Hub.PushDirChanged(parent, appPath, "refresh")
+	}
+
 	h.Audit.LogFromCtx(c, "file_rename", body.OldPath, body.NewPath, "success", 0)
 	return c.JSON(fiber.Map{"ok": true})
 }
@@ -183,6 +196,7 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
 	var srcSize int64
 	var srcContentHash string
+	var srcWrappedDEK string
 	if !body.IsDir {
 		srcRecord, err := model.GetFile(session.UserID, srcResolved)
 		if err != nil {
@@ -193,6 +207,7 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 		}
 		srcSize = srcRecord.Size
 		srcContentHash = srcRecord.ContentHash
+		srcWrappedDEK = srcRecord.WrappedDEK
 	}
 
 	// Check if SSE is requested
@@ -227,7 +242,11 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 				} else {
 					dstName := filepath.Base(dstResolved)
 					ct := mime.TypeByExtension(filepath.Ext(dstResolved))
-					_ = model.UpsertFile(session.UserID, dstResolved, dstName, false, srcSize, ct, srcContentHash)
+					var copyOpts []model.UpsertFileOpts
+					if srcWrappedDEK != "" {
+						copyOpts = append(copyOpts, model.UpsertFileOpts{WrappedDEK: srcWrappedDEK})
+					}
+					_ = model.UpsertFile(session.UserID, dstResolved, dstName, false, srcSize, ct, srcContentHash, copyOpts...)
 				}
 				data, _ := json.Marshal(fiber.Map{"done": true})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
@@ -249,7 +268,17 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 		}
 		dstName := filepath.Base(dstResolved)
 		ct := mime.TypeByExtension(filepath.Ext(dstResolved))
-		_ = model.UpsertFile(session.UserID, dstResolved, dstName, false, srcSize, ct, srcContentHash)
+		var copyOpts []model.UpsertFileOpts
+		if srcWrappedDEK != "" {
+			copyOpts = append(copyOpts, model.UpsertFileOpts{WrappedDEK: srcWrappedDEK})
+		}
+		_ = model.UpsertFile(session.UserID, dstResolved, dstName, false, srcSize, ct, srcContentHash, copyOpts...)
+	}
+
+	// Notify WebSocket subscribers of the destination parent directory
+	if parent := parentDirOf(dstResolved); parent != "" {
+		appPath := toAppPath(parent, session.Username)
+		h.Hub.PushDirChanged(parent, appPath, "refresh")
 	}
 
 	h.Audit.LogFromCtx(c, "file_copy", body.SrcPath, body.DstPath, "success", 0)
@@ -337,6 +366,16 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 		}
 		newName := filepath.Base(dstResolved)
 		_ = model.MoveFile(session.UserID, srcResolved, dstResolved, newName)
+	}
+
+	// Notify WebSocket subscribers of both source and destination parent directories
+	if parent := parentDirOf(srcResolved); parent != "" {
+		appPath := toAppPath(parent, session.Username)
+		h.Hub.PushDirChanged(parent, appPath, "refresh")
+	}
+	if parent := parentDirOf(dstResolved); parent != "" {
+		appPath := toAppPath(parent, session.Username)
+		h.Hub.PushDirChanged(parent, appPath, "refresh")
 	}
 
 	h.Audit.LogFromCtx(c, "file_move", body.SrcPath, body.DstPath, "success", 0)
@@ -481,7 +520,9 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
-func (h *Handler) handleDownload(c *fiber.Ctx) error {
+// handleFileAccess returns a presigned URL to the encrypted file on OSS plus metadata
+// needed for client-side decryption via Service Worker.
+func (h *Handler) handleFileAccess(c *fiber.Ctx) error {
 	path := c.Query("path", "")
 	if path == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
@@ -493,181 +534,45 @@ func (h *Handler) handleDownload(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	if rec, err := model.GetFile(session.UserID, resolvedPath); err == nil && rec.Status != "ready" {
-		return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
-	}
-
-	h.Audit.LogFromCtx(c, "file_download", path, "", "success", 0)
-	return c.JSON(fiber.Map{
-		"url": "/file/content/raw?path=" + url.QueryEscape(path) + "&dl=1",
-	})
-}
-
-// parseRange parses an HTTP Range header per RFC 7233.
-// Supports "bytes=N-M", "bytes=N-", "bytes=-N" (single range only).
-// Returns inclusive [start, end] or error.
-func parseRange(header string, totalSize int64) (int64, int64, error) {
-	if !strings.HasPrefix(header, "bytes=") {
-		return 0, 0, fmt.Errorf("invalid range prefix")
-	}
-	spec := strings.TrimPrefix(header, "bytes=")
-
-	// Reject multi-range
-	if strings.Contains(spec, ",") {
-		return 0, 0, fmt.Errorf("multi-range not supported")
-	}
-
-	parts := strings.SplitN(spec, "-", 2)
-	if len(parts) != 2 {
-		return 0, 0, fmt.Errorf("malformed range")
-	}
-
-	var start, end int64
-	if parts[0] == "" {
-		// Suffix range: bytes=-N (last N bytes)
-		n, err := strconv.ParseInt(parts[1], 10, 64)
-		if err != nil || n <= 0 {
-			return 0, 0, fmt.Errorf("invalid suffix length")
-		}
-		start = totalSize - n
-		if start < 0 {
-			start = 0
-		}
-		end = totalSize - 1
-	} else {
-		var err error
-		start, err = strconv.ParseInt(parts[0], 10, 64)
-		if err != nil || start < 0 {
-			return 0, 0, fmt.Errorf("invalid start")
-		}
-		if parts[1] == "" {
-			// Open-ended: bytes=N-
-			end = totalSize - 1
-		} else {
-			end, err = strconv.ParseInt(parts[1], 10, 64)
-			if err != nil {
-				return 0, 0, fmt.Errorf("invalid end")
-			}
-		}
-	}
-
-	if start > end || start >= totalSize {
-		return 0, 0, fmt.Errorf("unsatisfiable range")
-	}
-	if end >= totalSize {
-		end = totalSize - 1
-	}
-	return start, end, nil
-}
-
-func (h *Handler) handleRawFile(c *fiber.Ctx) error {
-	path := c.Query("path", "")
-	if path == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
-	}
-
-	resolvedPath, err := middleware.ResolvePath(c, path)
+	fileRecord, err := model.GetFile(session.UserID, resolvedPath)
 	if err != nil {
-		return err
-	}
-
-	session := c.Locals("session").(*model.Session)
-	key, err := h.getFileEncryptionKey(session)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-	}
-
-	// Set common response headers
-	fileName := filepath.Base(resolvedPath)
-	ct := mime.TypeByExtension(filepath.Ext(fileName))
-	if ct != "" {
-		c.Set("Content-Type", ct)
-	}
-	if c.Query("dl") == "1" {
-		c.Set("Content-Disposition", fmt.Sprintf(`attachment; filename*=UTF-8''%s`, url.PathEscape(fileName)))
-	}
-	c.Set("Accept-Ranges", "bytes")
-
-	// Look up plaintext size from DB
-	var fileRecord model.FileRecord
-	if err := h.DB.Where("path = ?", resolvedPath).First(&fileRecord).Error; err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
 	}
 	if fileRecord.Status != "ready" {
 		return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
 	}
-	plaintextSize := fileRecord.Size
 
-	// Check for Range header
-	rangeHeader := c.Get("Range")
-	if rangeHeader == "" || plaintextSize <= 0 {
-		// Full file response
-		reader, err := h.Store.GetObjectContent(resolvedPath)
-		if err != nil {
-			return c.Status(404).JSON(fiber.Map{"error": "not_found"})
-		}
-		if plaintextSize > 0 {
-			c.Set("Content-Length", strconv.FormatInt(plaintextSize, 10))
-		}
-		c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
-			defer func() { _ = reader.Close() }()
-			if err := auth.DecryptStream(key, reader, w); err != nil {
-				log.Printf("[raw] decrypt error for %s: %v", resolvedPath, err)
-			}
-			_ = w.Flush()
-		})
-		return nil
-	}
-
-	// Range request
-	pStart, pEnd, err := parseRange(rangeHeader, plaintextSize)
+	presignedURL, err := h.Store.GeneratePresignedURL(resolvedPath, 4*time.Hour)
 	if err != nil {
-		c.Set("Content-Range", fmt.Sprintf("bytes */%d", plaintextSize))
-		return c.SendStatus(416)
+		return c.Status(500).JSON(fiber.Map{"error": "presign_failed"})
 	}
 
-	chunkSz := int64(auth.DefaultChunkSize)
-	encChunkSz := int64(auth.NonceSize + auth.DefaultChunkSize + auth.TagSize)
-	headerSz := int64(5)
-
-	startChunk := pStart / chunkSz
-	endChunk := pEnd / chunkSz
-
-	cipherStart := headerSz + startChunk*encChunkSz
-	cipherEnd := headerSz + (endChunk+1)*encChunkSz - 1
-
-	// Clamp cipherEnd to actual encrypted file size to avoid OSS returning full file
-	lastChunkPlain := plaintextSize % chunkSz
-	if lastChunkPlain == 0 && plaintextSize > 0 {
-		lastChunkPlain = chunkSz
-	}
-	totalChunks := (plaintextSize + chunkSz - 1) / chunkSz
-	cipherTotal := headerSz + (totalChunks-1)*encChunkSz + int64(auth.NonceSize) + lastChunkPlain + int64(auth.TagSize)
-	if cipherEnd >= cipherTotal {
-		cipherEnd = cipherTotal - 1
-	}
-
-	reader, err := h.Store.GetObjectContentRange(resolvedPath, cipherStart, cipherEnd)
+	// Unwrap DEK server-side so KEK never leaves the server
+	kek, err := h.getFileEncryptionKey(session)
 	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	}
+	wrappedBytes, err := hex.DecodeString(fileRecord.WrappedDEK)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	}
+	dek, err := auth.UnwrapDEK(kek, wrappedBytes)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "unwrap_failed"})
 	}
 
-	contentLength := pEnd - pStart + 1
-	trimStart := pStart - startChunk*chunkSz
-	trimEnd := trimStart + contentLength - 1
+	fileName := filepath.Base(resolvedPath)
+	ct := mime.TypeByExtension(filepath.Ext(fileName))
 
-	c.Status(206)
-	c.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", pStart, pEnd, plaintextSize))
-	c.Set("Content-Length", strconv.FormatInt(contentLength, 10))
-
-	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
-		defer func() { _ = reader.Close() }()
-		if err := auth.DecryptRange(key, reader, w, auth.DefaultChunkSize, uint64(startChunk), trimStart, trimEnd); err != nil {
-			log.Printf("[raw] range decrypt error for %s: %v", resolvedPath, err)
-		}
-		_ = w.Flush()
+	h.Audit.LogFromCtx(c, "file_access", path, "", "success", 0)
+	return c.JSON(fiber.Map{
+		"url":          presignedURL,
+		"size":         fileRecord.Size,
+		"name":         fileName,
+		"content_type": ct,
+		"chunk_size":   auth.DefaultChunkSize,
+		"dek":          hex.EncodeToString(dek),
 	})
-	return nil
 }
 
 // handlePreview generates a temporary public URL for previewing files
@@ -697,18 +602,27 @@ func (h *Handler) handleOfficePreview(c *fiber.Ctx, path string) error {
 		return err
 	}
 
-	var fileRecord model.FileRecord
-	if err := h.DB.Where("path = ?", resolvedPath).First(&fileRecord).Error; err != nil {
+	session := c.Locals("session").(*model.Session)
+	fileRecord, err := model.GetFile(session.UserID, resolvedPath)
+	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
 	}
 	if fileRecord.Status != "ready" {
 		return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
 	}
-
-	session := c.Locals("session").(*model.Session)
-	encKey, err := h.getFileEncryptionKey(session)
+	kek, err := h.getFileEncryptionKey(session)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	}
+
+	// Unwrap the file's DEK
+	wrappedBytes, err := hex.DecodeString(fileRecord.WrappedDEK)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "invalid_wrapped_dek"})
+	}
+	dek, err := auth.UnwrapDEK(kek, wrappedBytes)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "unwrap_dek_failed"})
 	}
 
 	// Decrypt file into memory
@@ -719,7 +633,7 @@ func (h *Handler) handleOfficePreview(c *fiber.Ctx, path string) error {
 	defer reader.Close()
 
 	var plainBuf bytes.Buffer
-	if err := auth.DecryptStream(encKey, reader, &plainBuf); err != nil {
+	if err := auth.DecryptStream(dek, reader, &plainBuf); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "decrypt_failed"})
 	}
 
