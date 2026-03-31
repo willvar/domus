@@ -233,7 +233,7 @@ function handleDragLeave() {
 function handleDrop(e) {
   e.preventDefault()
   dragOver.value = false
-  if (!auth.canUpload || fs.isTrash) return
+  if (fs.isTrash) return
   const files = e.dataTransfer?.files
   if (files?.length) {
     upload.uploadFiles(files, fs.currentPath)

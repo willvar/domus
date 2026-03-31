@@ -175,7 +175,7 @@ function handleSearchKeydown(e) {
 
       <span class="toolbar-sep" />
 
-      <template v-if="auth.canUpload">
+      <template v-if="auth.isLoggedIn">
         <button
           class="nav-btn"
           :title="t('toolbar.upload')"

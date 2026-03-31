@@ -1,11 +1,10 @@
 <script setup>
-import { ref, computed, watch, onMounted, h } from 'vue'
+import { ref, computed, onMounted, h } from 'vue'
 import { useRouter } from 'vue-router'
 import { useWebSocket } from '../composables/useWebSocket'
 import { useI18n } from '../composables/useI18n'
 import { useMessage } from '../composables/useMessage'
 import { showPrompt, showConfirm } from '../composables/useNativeDialog'
-import { PERM_READ, PERM_UPLOAD, PERM_EDIT, PERM_DELETE } from '../stores/auth'
 import dayjs from 'dayjs'
 import BButton from '../components/breeze/BButton.vue'
 import BModal from '../components/breeze/BModal.vue'
@@ -13,7 +12,6 @@ import BForm from '../components/breeze/BForm.vue'
 import BFormItem from '../components/breeze/BFormItem.vue'
 import BInput from '../components/breeze/BInput.vue'
 import BSelect from '../components/breeze/BSelect.vue'
-import BCheckbox from '../components/breeze/BCheckbox.vue'
 import BDataTable from '../components/breeze/BDataTable.vue'
 
 const router = useRouter()
@@ -27,42 +25,16 @@ const showCreate = ref(false)
 const showEdit = ref(false)
 const editingUser = ref(null)
 
-const defaultPerms = { admin: 15, user: 15 }
-const newUser = ref({ username: '', password: '', role: 'user', permissions: 15 })
+const newUser = ref({ username: '', password: '', role: 'user' })
 
 const roleOptions = [
   { label: 'Root', value: 'root' },
   { label: 'User', value: 'user' },
 ]
 
-watch(() => newUser.value.role, (role) => {
-  newUser.value.permissions = defaultPerms[role] ?? 15
-})
-
-watch(() => editingUser.value?.role, (role, oldRole) => {
-  if (role && oldRole && role !== oldRole && editingUser.value) {
-    editingUser.value.permissions = defaultPerms[role] ?? 1
-  }
-})
-
-function permLabels(perms) {
-  const parts = []
-  if (perms & PERM_READ) parts.push('R')
-  if (perms & PERM_UPLOAD) parts.push('U')
-  if (perms & PERM_EDIT) parts.push('E')
-  if (perms & PERM_DELETE) parts.push('D')
-  return parts.join('+')
-}
-
 const columns = computed(() => [
   { title: t('admin.username'), key: 'username', minWidth: 100 },
   { title: t('admin.role'), key: 'role', width: 80 },
-  {
-    title: t('admin.permissions'),
-    key: 'permissions',
-    width: 100,
-    render: (row) => permLabels(row.permissions),
-  },
   {
     title: t('admin.email'),
     key: 'email',
@@ -107,7 +79,6 @@ function openEdit(user) {
     id: user.id,
     username: user.username,
     role: user.role,
-    permissions: user.permissions,
   }
   showEdit.value = true
 }
@@ -129,7 +100,7 @@ async function createUser() {
     await ws.request('admin.createUser', newUser.value)
     message.success(t('admin.user_created'))
     showCreate.value = false
-    newUser.value = { username: '', password: '', role: 'user', permissions: 15 }
+    newUser.value = { username: '', password: '', role: 'user' }
     await loadUsers()
   } catch (e) {
     message.error(e.error || 'Failed')
@@ -142,7 +113,6 @@ async function saveEdit() {
     await ws.request('admin.updateUser', {
       id: editingUser.value.id,
       role: editingUser.value.role,
-      permissions: editingUser.value.permissions,
     })
     message.success(t('admin.user_updated'))
     showEdit.value = false
@@ -234,26 +204,6 @@ onMounted(loadUsers)
         <BFormItem :label="t('admin.role')">
           <BSelect v-model:value="newUser.role" :options="roleOptions" />
         </BFormItem>
-        <BFormItem :label="t('admin.permissions')">
-          <div style="display:flex;flex-wrap:wrap;gap:8px">
-            <BCheckbox
-              :checked="(newUser.permissions & PERM_READ) !== 0"
-              @update:checked="v => newUser.permissions = v ? (newUser.permissions | PERM_READ) : (newUser.permissions & ~PERM_READ)"
-            >{{ t('admin.perm_read') }}</BCheckbox>
-            <BCheckbox
-              :checked="(newUser.permissions & PERM_UPLOAD) !== 0"
-              @update:checked="v => newUser.permissions = v ? (newUser.permissions | PERM_UPLOAD) : (newUser.permissions & ~PERM_UPLOAD)"
-            >{{ t('admin.perm_upload') }}</BCheckbox>
-            <BCheckbox
-              :checked="(newUser.permissions & PERM_EDIT) !== 0"
-              @update:checked="v => newUser.permissions = v ? (newUser.permissions | PERM_EDIT) : (newUser.permissions & ~PERM_EDIT)"
-            >{{ t('admin.perm_edit') }}</BCheckbox>
-            <BCheckbox
-              :checked="(newUser.permissions & PERM_DELETE) !== 0"
-              @update:checked="v => newUser.permissions = v ? (newUser.permissions | PERM_DELETE) : (newUser.permissions & ~PERM_DELETE)"
-            >{{ t('admin.perm_delete') }}</BCheckbox>
-          </div>
-        </BFormItem>
         <BButton type="primary" block @click="createUser">{{ t('admin.create') }}</BButton>
       </BForm>
     </BModal>
@@ -266,26 +216,6 @@ onMounted(loadUsers)
         </BFormItem>
         <BFormItem :label="t('admin.role')">
           <BSelect v-model:value="editingUser.role" :options="roleOptions" />
-        </BFormItem>
-        <BFormItem :label="t('admin.permissions')">
-          <div style="display:flex;flex-wrap:wrap;gap:8px">
-            <BCheckbox
-              :checked="(editingUser.permissions & PERM_READ) !== 0"
-              @update:checked="v => editingUser.permissions = v ? (editingUser.permissions | PERM_READ) : (editingUser.permissions & ~PERM_READ)"
-            >{{ t('admin.perm_read') }}</BCheckbox>
-            <BCheckbox
-              :checked="(editingUser.permissions & PERM_UPLOAD) !== 0"
-              @update:checked="v => editingUser.permissions = v ? (editingUser.permissions | PERM_UPLOAD) : (editingUser.permissions & ~PERM_UPLOAD)"
-            >{{ t('admin.perm_upload') }}</BCheckbox>
-            <BCheckbox
-              :checked="(editingUser.permissions & PERM_EDIT) !== 0"
-              @update:checked="v => editingUser.permissions = v ? (editingUser.permissions | PERM_EDIT) : (editingUser.permissions & ~PERM_EDIT)"
-            >{{ t('admin.perm_edit') }}</BCheckbox>
-            <BCheckbox
-              :checked="(editingUser.permissions & PERM_DELETE) !== 0"
-              @update:checked="v => editingUser.permissions = v ? (editingUser.permissions | PERM_DELETE) : (editingUser.permissions & ~PERM_DELETE)"
-            >{{ t('admin.perm_delete') }}</BCheckbox>
-          </div>
         </BFormItem>
         <BButton type="primary" block @click="saveEdit">{{ t('admin.save') }}</BButton>
       </BForm>

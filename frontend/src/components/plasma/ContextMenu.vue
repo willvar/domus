@@ -57,7 +57,7 @@ const options = computed(() => {
       }
     }
 
-    if (!targetFile.value.is_dir && auth.canEdit) {
+    if (!targetFile.value.is_dir) {
       const ext = (targetFile.value.name || '').split('.').pop()?.toLowerCase() || ''
       const mediaExts = ['mp4','mkv','webm','mov','avi','flv','wmv','m4v','ts','mp3','aac','flac','ogg','wav','wma','m4a','opus','jpg','jpeg','png','webp','bmp','gif','tiff','tif','heic','heif','avif']
       if (mediaExts.includes(ext)) {
@@ -65,25 +65,17 @@ const options = computed(() => {
       }
     }
 
-    if (auth.canEdit || auth.canDelete) {
-      items.push({ type: 'divider' })
-    }
-    if (auth.canEdit) {
-      items.push({ label: t('menu.copy'), key: 'copy' })
-      items.push({ label: t('menu.cut'), key: 'cut' })
-      items.push({ label: t('menu.rename'), key: 'rename' })
-    }
-    if (auth.canDelete) {
-      items.push({ label: t('menu.delete'), key: 'delete' })
-    }
+    items.push({ type: 'divider' })
+    items.push({ label: t('menu.copy'), key: 'copy' })
+    items.push({ label: t('menu.cut'), key: 'cut' })
+    items.push({ label: t('menu.rename'), key: 'rename' })
+    items.push({ label: t('menu.delete'), key: 'delete' })
     items.push({ type: 'divider' })
     items.push({ label: t('menu.details'), key: 'details' })
   } else {
-    if (auth.canUpload) {
-      items.push({ label: t('menu.new_folder'), key: 'mkdir' })
-      items.push({ label: t('menu.upload'), key: 'upload' })
-    }
-    if (auth.canEdit && fs.clipboard.items.length > 0) {
+    items.push({ label: t('menu.new_folder'), key: 'mkdir' })
+    items.push({ label: t('menu.upload'), key: 'upload' })
+    if (fs.clipboard.items.length > 0) {
       if (items.length > 0) items.push({ type: 'divider' })
       items.push({ label: t('menu.paste'), key: 'paste' })
     }
