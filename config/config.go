@@ -31,6 +31,7 @@ type OSSConfig struct {
 	AccessKeySecret string `yaml:"access_key_secret"`
 	Bucket          string `yaml:"bucket"`
 	Region          string `yaml:"region"`
+	CNAME           bool   `yaml:"cname"` // true when endpoint is a custom domain
 }
 
 type ServerConfig struct {
@@ -104,6 +105,12 @@ func (c *Config) Validate() error {
 	}
 	if c.Database.Host == "" {
 		return fmt.Errorf("config: database.host is required")
+	}
+	if c.Server.SessionSecret == "" {
+		return fmt.Errorf("config: server.session_secret is required")
+	}
+	if c.Server.EncryptionSecret == "" {
+		return fmt.Errorf("config: server.encryption_secret is required")
 	}
 	return nil
 }

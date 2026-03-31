@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"time"
@@ -91,12 +92,56 @@ func NewOSSClient(cfg config.OSSConfig) (FileStore, error) {
 		WithRegion(cfg.Region).
 		WithEndpoint(cfg.Endpoint)
 
+	if cfg.CNAME {
+		ossCfg = ossCfg.WithUseCName(true)
+	}
+
 	client := oss.NewClient(ossCfg)
-	return &OSSClient{client: client, bucketName: cfg.Bucket}, nil
+	c := &OSSClient{client: client, bucketName: cfg.Bucket}
+	c.ensureTempLifecycle()
+	return c, nil
 }
 
 func (c *OSSClient) ctx() context.Context {
 	return context.Background()
+}
+
+// ensureTempLifecycle configures an OSS lifecycle rule to auto-delete objects
+// under _tmp/preview/ after 1 day, preventing plaintext residue if the
+// application crashes before its in-process cleanup goroutine fires.
+func (c *OSSClient) ensureTempLifecycle() {
+	const ruleID = "zephyr-tmp-preview-cleanup"
+	result, err := c.client.GetBucketLifecycle(c.ctx(), &oss.GetBucketLifecycleRequest{
+		Bucket: oss.Ptr(c.bucketName),
+	})
+	if err == nil && result.LifecycleConfiguration != nil {
+		for _, r := range result.LifecycleConfiguration.Rules {
+			if oss.ToString(r.ID) == ruleID {
+				return // already configured
+			}
+		}
+	}
+
+	rules := []oss.LifecycleRule{{
+		ID:     oss.Ptr(ruleID),
+		Prefix: oss.Ptr("_tmp/preview/"),
+		Status: oss.Ptr("Enabled"),
+		Expiration: &oss.LifecycleRuleExpiration{
+			Days: oss.Ptr(int32(1)),
+		},
+	}}
+	// Preserve existing rules
+	if err == nil && result.LifecycleConfiguration != nil {
+		rules = append(result.LifecycleConfiguration.Rules, rules...)
+	}
+
+	_, err = c.client.PutBucketLifecycle(c.ctx(), &oss.PutBucketLifecycleRequest{
+		Bucket: oss.Ptr(c.bucketName),
+		LifecycleConfiguration: &oss.LifecycleConfiguration{Rules: rules},
+	})
+	if err != nil {
+		log.Printf("[WARN] failed to set _tmp/preview/ lifecycle rule: %v", err)
+	}
 }
 
 // ListObjects lists objects under a prefix (simulating directory listing)
