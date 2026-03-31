@@ -20,7 +20,6 @@ func (h *Handler) wsSessionOpen(conn *ws.Conn, _ string, data json.RawMessage) (
 		conn.UserID,
 		conn.Username,
 		conn.ID,
-		conn.Session.Permissions,
 		req.Cwd,
 		encKey,
 	)

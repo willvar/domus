@@ -61,6 +61,13 @@ func (h *Handler) handleRestoreTrash(c *fiber.Ctx) error {
 	}
 
 	_ = model.DeleteTrashRecord(item.ID)
+
+	// Notify WebSocket subscribers of the restored file's parent directory
+	if parent := parentDirOf(originalResolved); parent != "" {
+		appPath := toAppPath(parent, session.Username)
+		h.Hub.PushDirChanged(parent, appPath, "refresh")
+	}
+
 	return c.JSON(fiber.Map{"ok": true})
 }
 

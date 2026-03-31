@@ -11,6 +11,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
+	"encoding/hex"
+
 	"zephyr/config"
 	"zephyr/internal/auth"
 	"zephyr/internal/middleware"
@@ -20,7 +22,7 @@ import (
 
 func TestLogin_Success(t *testing.T) {
 	app, _ := setupTestApp(t)
-	_, _ = model.CreateUser("testuser", "testpass", "root", model.PermAll)
+	_, _ = model.CreateUser("testuser", "testpass", "root", "")
 
 	verifyBody := `{"username":"testuser","password":"testpass"}`
 	req := httptest.NewRequest("POST", "/auth/verify", strings.NewReader(verifyBody))
@@ -68,7 +70,7 @@ func TestLogin_Success(t *testing.T) {
 
 func TestLogin_BadPassword(t *testing.T) {
 	app, _ := setupTestApp(t)
-	_, _ = model.CreateUser("testuser", "testpass", "root", model.PermAll)
+	_, _ = model.CreateUser("testuser", "testpass", "root", "")
 
 	body := `{"username":"testuser","password":"wrongpass"}`
 	req := httptest.NewRequest("POST", "/auth/verify", strings.NewReader(body))
@@ -203,9 +205,13 @@ func TestHandleGetContent(t *testing.T) {
 	_ = loginAs("root", "pass")
 
 	adminUser, _ := model.GetUserByUsername("root")
-	key, err := auth.DeriveKey("0000000000000000000000000000000000000000000000000000000000000000", adminUser.ID)
+	// Load the user's KEK from their wrapped_kek in DB
+	serverKey, _ := auth.ServerKeyFromSecret("0000000000000000000000000000000000000000000000000000000000000000")
+	wrappedHex, _ := model.GetUserWrappedKEK(adminUser.ID)
+	wrappedBytes, _ := hex.DecodeString(wrappedHex)
+	key, err := auth.UnwrapKEK(serverKey, wrappedBytes)
 	if err != nil {
-		t.Fatalf("derive key: %v", err)
+		t.Fatalf("unwrap KEK: %v", err)
 	}
 	encrypted, err := auth.EncryptBytes(key, []byte("hello world!"))
 	if err != nil {
@@ -228,6 +234,14 @@ func TestHandleGetContent(t *testing.T) {
 	}
 
 	sessions := model.NewSessionStore(testDB)
+	sessions.PopulateKEK = func(s *model.Session) {
+		wh, err := model.GetUserWrappedKEK(s.UserID)
+		if err != nil || wh == "" {
+			return
+		}
+		wb, _ := hex.DecodeString(wh)
+		s.KEK, _ = auth.UnwrapKEK(serverKey, wb)
+	}
 	challenges := auth.NewChallengeManager()
 	auditWorker := model.NewAuditWorker(testDB)
 	auditWorker.Start()
@@ -250,9 +264,9 @@ func TestHandleGetContent(t *testing.T) {
 	app2 := fiber.New()
 	h.RegisterRoutes(app2)
 
-	user2, _ := model.CreateUser("admin2", "pass", "root", model.PermAll)
+	user2, _ := model.CreateUser("admin2", "pass", "root", "")
 	_ = user2
-	sessionID, _ := sessions.Create(adminUser.ID, "root", "root", model.PermAll)
+	sessionID, _ := sessions.Create(adminUser.ID, "root", "root")
 	cookie2 := auth.SignCookie(sessionID, cfg.Server.SessionSecret)
 
 	req := httptest.NewRequest("GET", "/content?path=admin/test.txt", nil)
@@ -270,43 +284,79 @@ func TestHandleGetContent(t *testing.T) {
 	}
 }
 
-func TestParseRange(t *testing.T) {
-	tests := []struct {
-		header    string
-		total     int64
-		wantStart int64
-		wantEnd   int64
-		wantErr   bool
-	}{
-		{"bytes=0-499", 1000, 0, 499, false},
-		{"bytes=500-", 1000, 500, 999, false},
-		{"bytes=-100", 1000, 900, 999, false},
-		{"bytes=0-0", 1000, 0, 0, false},
-		{"bytes=999-999", 1000, 999, 999, false},
-		{"bytes=0-9999", 1000, 0, 999, false},
-		{"bytes=-2000", 1000, 0, 999, false},
-		{"bytes=1000-2000", 1000, 0, 0, true},
-		{"bytes=500-100", 1000, 0, 0, true},
-		{"bytes=abc-def", 1000, 0, 0, true},
-		{"bytes=0-100, 200-300", 1000, 0, 0, true},
-		{"invalid", 1000, 0, 0, true},
+// TestParseRange removed — parseRange was deleted as part of the SW decryption migration.
+// Range parsing is now handled in the frontend Service Worker (sw.js).
+
+func TestHandleMeExcludesEncryptionKey(t *testing.T) {
+	app, loginAs := setupTestApp(t)
+	cookie := loginAs("root", "pass")
+
+	req := httptest.NewRequest("GET", "/user/", nil)
+	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
+
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	for _, tt := range tests {
-		start, end, err := parseRange(tt.header, tt.total)
-		if tt.wantErr {
-			if err == nil {
-				t.Errorf("parseRange(%q, %d): expected error", tt.header, tt.total)
-			}
-			continue
-		}
-		if err != nil {
-			t.Errorf("parseRange(%q, %d): unexpected error: %v", tt.header, tt.total, err)
-			continue
-		}
-		if start != tt.wantStart || end != tt.wantEnd {
-			t.Errorf("parseRange(%q, %d) = (%d, %d), want (%d, %d)", tt.header, tt.total, start, end, tt.wantStart, tt.wantEnd)
-		}
+	var result map[string]interface{}
+	_ = json.NewDecoder(resp.Body).Decode(&result)
+
+	// KEK must NOT be returned to the frontend
+	if _, exists := result["encryption_key"]; exists {
+		t.Fatal("encryption_key must not be present in /user/ response")
+	}
+}
+
+func TestHandleFileAccessReturnsDEK(t *testing.T) {
+	app, loginAs := setupTestApp(t)
+	cookie := loginAs("root", "pass")
+
+	user, _ := model.GetUserByUsername("root")
+
+	// Derive the user's KEK and generate a wrapped DEK for the test file
+	serverKey, _ := auth.ServerKeyFromSecret("0000000000000000000000000000000000000000000000000000000000000000")
+	wrappedKEKBytes, _ := hex.DecodeString(user.WrappedKEK)
+	kek, _ := auth.UnwrapKEK(serverKey, wrappedKEKBytes)
+	dek, _ := auth.GenerateDEK()
+	wrappedDEK, _ := auth.WrapDEK(kek, dek)
+
+	ossPath := user.Username + "/home/root/test.txt"
+	_ = model.UpsertFile(user.ID, ossPath, "test.txt", false, 100, "text/plain", "abc123",
+		model.UpsertFileOpts{WrappedDEK: hex.EncodeToString(wrappedDEK)})
+
+	req := httptest.NewRequest("GET", "/file/access?path=/home/root/test.txt", nil)
+	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
+
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != 200 {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("expected 200, got %d: %s", resp.StatusCode, body)
+	}
+
+	var result map[string]interface{}
+	_ = json.NewDecoder(resp.Body).Decode(&result)
+
+	if _, exists := result["wrapped_dek"]; exists {
+		t.Fatal("response must not contain wrapped_dek")
+	}
+	dekHex, ok := result["dek"].(string)
+	if !ok || dekHex == "" {
+		t.Fatal("response missing dek field")
+	}
+	if len(dekHex) != 64 {
+		t.Fatalf("expected dek to be 64 hex chars, got %d", len(dekHex))
+	}
+
+	returnedDEK, _ := hex.DecodeString(dekHex)
+	if !bytes.Equal(returnedDEK, dek) {
+		t.Fatal("returned DEK does not match original")
 	}
 }
 

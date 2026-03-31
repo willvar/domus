@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -64,6 +65,15 @@ func setupTestApp(t *testing.T) (*fiber.App, func(username, password string) str
 	}
 
 	sessions := model.NewSessionStore(testDB)
+	serverKey, _ := auth.ServerKeyFromSecret(cfg.Server.EncryptionSecret)
+	sessions.PopulateKEK = func(s *model.Session) {
+		wrappedHex, err := model.GetUserWrappedKEK(s.UserID)
+		if err != nil || wrappedHex == "" {
+			return
+		}
+		wrappedBytes, _ := hex.DecodeString(wrappedHex)
+		s.KEK, _ = auth.UnwrapKEK(serverKey, wrappedBytes)
+	}
 	challenges := auth.NewChallengeManager()
 	audit := model.NewAuditWorker(testDB)
 	audit.Start()
@@ -91,9 +101,11 @@ func setupTestApp(t *testing.T) (*fiber.App, func(username, password string) str
 		t.Helper()
 		user, err := model.GetUserByUsername(username)
 		if err != nil {
-			user, _ = model.CreateUser(username, password, "root", model.PermAll)
+			kek, _ := auth.GenerateKEK()
+			wrapped, _ := auth.WrapKEK(serverKey, kek)
+			user, _ = model.CreateUser(username, password, "root", hex.EncodeToString(wrapped))
 		}
-		sessionID, err := sessions.Create(user.ID, username, "root", model.PermAll)
+		sessionID, err := sessions.Create(user.ID, username, "root")
 		if err != nil {
 			t.Fatalf("failed to create session: %v", err)
 		}
