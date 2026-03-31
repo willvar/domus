@@ -10,6 +10,7 @@ import { showPrompt, showConfirm } from '../composables/useNativeDialog'
 import { usePendingOpsStore } from './pendingOps'
 import { usePreferences } from '../composables/usePreferences'
 import { useWorkspaceSync } from '../composables/useWorkspaceSync'
+import { useServiceWorker } from '../composables/useServiceWorker'
 
 const TEXT_CHUNK_SIZE = 256 * 1024 // 256KB — aligns with 4 encryption chunks
 const NON_CHUNKABLE_TYPES = new Set(['notebook', 'archive'])
@@ -30,15 +31,13 @@ function nextTabId() {
   return 'tab-' + (++tabIdCounter)
 }
 
-async function fetchTextChunk(path, byteStart, totalSize) {
+async function fetchTextChunk(decryptUrl, byteStart, totalSize) {
   const byteEnd = Math.min(byteStart + TEXT_CHUNK_SIZE - 1, totalSize - 1)
-  const res = await api.get('/file/content/raw', {
-    params: { path },
+  const res = await fetch(decryptUrl, {
     headers: { Range: `bytes=${byteStart}-${byteEnd}` },
-    responseType: 'arraybuffer',
   })
 
-  const buffer = new Uint8Array(res.data)
+  const buffer = new Uint8Array(await res.arrayBuffer())
   const text = new TextDecoder('utf-8').decode(buffer)
   const isLast = byteEnd >= totalSize - 1
 
@@ -487,7 +486,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   function cutSelected() {
-    if (!auth.canEdit) return
     clipboard.value = {
       items: buildClipboardItems(),
       mode: 'cut',
@@ -495,7 +493,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   async function paste() {
-    if (!auth.canEdit) return
     if (clipboard.value.items.length === 0) return
     const mode = clipboard.value.mode
     const action = mode === 'copy' ? 'file.copy' : 'file.move'
@@ -522,7 +519,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   // File operations
   async function createFolder() {
-    if (!auth.canUpload) return
     const name = await showPrompt(t('dialog.new_folder_name'))
     if (!name) return
 
@@ -535,7 +531,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   function startRename() {
-    if (!auth.canEdit) return
     if (selectedFiles.value.length !== 1) return
     renamingFile.value = selectedFiles.value[0]
   }
@@ -545,7 +540,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   async function rename(oldPath, newName, isDir) {
-    if (!auth.canEdit) return
     const parts = oldPath.replace(/\/$/, '').split('/')
     parts[parts.length - 1] = newName
     const newPath = parts.join('/') + (isDir ? '/' : '')
@@ -565,7 +559,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   async function deleteSelected() {
-    if (!auth.canDelete) return
     if (selectedFiles.value.length === 0) return
     const count = selectedFiles.value.length
 
@@ -815,12 +808,13 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       }
     } else if (blobTypes.includes(type)) {
       try {
-        const res = await api.get('/file/content/raw', {
-          params: { path: file.path },
-          responseType: 'blob',
+        const sw = useServiceWorker()
+        const res = await api.get('/file/access', { params: { path: file.path } })
+        const { url, size, name, content_type, chunk_size, dek } = res.data
+        state.url = sw.registerDecrypt({
+          url, size, chunkSize: chunk_size, contentType: content_type, filename: name, dek,
         })
-        state.url = URL.createObjectURL(res.data)
-        state.blob = res.data
+        state._decryptUrl = state.url
       } catch {
         state.url = ''
       }
@@ -829,23 +823,36 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       state.totalSize = file.size || 0
       state.baseSize = file.size || 0
 
+      // Register SW decrypt URL for text files
+      let decryptUrl = ''
+      try {
+        const sw = useServiceWorker()
+        const accessRes = await api.get('/file/access', { params: { path: file.path } })
+        const { url, size, name, content_type, chunk_size, dek } = accessRes.data
+        decryptUrl = sw.registerDecrypt({
+          url, size, chunkSize: chunk_size, contentType: content_type, filename: name, dek,
+        })
+        state._decryptUrl = decryptUrl
+      } catch {
+        state.content = ''
+        return
+      }
+
       if (type === 'notebook') {
         // Notebook: JSON needs full parse
         state.chunked = false
         try {
-          const res = await api.get('/file/content/raw', {
-            params: { path: file.path },
-            responseType: 'text',
-          })
-          state.content = res.data
-          state.baseSize = new TextEncoder().encode(res.data).length
+          const res = await fetch(decryptUrl)
+          const text = await res.text()
+          state.content = text
+          state.baseSize = new TextEncoder().encode(text).length
           state.totalSize = state.baseSize
         } catch {
           state.content = ''
           state.baseSize = 0
         }
       } else {
-        // Range-based chunked loading
+        // Range-based chunked loading via SW
         state.chunked = true
         state.page = 0
         state.pageByteStart = 0
@@ -854,7 +861,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         state.totalPages = Math.max(1, Math.ceil((file.size || 1) / TEXT_CHUNK_SIZE))
         state.isFullyLoaded = false
         try {
-          const result = await fetchTextChunk(file.path, 0, state.totalSize)
+          const result = await fetchTextChunk(decryptUrl, 0, state.totalSize)
           state.content = result.text
           state.pageByteEnd = result.byteLength
           state.isFullyLoaded = result.nextByteStart >= state.totalSize
@@ -872,7 +879,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   async function saveViewer(windowId) {
-    if (!auth.canEdit) return
     const state = findApp(windowId)
     if (!state || state.saving) return
     state.saving = true
@@ -908,6 +914,10 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       if (state.url && state.url.startsWith('blob:')) {
         URL.revokeObjectURL(state.url)
       }
+      // Unregister SW decrypt mapping
+      if (state._decryptUrl) {
+        useServiceWorker().unregisterDecrypt(state._decryptUrl)
+      }
     }
     wm.closeWindow(windowId, { remote })
     const idx = appWindows.value.findIndex(p => p.windowId === windowId)
@@ -916,8 +926,21 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   async function downloadFile(path) {
     try {
-      const res = await api.get('/file/download', { params: { path } })
-      window.open((API_BASE) + res.data.url, '_blank')
+      const sw = useServiceWorker()
+      const res = await api.get('/file/access', { params: { path } })
+      const { url, size, name, content_type, chunk_size, dek } = res.data
+      const decryptUrl = sw.registerDecrypt({
+        url, size, chunkSize: chunk_size, contentType: content_type,
+        filename: name, dek, download: true,
+      })
+      const a = document.createElement('a')
+      a.href = decryptUrl
+      a.download = name
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      // Clean up after browser starts the download
+      setTimeout(() => sw.unregisterDecrypt(decryptUrl), 60000)
     } catch (e) {
       console.error('Download failed:', e)
     }
@@ -1039,7 +1062,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const entry = state.pageMap[nextIdx]
     if (!entry || entry.byteStart >= state.totalSize) return
     try {
-      const result = await fetchTextChunk(state.file.path, entry.byteStart, state.totalSize)
+      const result = await fetchTextChunk(state._decryptUrl, entry.byteStart, state.totalSize)
       state.content = result.text
       state.page = nextIdx
       state.pageByteStart = entry.byteStart
@@ -1060,7 +1083,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const entry = state.pageMap[prevIdx]
     if (!entry) return
     try {
-      const result = await fetchTextChunk(state.file.path, entry.byteStart, state.totalSize)
+      const result = await fetchTextChunk(state._decryptUrl, entry.byteStart, state.totalSize)
       state.content = result.text
       state.page = prevIdx
       state.pageByteStart = entry.byteStart
