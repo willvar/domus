@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -155,12 +156,27 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 		return fmt.Errorf("download: %w", err)
 	}
 
-	key, err := auth.DeriveKey(h.Config.Server.EncryptionSecret, job.UserID)
+	kek, err := h.loadUserKEK(job.UserID)
 	if err != nil {
-		return fmt.Errorf("derive key: %w", err)
+		return fmt.Errorf("load user KEK: %w", err)
 	}
+
+	// Unwrap source file's DEK
+	srcRecord, err := model.GetFile(job.UserID, params.SourceKey)
+	if err != nil {
+		return fmt.Errorf("get source file record: %w", err)
+	}
+	srcWrapped, err := hex.DecodeString(srcRecord.WrappedDEK)
+	if err != nil {
+		return fmt.Errorf("decode source wrapped DEK: %w", err)
+	}
+	srcDEK, err := auth.UnwrapDEK(kek, srcWrapped)
+	if err != nil {
+		return fmt.Errorf("unwrap source DEK: %w", err)
+	}
+
 	decPath := inputPath + ".dec"
-	if err := auth.DecryptFile(key, inputPath, decPath); err != nil {
+	if err := auth.DecryptFile(srcDEK, inputPath, decPath); err != nil {
 		return fmt.Errorf("decrypt source: %w", err)
 	}
 	_ = os.Remove(inputPath)
@@ -209,9 +225,13 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 		outputSize = stat.Size()
 	}
 
-	// Encrypt output and upload
+	// Generate new DEK for the output file, encrypt and upload
+	outDEK, err := auth.GenerateDEK()
+	if err != nil {
+		return fmt.Errorf("generate output DEK: %w", err)
+	}
 	encPath := outputPath + ".enc"
-	if err := auth.EncryptFile(key, outputPath, encPath); err != nil {
+	if err := auth.EncryptFile(outDEK, outputPath, encPath); err != nil {
 		return fmt.Errorf("encrypt output: %w", err)
 	}
 	if err := h.Store.UploadFromFile(params.TargetKey, encPath); err != nil {
@@ -220,9 +240,14 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 	}
 	_ = os.Remove(encPath)
 
-	// Update file record
+	// Wrap output DEK and update file record
+	wrappedOut, err := auth.WrapDEK(kek, outDEK)
+	if err != nil {
+		return fmt.Errorf("wrap output DEK: %w", err)
+	}
 	ct := mime.TypeByExtension(outputExt)
-	_ = model.UpsertFile(job.UserID, params.TargetKey, params.OutputName, false, outputSize, ct, "")
+	_ = model.UpsertFile(job.UserID, params.TargetKey, params.OutputName, false, outputSize, ct, "",
+		model.UpsertFileOpts{WrappedDEK: hex.EncodeToString(wrappedOut)})
 
 	// If replacing with different extension, delete old file record and OSS object
 	if params.Replace && params.TargetKey != params.SourceKey {
