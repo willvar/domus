@@ -223,7 +223,7 @@ onMounted(loadUsers)
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .admin-view {
   max-width: 1000px;
   margin: 0 auto;
@@ -231,18 +231,21 @@ onMounted(loadUsers)
   min-height: 100vh;
   background: var(--breeze-bg);
 }
+
 .admin-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   margin-bottom: 20px;
+
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    margin: 0;
+    color: var(--breeze-text);
+  }
 }
-.admin-header h1 {
-  font-size: 22px;
-  font-weight: 600;
-  margin: 0;
-  color: var(--breeze-text);
-}
+
 :deep(.action-buttons) {
   display: flex;
   gap: 4px;

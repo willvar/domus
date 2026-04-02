@@ -82,7 +82,7 @@ defineExpose({
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-input {
   display: flex;
   align-items: center;
@@ -91,50 +91,66 @@ defineExpose({
   border-radius: 3px;
   transition: border-color var(--transition-fast);
   width: 100%;
-}
-.breeze-input:focus-within {
-  border-color: var(--breeze-accent);
-}
-.breeze-input--disabled {
-  opacity: 0.55;
-}
-.breeze-input__inner {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  background: transparent;
-  color: var(--breeze-text);
-  font-family: inherit;
-  outline: none;
-  caret-color: var(--breeze-accent);
-  padding: 0 8px;
-  width: 100%;
-}
-.breeze-input__inner::placeholder {
-  color: var(--breeze-text-disabled);
-}
-/* Sizes */
-.breeze-input--medium { height: 32px; }
-.breeze-input--medium .breeze-input__inner { font-size: 14px; }
-.breeze-input--small { height: 28px; }
-.breeze-input--small .breeze-input__inner { font-size: 13px; }
-.breeze-input--tiny { height: 22px; }
-.breeze-input--tiny .breeze-input__inner { font-size: 12px; }
-/* Password eye */
-.breeze-input__eye {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 100%;
-  border: none;
-  background: none;
-  color: var(--breeze-text-secondary);
-  cursor: pointer;
-  flex-shrink: 0;
-  padding: 0;
-}
-.breeze-input__eye:hover {
-  color: var(--breeze-text);
+
+  &:focus-within {
+    border-color: var(--breeze-accent);
+  }
+
+  &--disabled {
+    opacity: 0.55;
+  }
+
+  &__inner {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    background: transparent;
+    color: var(--breeze-text);
+    font-family: inherit;
+    outline: none;
+    caret-color: var(--breeze-accent);
+    padding: 0 8px;
+    width: 100%;
+
+    &::placeholder {
+      color: var(--breeze-text-disabled);
+    }
+  }
+
+  // Sizes
+  &--medium {
+    height: 32px;
+
+    .breeze-input__inner { font-size: 14px; }
+  }
+
+  &--small {
+    height: 28px;
+
+    .breeze-input__inner { font-size: 13px; }
+  }
+
+  &--tiny {
+    height: 22px;
+
+    .breeze-input__inner { font-size: 12px; }
+  }
+
+  // Password eye
+  &__eye {
+    @include inline-flex-center;
+    width: 28px;
+    height: 100%;
+    border: none;
+    background: none;
+    color: var(--breeze-text-secondary);
+    cursor: pointer;
+    flex-shrink: 0;
+    padding: 0;
+
+    &:hover {
+      color: var(--breeze-text);
+    }
+  }
 }
 </style>

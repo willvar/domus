@@ -4,7 +4,7 @@ import BDrawer from '../breeze/BDrawer.vue'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useAuthStore } from '../../stores/auth'
 import { useI18n } from '../../composables/useI18n'
-import { useContextMenuState, closeContextMenu } from '../../composables/useContextMenu'
+import { useContextMenuState, closeContextMenu, suppressNextContextMenu } from '../../composables/useContextMenu'
 
 const fs = useFileSystemStore()
 const auth = useAuthStore()
@@ -112,6 +112,7 @@ watch(show, async (val) => {
 // Click outside / scroll / resize to close
 function onClickOutside(e) {
   if (menuRef.value && !menuRef.value.contains(e.target)) {
+    if (e.button === 2) suppressNextContextMenu()
     closeContextMenu()
   }
 }
@@ -229,93 +230,44 @@ function handleSelect(key) {
   </BDrawer>
 </template>
 
-<style scoped>
-/* ─── Plasma / Breeze Dark context menu ─── */
-.plasma-context-menu {
-  position: fixed;
-  z-index: 10000;
-  min-width: 160px;
-  padding: 4px 0;
-  background: var(--breeze-surface-raised, #31363b);
-  border: 1px solid var(--breeze-border, #3b4045);
-  border-radius: 4px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-}
+<style lang="scss" scoped>
+@include ctx-menu-transition;
 
-.ctx-item {
-  display: block;
-  width: 100%;
-  padding: 5px 16px;
-  margin: 0;
-  border: none;
-  background: none;
-  color: var(--breeze-text, #fcfcfc);
-  font-size: 14px;
-  line-height: 22px;
-  text-align: left;
-  cursor: default;
-  border-radius: 0;
-}
-.ctx-item:hover {
-  background: var(--breeze-accent, #3daee9);
-  color: #fff;
-}
-.ctx-item.danger:hover {
-  background: var(--breeze-danger, #da4453);
-}
-
-.ctx-divider {
-  height: 1px;
-  margin: 4px 8px;
-  background: var(--breeze-border, #3b4045);
-}
-
-/* ─── Transition ─── */
-.ctx-menu-enter-active {
-  transition: opacity 0.12s ease, transform 0.12s ease;
-}
-.ctx-menu-leave-active {
-  transition: opacity 0.08s ease;
-}
-.ctx-menu-enter-from {
-  opacity: 0;
-  transform: scale(0.96);
-}
-.ctx-menu-leave-to {
-  opacity: 0;
-}
-
-/* ─── Mobile action sheet ─── */
 .action-sheet {
   display: flex;
   flex-direction: column;
   padding: 8px 0;
   padding-bottom: calc(8px + env(safe-area-inset-bottom));
-}
-.action-sheet-item {
-  display: flex;
-  align-items: center;
-  min-height: 48px;
-  padding: 12px 20px;
-  border: none;
-  background: none;
-  color: var(--breeze-text);
-  font-size: 16px;
-  text-align: left;
-}
-.action-sheet-item:active {
-  background: var(--toolbar-button-active);
-}
-.action-sheet-item.danger {
-  color: var(--breeze-danger);
-}
-.action-sheet-item.cancel {
-  color: var(--breeze-text-secondary);
-  text-align: center;
-  justify-content: center;
-}
-.action-sheet-gap {
-  height: 8px;
-  background: rgba(0,0,0,0.2);
+
+  &-item {
+    display: flex;
+    align-items: center;
+    min-height: 48px;
+    padding: 12px 20px;
+    border: none;
+    background: none;
+    color: var(--breeze-text);
+    font-size: 16px;
+    text-align: left;
+
+    &:active {
+      background: var(--toolbar-button-active);
+    }
+
+    &.danger {
+      color: var(--breeze-danger);
+    }
+
+    &.cancel {
+      color: var(--breeze-text-secondary);
+      text-align: center;
+      justify-content: center;
+    }
+  }
+
+  &-gap {
+    height: 8px;
+    background: rgba(0, 0, 0, 0.2);
+  }
 }
 </style>

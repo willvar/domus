@@ -133,7 +133,7 @@ function stopTermResize() {
   </PlasmaWindow>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .files-main-content {
   display: flex;
   flex: 1;
@@ -157,9 +157,10 @@ function stopTermResize() {
   flex-shrink: 0;
   background: var(--breeze-border);
   transition: background 0.15s;
-}
-.terminal-resize-handle:hover {
-  background: var(--breeze-accent);
+
+  &:hover {
+    background: var(--breeze-accent);
+  }
 }
 
 .sidebar-toggle {
@@ -167,15 +168,17 @@ function stopTermResize() {
   position: absolute;
   left: 4px;
   top: 4px;
-  z-index: 50;
+  z-index: $z-overlay;
+
+  @include mobile {
+    display: block;
+  }
 }
 
-@media (max-width: 1023px) {
-  .info-panel-desktop { display: none; }
-}
-
-@media (max-width: 767px) {
-  .sidebar-toggle { display: block; }
+.info-panel-desktop {
+  @media (max-width: 1023px) {
+    display: none;
+  }
 }
 
 .info-panel-mobile {
@@ -183,10 +186,13 @@ function stopTermResize() {
   overflow-y: auto;
 }
 
-.slide-left-enter-active, .slide-left-leave-active {
+.slide-left-enter-active,
+.slide-left-leave-active {
   transition: transform 0.2s ease;
 }
-.slide-left-enter-from, .slide-left-leave-to {
+
+.slide-left-enter-from,
+.slide-left-leave-to {
   transform: translateX(-100%);
 }
 </style>

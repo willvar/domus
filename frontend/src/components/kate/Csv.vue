@@ -167,44 +167,112 @@ onUnmounted(() => cm.destroy())
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .viewer-toolbar {
-  display: flex; align-items: center; height: 32px; padding: 0 8px;
-  background: var(--breeze-bg-alt); border-bottom: 1px solid var(--breeze-border); gap: 6px; flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--breeze-bg-alt);
+  border-bottom: 1px solid var(--breeze-border);
+  gap: 6px;
+  flex-shrink: 0;
 }
+
 .viewer-mode-group {
-  display: flex; align-items: center; gap: 4px; margin-right: 8px; padding-right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+  padding-right: 8px;
   border-right: 1px solid var(--breeze-border);
 }
-.viewer-btn { background: none; border: none; color: #bbb; padding: 4px 8px; border-radius: 4px; display: flex; align-items: center; gap: 4px; font-size: 12px; }
-.viewer-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
-.viewer-btn:disabled { opacity: 0.4; }
-.viewer-btn.edit-btn { color: #8cb4ff; }
-@media (max-width: 767px) { .viewer-toolbar { height: 44px; } .viewer-btn { min-height: 44px; padding: 8px 12px; font-size: 14px; } }
-.viewer-btn.save-btn { color: #5cb85c; }
-.viewer-btn.mode-btn.active { background: rgba(61,174,233,0.18); color: #7cc7ff; }
+
+.viewer-btn {
+  background: none;
+  border: none;
+  color: #bbb;
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+
+  &:hover { background: $hover-white-strong; color: #fff; }
+  &:disabled { opacity: 0.4; }
+  &.edit-btn { color: #8cb4ff; }
+  &.save-btn { color: #5cb85c; }
+  &.mode-btn.active { background: rgba(61, 174, 233, 0.18); color: #7cc7ff; }
+}
+
 .toolbar-sep { width: 1px; height: 16px; background: var(--breeze-border); margin: 0 4px; flex-shrink: 0; }
 .page-indicator { font-size: 12px; color: #999; white-space: nowrap; padding: 0 4px; }
 
-.viewer-body { flex: 1; display: flex; min-height: 0; overflow: hidden; background: var(--breeze-bg); }
-.viewer-cm-wrap { width: 100%; height: 100%; overflow: hidden; }
-.viewer-cm-wrap :deep(.cm-editor) { height: 100%; }
-.viewer-cm-wrap :deep(.cm-editor.cm-focused) { outline: none; }
+.viewer-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--breeze-bg);
+}
+
+.viewer-cm-wrap {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+
+  :deep(.cm-editor) {
+    height: 100%;
+
+    &.cm-focused { outline: none; }
+  }
+}
 
 .csv-table-wrap { width: 100%; height: 100%; overflow: auto; }
-.csv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.csv-table th {
-  text-align: left; padding: 6px 12px; color: #aaa; font-weight: 600; font-size: 12px;
-  border-bottom: 1px solid var(--breeze-border); position: sticky; top: 0;
-  background: var(--breeze-bg-alt); cursor: pointer; white-space: nowrap; user-select: none;
+
+.csv-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+
+  th {
+    text-align: left;
+    padding: 6px 12px;
+    color: #aaa;
+    font-weight: 600;
+    font-size: 12px;
+    border-bottom: 1px solid var(--breeze-border);
+    position: sticky;
+    top: 0;
+    background: var(--breeze-bg-alt);
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+
+    &:hover { color: #fff; }
+  }
+
+  td {
+    padding: 4px 12px;
+    color: #ccc;
+    border-bottom: 1px solid $hover-white-subtle;
+    white-space: nowrap;
+    max-width: 300px;
+    @include truncate;
+  }
+
+  tbody tr {
+    &:hover td { background: rgba(255, 255, 255, 0.03); }
+    &:nth-child(even) td { background: rgba(255, 255, 255, 0.015); }
+    &:nth-child(even):hover td { background: $hover-white-subtle; }
+  }
 }
-.csv-table th:hover { color: #fff; }
+
 .sort-arrow { margin-left: 4px; font-size: 10px; }
-.csv-table td {
-  padding: 4px 12px; color: #ccc; border-bottom: 1px solid rgba(255,255,255,0.04);
-  white-space: nowrap; max-width: 300px; overflow: hidden; text-overflow: ellipsis;
+
+@include mobile {
+  .viewer-toolbar { height: 44px; }
+  .viewer-btn { min-height: 44px; padding: 8px 12px; font-size: 14px; }
 }
-.csv-table tbody tr:hover td { background: rgba(255,255,255,0.03); }
-.csv-table tbody tr:nth-child(even) td { background: rgba(255,255,255,0.015); }
-.csv-table tbody tr:nth-child(even):hover td { background: rgba(255,255,255,0.04); }
 </style>

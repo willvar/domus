@@ -7,7 +7,24 @@ const y = ref(0)
 const targetFile = ref(null)
 const context = ref('dolphin') // 'dolphin' | 'desktop'
 
+// Shared flag: when any context menu is dismissed by right-click,
+// suppress the next context menu open (mimics desktop DE behavior).
+let _suppressNext = false
+
+export function suppressNextContextMenu() {
+  _suppressNext = true
+}
+
+export function consumeContextMenuSuppress() {
+  if (_suppressNext) {
+    _suppressNext = false
+    return true
+  }
+  return false
+}
+
 export function openContextMenu(event, file = null, ctx = 'dolphin') {
+  if (consumeContextMenuSuppress()) return
   const fs = useFileSystemStore()
   targetFile.value = file
   context.value = ctx

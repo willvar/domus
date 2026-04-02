@@ -19,27 +19,31 @@ const ctx = inject('bFormCtx', { labelPlacement: 'top', labelWidth: 'auto' })
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-form-item {
   margin-bottom: 12px;
-}
-.breeze-form-item__label {
-  display: block;
-  font-size: 13px;
-  color: var(--breeze-text-secondary);
-  margin-bottom: 4px;
-}
-.breeze-form-item--left {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.breeze-form-item--left .breeze-form-item__label {
-  margin-bottom: 0;
-  flex-shrink: 0;
-}
-.breeze-form-item__content {
-  flex: 1;
-  min-width: 0;
+
+  &__label {
+    display: block;
+    font-size: 13px;
+    color: var(--breeze-text-secondary);
+    margin-bottom: 4px;
+  }
+
+  &--left {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+
+    .breeze-form-item__label {
+      margin-bottom: 0;
+      flex-shrink: 0;
+    }
+  }
+
+  &__content {
+    flex: 1;
+    min-width: 0;
+  }
 }
 </style>

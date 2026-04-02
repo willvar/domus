@@ -163,10 +163,11 @@ defineExpose({ open })
   </BModal>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .transcode-info {
   padding: 8px 0;
 }
+
 .file-name {
   color: #3daee9;
   font-weight: 500;

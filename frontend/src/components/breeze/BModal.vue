@@ -7,6 +7,7 @@ const props = defineProps({
   preset: { type: String, default: '' },
   title: { type: String, default: '' },
   positiveText: { type: String, default: '' },
+  positiveType: { type: String, default: 'primary' },
   negativeText: { type: String, default: '' },
 })
 
@@ -55,7 +56,7 @@ watch(() => props.show, (v) => {
             <slot name="action">
               <div style="display:flex;justify-content:flex-end;gap:8px">
                 <BButton v-if="negativeText" @click="onNegative">{{ negativeText }}</BButton>
-                <BButton v-if="positiveText" type="primary" @click="onPositive">{{ positiveText }}</BButton>
+                <BButton v-if="positiveText" :type="positiveType" @click="onPositive">{{ positiveText }}</BButton>
               </div>
             </slot>
           </div>
@@ -68,16 +69,15 @@ watch(() => props.show, (v) => {
   </Teleport>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-modal-mask {
   position: fixed;
   inset: 0;
-  z-index: 5000;
+  z-index: $z-modal;
   background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @include flex-center;
 }
+
 .breeze-modal-dialog {
   background: var(--breeze-surface);
   border: 1px solid var(--breeze-border);
@@ -85,88 +85,107 @@ watch(() => props.show, (v) => {
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
   display: flex;
   flex-direction: column;
-}
-.breeze-modal-dialog__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--breeze-border);
-}
-.breeze-modal-dialog__title {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--breeze-text);
-}
-.breeze-modal-dialog__close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  border: none;
-  background: none;
-  color: var(--breeze-text-secondary);
-  border-radius: 3px;
-  cursor: pointer;
-  padding: 0;
-}
-.breeze-modal-dialog__close:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--breeze-text);
-}
-.breeze-modal-dialog__body {
-  padding: 16px;
-}
-.breeze-modal-dialog__footer {
-  padding: 12px 16px;
-  border-top: 1px solid var(--breeze-border);
-}
-.breeze-modal-bare {
-  /* bare modal: just centers content, no chrome */
-}
-/* Transitions */
-.breeze-modal-enter-active {
-  transition: opacity 0.2s ease;
-}
-.breeze-modal-enter-active .breeze-modal-dialog,
-.breeze-modal-enter-active .breeze-modal-bare {
-  transition: transform 0.2s ease, opacity 0.2s ease;
-}
-.breeze-modal-leave-active {
-  transition: opacity 0.15s ease;
-}
-.breeze-modal-leave-active .breeze-modal-dialog,
-.breeze-modal-leave-active .breeze-modal-bare {
-  transition: transform 0.15s ease, opacity 0.15s ease;
-}
-.breeze-modal-enter-from {
-  opacity: 0;
-}
-.breeze-modal-enter-from .breeze-modal-dialog,
-.breeze-modal-enter-from .breeze-modal-bare {
-  opacity: 0;
-  transform: scale(0.96);
-}
-.breeze-modal-leave-to {
-  opacity: 0;
-}
-.breeze-modal-leave-to .breeze-modal-dialog,
-.breeze-modal-leave-to .breeze-modal-bare {
-  opacity: 0;
-  transform: scale(0.96);
-}
 
-@media (max-width: 767px) {
-  .breeze-modal-dialog {
+  @include mobile {
     max-height: 90vh;
     overflow-y: auto;
   }
-  .breeze-modal-dialog__footer :deep(div) {
-    flex-direction: column;
+
+  &__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12px 16px;
+    border-bottom: 1px solid var(--breeze-border);
   }
-  .breeze-modal-dialog__footer :deep(button) {
-    width: 100%;
+
+  &__title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--breeze-text);
+  }
+
+  &__close {
+    @include inline-flex-center;
+    width: 24px;
+    height: 24px;
+    border: none;
+    background: none;
+    color: var(--breeze-text-secondary);
+    border-radius: 3px;
+    cursor: pointer;
+    padding: 0;
+
+    &:hover {
+      background: $hover-white-medium;
+      color: var(--breeze-text);
+    }
+  }
+
+  &__body {
+    padding: 16px;
+
+    &:not(:has(*)) {
+      display: none;
+    }
+  }
+
+  &__footer {
+    padding: 12px 16px;
+    border-top: 1px solid var(--breeze-border);
+
+    @include mobile {
+      :deep(div) {
+        flex-direction: column;
+      }
+
+      :deep(button) {
+        width: 100%;
+      }
+    }
+  }
+}
+
+.breeze-modal-bare {
+  /* bare modal: just centers content, no chrome */
+}
+
+/* Transitions */
+.breeze-modal-enter-active {
+  transition: opacity 0.2s ease;
+
+  .breeze-modal-dialog,
+  .breeze-modal-bare {
+    transition: transform 0.2s ease, opacity 0.2s ease;
+  }
+}
+
+.breeze-modal-leave-active {
+  transition: opacity 0.15s ease;
+
+  .breeze-modal-dialog,
+  .breeze-modal-bare {
+    transition: transform 0.15s ease, opacity 0.15s ease;
+  }
+}
+
+.breeze-modal-enter-from {
+  opacity: 0;
+
+  .breeze-modal-dialog,
+  .breeze-modal-bare {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+
+.breeze-modal-leave-to {
+  opacity: 0;
+
+  .breeze-modal-dialog,
+  .breeze-modal-bare {
+    opacity: 0;
+    transform: scale(0.96);
   }
 }
 </style>

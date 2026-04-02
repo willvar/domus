@@ -126,19 +126,22 @@ function download() {
 }
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
 .share-view {
   max-width: 960px;
   margin: 0 auto;
   padding: 24px;
   font-family: system-ui, sans-serif;
 }
+
 .share-loading, .share-error {
   text-align: center;
   padding: 48px;
   color: #666;
 }
+
 .share-error { color: #c00; }
+
 .share-header {
   display: flex;
   align-items: center;
@@ -146,16 +149,17 @@ function download() {
   margin-bottom: 16px;
   padding-bottom: 12px;
   border-bottom: 1px solid #e0e0e0;
+
+  h2 {
+    margin: 0;
+    font-size: 18px;
+    flex: 1;
+    @include truncate;
+  }
 }
-.share-header h2 {
-  margin: 0;
-  font-size: 18px;
-  flex: 1;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+
 .share-size { color: #888; font-size: 14px; }
+
 .share-download {
   padding: 6px 16px;
   background: #1a73e8;
@@ -164,11 +168,14 @@ function download() {
   border-radius: 4px;
   cursor: pointer;
   font-size: 14px;
+
+  &:hover { background: #1557b0; }
 }
-.share-download:hover { background: #1557b0; }
+
 .share-image { max-width: 100%; border-radius: 8px; }
 .share-video, .share-audio { width: 100%; }
 .share-iframe { width: 100%; height: 80vh; border: none; }
+
 .share-text {
   background: #f5f5f5;
   padding: 16px;
@@ -178,6 +185,7 @@ function download() {
   font-size: 13px;
   line-height: 1.5;
 }
+
 .share-fallback {
   text-align: center;
   padding: 48px;

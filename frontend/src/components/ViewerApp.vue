@@ -272,7 +272,7 @@ watch(() => state.value?.type === 'video' && state.value?.url, (ready) => {
   </PlasmaWindow>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .viewer-toolbar {
   display: flex;
   align-items: center;
@@ -303,23 +303,28 @@ watch(() => state.value?.type === 'video' && state.value?.url, (ready) => {
   align-items: center;
   gap: 4px;
   font-size: 12px;
-}
-.viewer-btn:hover {
-  background: rgba(255, 255, 255, 0.1);
-  color: #fff;
-}
-.viewer-btn:disabled {
-  opacity: 0.4;
-}
-.viewer-btn.edit-btn {
-  color: #8cb4ff;
-}
-.viewer-btn.save-btn {
-  color: #5cb85c;
-}
-.viewer-btn.mode-btn.active {
-  background: rgba(61, 174, 233, 0.18);
-  color: #7cc7ff;
+
+  &:hover {
+    background: $hover-white-strong;
+    color: #fff;
+  }
+
+  &:disabled {
+    opacity: 0.4;
+  }
+
+  &.edit-btn {
+    color: #8cb4ff;
+  }
+
+  &.save-btn {
+    color: #5cb85c;
+  }
+
+  &.mode-btn.active {
+    background: rgba(61, 174, 233, 0.18);
+    color: #7cc7ff;
+  }
 }
 
 .toolbar-sep { width: 1px; height: 16px; background: var(--breeze-border); margin: 0 4px; flex-shrink: 0; }
@@ -327,18 +332,16 @@ watch(() => state.value?.type === 'video' && state.value?.url, (ready) => {
 
 .viewer-body {
   flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @include flex-center;
   min-height: 0;
   overflow: auto;
   background: var(--breeze-bg);
-}
 
-.viewer-body.viewer-body-split {
-  align-items: stretch;
-  justify-content: stretch;
-  overflow: hidden;
+  &.viewer-body-split {
+    align-items: stretch;
+    justify-content: stretch;
+    overflow: hidden;
+  }
 }
 
 .viewer-image {
@@ -364,17 +367,20 @@ watch(() => state.value?.type === 'video' && state.value?.url, (ready) => {
   width: 100%;
   height: 100%;
   overflow: hidden;
+
+  :deep(.cm-editor) {
+    height: 100%;
+
+    &.cm-focused {
+      outline: none;
+    }
+  }
 }
+
 .viewer-pane {
   flex: 1 1 50%;
   min-width: 0;
   min-height: 0;
-}
-.viewer-cm-wrap :deep(.cm-editor) {
-  height: 100%;
-}
-.viewer-cm-wrap :deep(.cm-editor.cm-focused) {
-  outline: none;
 }
 
 .viewer-render-wrap {
@@ -390,7 +396,7 @@ watch(() => state.value?.type === 'video' && state.value?.url, (ready) => {
   background: #fff;
 }
 
-@media (max-width: 767px) {
+@include mobile {
   .viewer-toolbar { height: 44px; }
   .viewer-btn { min-height: 44px; padding: 8px 12px; font-size: 14px; }
 }

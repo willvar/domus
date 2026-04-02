@@ -50,12 +50,12 @@ const { panelRef, pinned, togglePin } = useTrayPanel(
   </Transition>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .tray-popup {
   position: fixed;
   bottom: 68px;
   right: 8px;
-  z-index: 1000;
+  z-index: $z-tray;
   background: #292c30;
   border: 1px solid #3b4045;
   border-radius: 8px;
@@ -63,84 +63,93 @@ const { panelRef, pinned, togglePin } = useTrayPanel(
   display: flex;
   flex-direction: column;
   overflow: hidden;
+
+  &__resize-top {
+    height: 4px;
+    cursor: ns-resize;
+    flex-shrink: 0;
+
+    &:hover { background: rgba(61, 174, 233, 0.3); }
+  }
+
+  &__resize-left {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    cursor: ew-resize;
+    z-index: 1;
+
+    &:hover { background: rgba(61, 174, 233, 0.3); }
+  }
+
+  &__header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    border-bottom: 1px solid #3b4045;
+    flex-shrink: 0;
+  }
+
+  &__title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #fcfcfc;
+  }
+
+  &__actions {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  &__pin {
+    @include inline-flex-center;
+    padding: 4px;
+    border: none;
+    border-radius: 3px;
+    background: none;
+    color: var(--breeze-text-secondary, #a1a9b1);
+    cursor: default;
+
+    &:hover {
+      background: $hover-white-medium;
+      color: var(--breeze-text, #fcfcfc);
+    }
+
+    &--active {
+      color: var(--breeze-accent, #3daee9);
+    }
+  }
+
+  &__body {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+  }
 }
-.tray-popup__resize-top {
-  height: 4px;
-  cursor: ns-resize;
-  flex-shrink: 0;
-}
-.tray-popup__resize-top:hover {
-  background: rgba(61, 174, 233, 0.3);
-}
-.tray-popup__resize-left {
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  cursor: ew-resize;
-  z-index: 1;
-}
-.tray-popup__resize-left:hover {
-  background: rgba(61, 174, 233, 0.3);
-}
-.tray-popup__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 10px 12px;
-  border-bottom: 1px solid #3b4045;
-  flex-shrink: 0;
-}
-.tray-popup__title {
-  font-size: 13px;
-  font-weight: 600;
-  color: #fcfcfc;
-}
-.tray-popup__actions {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-}
-.tray-popup__pin {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px;
-  border: none;
-  border-radius: 3px;
-  background: none;
-  color: var(--breeze-text-secondary, #a1a9b1);
-  cursor: default;
-}
-.tray-popup__pin:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--breeze-text, #fcfcfc);
-}
-.tray-popup__pin--active {
-  color: var(--breeze-accent, #3daee9);
-}
-.tray-popup__body {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-}
-@media (max-width: 767px) {
+
+@include mobile {
   .tray-popup {
     left: 8px;
     right: 8px;
     width: auto !important;
     bottom: 72px;
-  }
-  .tray-popup__resize-top,
-  .tray-popup__resize-left {
-    display: none;
+
+    &__resize-top,
+    &__resize-left {
+      display: none;
+    }
   }
 }
+
 .tray-popup-enter-active,
 .tray-popup-leave-active {
   transition: all 0.2s ease;
 }
+
 .tray-popup-enter-from,
 .tray-popup-leave-to {
   opacity: 0;

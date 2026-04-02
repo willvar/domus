@@ -35,17 +35,11 @@ function closeTab(id, fromExit = false) {
   const idx = tabs.value.findIndex(t => t.id === id)
   if (idx < 0) return
 
-  // Last tab: close button creates new tab, exit/ctrl+d closes the whole terminal
+  // Last tab: always exit the terminal
   if (tabs.value.length === 1) {
-    if (fromExit) {
-      tabs.value.splice(idx, 1)
-      delete terminalRefs.value[id]
-      emit('exit')
-    } else {
-      tabs.value.splice(idx, 1)
-      delete terminalRefs.value[id]
-      addTab()
-    }
+    tabs.value.splice(idx, 1)
+    delete terminalRefs.value[id]
+    emit('exit')
     return
   }
 
@@ -126,7 +120,7 @@ function handleMiddleClick(e, tab) {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .konsole-tabs-container {
   display: flex;
   flex-direction: column;
@@ -150,8 +144,9 @@ function handleMiddleClick(e, tab) {
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
+
+  &::-webkit-scrollbar { display: none; }
 }
-.konsole-tab-list::-webkit-scrollbar { display: none; }
 
 .konsole-tab {
   display: flex;
@@ -166,17 +161,19 @@ function handleMiddleClick(e, tab) {
   border-right: 1px solid #2a2d30;
   cursor: default;
   transition: background 0.12s;
-}
 
-.konsole-tab:hover {
-  background: rgba(255, 255, 255, 0.04);
-  color: #c8ccd0;
-}
+  &:hover {
+    background: $hover-white-subtle;
+    color: #c8ccd0;
 
-.konsole-tab.active {
-  background: #1b1e20;
-  color: #e0e0e0;
-  border-top: 2px solid var(--breeze-accent, #3daee9);
+    .konsole-tab-close { opacity: 1; }
+  }
+
+  &.active {
+    background: #1b1e20;
+    color: #e0e0e0;
+    border-top: 2px solid var(--breeze-accent, #3daee9);
+  }
 }
 
 .konsole-tab-icon {
@@ -192,9 +189,7 @@ function handleMiddleClick(e, tab) {
 }
 
 .konsole-tab-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  @include inline-flex-center;
   width: 16px;
   height: 16px;
   border: none;
@@ -205,29 +200,27 @@ function handleMiddleClick(e, tab) {
   flex-shrink: 0;
   opacity: 0;
   transition: opacity 0.12s, background 0.12s;
-}
 
-.konsole-tab:hover .konsole-tab-close { opacity: 1; }
-.konsole-tab-close:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: #e0e0e0;
-  opacity: 1;
+  &:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: #e0e0e0;
+    opacity: 1;
+  }
 }
 
 .konsole-tab-new {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  @include inline-flex-center;
   width: 28px;
   border: none;
   background: none;
   color: #8c9099;
   font-size: 18px;
   flex-shrink: 0;
-}
-.konsole-tab-new:hover {
-  background: rgba(255, 255, 255, 0.04);
-  color: #e0e0e0;
+
+  &:hover {
+    background: $hover-white-subtle;
+    color: #e0e0e0;
+  }
 }
 
 .konsole-tab-content {
@@ -241,14 +234,14 @@ function handleMiddleClick(e, tab) {
   inset: 0;
   visibility: hidden;
   pointer-events: none;
+
+  &.active {
+    visibility: visible;
+    pointer-events: auto;
+  }
 }
 
-.konsole-tab-pane.active {
-  visibility: visible;
-  pointer-events: auto;
-}
-
-@media (max-width: 767px) {
+@include mobile {
   .konsole-tab { padding: 0 6px; }
   .konsole-tab-close { opacity: 0.6; width: 20px; height: 20px; }
   .konsole-tab-new { width: 36px; }

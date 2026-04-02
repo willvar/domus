@@ -54,7 +54,7 @@ const selectionInfo = computed(() => {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .status-bar {
   display: flex;
   align-items: center;
@@ -66,26 +66,37 @@ const selectionInfo = computed(() => {
   font-size: var(--font-size-xs);
   color: var(--breeze-text-secondary);
   flex-shrink: 0;
+
+  &-left {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-sm);
+    @include truncate;
+    min-width: 0;
+  }
+
+  &-sep {
+    color: var(--breeze-border);
+  }
+
+  &-right {
+    display: flex;
+    align-items: center;
+    gap: var(--gap-sm);
+
+    @include mobile {
+      display: none;
+    }
+  }
 }
-.status-left {
-  display: flex;
-  align-items: center;
-  gap: var(--gap-sm);
-  overflow: hidden;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-  min-width: 0;
-}
-.status-sep { color: var(--breeze-border); }
+
 .upload-indicator {
   color: var(--breeze-accent);
 }
-.status-right {
-  display: flex;
-  align-items: center;
-  gap: var(--gap-sm);
+
+.zoom-label {
+  white-space: nowrap;
 }
-.zoom-label { white-space: nowrap; }
 
 /* ─── Breeze-style range slider ─── */
 .zoom-slider {
@@ -97,26 +108,24 @@ const selectionInfo = computed(() => {
   border-radius: 2px;
   outline: none;
   cursor: default;
-}
-.zoom-slider::-webkit-slider-thumb {
-  -webkit-appearance: none;
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--breeze-accent, #3daee9);
-  border: none;
-  cursor: default;
-}
-.zoom-slider::-moz-range-thumb {
-  width: 12px;
-  height: 12px;
-  border-radius: 50%;
-  background: var(--breeze-accent, #3daee9);
-  border: none;
-  cursor: default;
-}
 
-@media (max-width: 767px) {
-  .status-right { display: none; }
+  &::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--breeze-accent, #3daee9);
+    border: none;
+    cursor: default;
+  }
+
+  &::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--breeze-accent, #3daee9);
+    border: none;
+    cursor: default;
+  }
 }
 </style>

@@ -28,7 +28,7 @@ function handleClose() {
   </PlasmaWindow>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .konsole-body {
   flex: 1;
   min-height: 0;

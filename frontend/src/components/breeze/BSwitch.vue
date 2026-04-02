@@ -19,7 +19,7 @@ const emit = defineEmits(['update:value'])
   </button>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-switch {
   position: relative;
   display: inline-flex;
@@ -33,19 +33,22 @@ const emit = defineEmits(['update:value'])
   padding: 2px;
   transition: background var(--transition-normal);
   flex-shrink: 0;
-}
-.breeze-switch--on {
-  background: var(--breeze-accent);
-}
-.breeze-switch__thumb {
-  width: 16px;
-  height: 16px;
-  border-radius: 50%;
-  background: #fff;
-  transition: transform var(--transition-normal);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
-}
-.breeze-switch--on .breeze-switch__thumb {
-  transform: translateX(16px);
+
+  &--on {
+    background: var(--breeze-accent);
+
+    .breeze-switch__thumb {
+      transform: translateX(16px);
+    }
+  }
+
+  &__thumb {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform var(--transition-normal);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  }
 }
 </style>

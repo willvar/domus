@@ -20,13 +20,19 @@ export function showPrompt(title, placeholder = '') {
 
 /**
  * Show a confirm dialog. Returns true/false.
+ * @param {string} title
+ * @param {string} [content]
+ * @param {object} [options] - { icon: 'warning', positiveText, positiveType }
  */
-export function showConfirm(title, content = '') {
+export function showConfirm(title, content = '', options = {}) {
   return new Promise((resolve) => {
     dialogState.value = {
       type: 'confirm',
       title,
       content,
+      icon: options.icon || '',
+      positiveText: options.positiveText || '',
+      positiveType: options.positiveType || '',
       resolve,
     }
   })

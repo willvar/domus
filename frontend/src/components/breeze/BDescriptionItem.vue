@@ -11,23 +11,25 @@ defineProps({
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-desc-item {
   display: flex;
   align-items: baseline;
   padding: 4px 0;
   gap: 8px;
-}
-.breeze-desc-item__label {
-  color: var(--breeze-text-secondary);
-  font-size: 13px;
-  min-width: 80px;
-  flex-shrink: 0;
-}
-.breeze-desc-item__value {
-  color: var(--breeze-text);
-  font-size: 13px;
-  margin: 0;
-  word-break: break-all;
+
+  &__label {
+    color: var(--breeze-text-secondary);
+    font-size: 13px;
+    min-width: 80px;
+    flex-shrink: 0;
+  }
+
+  &__value {
+    color: var(--breeze-text);
+    font-size: 13px;
+    margin: 0;
+    word-break: break-all;
+  }
 }
 </style>

@@ -232,7 +232,7 @@ const touch = useTouchHandlers({
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .file-item {
   display: flex;
   flex-direction: column;
@@ -243,32 +243,48 @@ const touch = useTouchHandlers({
   gap: 4px;
   transition: background var(--transition-fast);
   user-select: none;
+
+  &:hover {
+    background: var(--breeze-hover);
+  }
+
+  &.selected {
+    background: var(--breeze-active);
+    outline: 1px solid rgba(61, 174, 233, 0.5);
+    border-radius: var(--file-item-radius);
+  }
+
+  &.cut {
+    opacity: 0.45;
+  }
+
+  &.compact {
+    flex-direction: row;
+    width: 100%;
+    gap: var(--gap-sm);
+    padding: 3px var(--gap-sm);
+  }
+
+  &.status-uploading {
+    animation: pulse-busy 1.8s ease-in-out infinite;
+  }
+
+  &.status-processing {
+    opacity: 0.55;
+  }
+
+  &.status-failed {
+    opacity: 0.55;
+  }
 }
-.file-item:hover {
-  background: var(--breeze-hover);
-}
-.file-item.selected {
-  background: var(--breeze-active);
-  outline: 1px solid rgba(61, 174, 233, 0.5);
-  border-radius: var(--file-item-radius);
-}
-.file-item.cut {
-  opacity: 0.45;
-}
-.file-item.compact {
-  flex-direction: row;
-  width: 100%;
-  gap: var(--gap-sm);
-  padding: 3px var(--gap-sm);
-}
+
 .file-icon {
   flex-shrink: 0;
   line-height: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @include flex-center;
   position: relative;
 }
+
 .select-check {
   position: absolute;
   top: -4px;
@@ -277,26 +293,41 @@ const touch = useTouchHandlers({
   height: 22px;
   border-radius: 50%;
   border: 2px solid #888;
-  background: rgba(0,0,0,0.4);
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  background: rgba(0, 0, 0, 0.4);
+  z-index: $z-sticky;
+  @include flex-center;
+
+  &.checked {
+    border-color: #3daee9;
+    background: #3daee9;
+  }
 }
-.select-check.checked {
-  border-color: #3daee9;
-  background: #3daee9;
-}
+
 .file-thumbnail {
   object-fit: contain;
   border-radius: 4px;
   max-width: 100%;
 }
-.compact .file-thumbnail {
-  width: 32px;
-  height: 32px;
-  max-height: 32px;
+
+.compact {
+  .file-thumbnail {
+    width: 32px;
+    height: 32px;
+    max-height: 32px;
+  }
+
+  .file-label {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--gap-sm);
+  }
+
+  .file-name {
+    text-align: left;
+    -webkit-line-clamp: 1;
+  }
 }
+
 .file-label {
   display: flex;
   flex-direction: column;
@@ -305,11 +336,7 @@ const touch = useTouchHandlers({
   width: 100%;
   gap: 1px;
 }
-.compact .file-label {
-  flex-direction: row;
-  align-items: center;
-  gap: var(--gap-sm);
-}
+
 .file-name {
   font-size: var(--font-size-sm);
   color: var(--breeze-text);
@@ -322,28 +349,18 @@ const touch = useTouchHandlers({
   overflow: hidden;
   line-height: 1.3;
 }
-.compact .file-name {
-  text-align: left;
-  -webkit-line-clamp: 1;
-}
+
 .file-size {
   font-size: var(--font-size-xs);
   color: var(--breeze-text-secondary);
   line-height: 1.2;
 }
-.file-item.status-uploading {
-  animation: pulse-busy 1.8s ease-in-out infinite;
-}
-.file-item.status-processing {
-  opacity: 0.55;
-}
-.file-item.status-failed {
-  opacity: 0.55;
-}
+
 @keyframes pulse-busy {
   0%, 100% { opacity: 0.45; }
   50% { opacity: 0.75; }
 }
+
 .file-status-badge {
   font-size: 10px;
   line-height: 1;
@@ -351,63 +368,74 @@ const touch = useTouchHandlers({
   border-radius: 3px;
   white-space: nowrap;
 }
+
 .badge-uploading {
   color: #3daee9;
   background: rgba(61, 174, 233, 0.15);
 }
+
 .badge-processing {
   color: #f67400;
   background: rgba(246, 116, 0, 0.15);
 }
+
 .badge-failed {
   color: #da4453;
   background: rgba(218, 68, 83, 0.15);
 }
 </style>
 
-<style>
+<style lang="scss">
 .file-tooltip {
   position: fixed;
-  z-index: 10000;
+  z-index: $z-popup;
   background: var(--breeze-surface-raised, #31363b);
   border: 1px solid var(--breeze-border, #3b4045);
   border-radius: 6px;
   padding: 10px;
   max-width: 280px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  box-shadow: $shadow-dropdown;
   animation: tooltip-fade-in 0.15s ease;
 }
+
 @keyframes tooltip-fade-in {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
 }
-.tooltip-thumbnail {
-  width: 100%;
-  max-height: 160px;
-  object-fit: contain;
-  border-radius: 4px;
-  margin-bottom: 8px;
-}
-.tooltip-info {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-.tooltip-name {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--breeze-text, #fcfcfc);
-  margin-bottom: 4px;
-  word-break: break-all;
-}
-.tooltip-row {
-  font-size: 12px;
-  color: var(--breeze-text-secondary, #6e7a86);
-  display: flex;
-  gap: 6px;
-}
-.tooltip-label {
-  color: var(--breeze-text-disabled, #505962);
-  flex-shrink: 0;
+
+.tooltip {
+  &-thumbnail {
+    width: 100%;
+    max-height: 160px;
+    object-fit: contain;
+    border-radius: 4px;
+    margin-bottom: 8px;
+  }
+
+  &-info {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  &-name {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--breeze-text, #fcfcfc);
+    margin-bottom: 4px;
+    word-break: break-all;
+  }
+
+  &-row {
+    font-size: 12px;
+    color: var(--breeze-text-secondary, #6e7a86);
+    display: flex;
+    gap: 6px;
+  }
+
+  &-label {
+    color: var(--breeze-text-disabled, #505962);
+    flex-shrink: 0;
+  }
 }
 </style>

@@ -50,7 +50,7 @@ function handleSelect(key) {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .places-panel {
   width: var(--sidebar-width);
   min-width: var(--sidebar-width);
@@ -59,6 +59,16 @@ function handleSelect(key) {
   overflow-y: auto;
   padding: var(--gap-xs) 0;
   flex-shrink: 0;
+
+  @include mobile {
+    position: fixed;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 100;
+    box-shadow: 4px 0 16px rgba(0, 0, 0, 0.4);
+    width: min(220px, 75vw);
+  }
 }
 
 .section-header {
@@ -90,39 +100,28 @@ function handleSelect(key) {
   text-align: left;
   cursor: default;
   transition: background var(--transition-fast), color var(--transition-fast);
-}
-.place-item:hover {
-  background: var(--breeze-hover);
-  color: var(--breeze-text);
-}
-.place-item.active {
-  background: var(--breeze-active);
-  color: var(--breeze-accent);
+
+  &:hover {
+    background: var(--breeze-hover);
+    color: var(--breeze-text);
+  }
+
+  &.active {
+    background: var(--breeze-active);
+    color: var(--breeze-accent);
+
+    .place-icon {
+      opacity: 1;
+    }
+  }
 }
 
 .place-icon {
   flex-shrink: 0;
   opacity: 0.7;
 }
-.place-item.active .place-icon {
-  opacity: 1;
-}
 
 .place-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-@media (max-width: 768px) {
-  .places-panel {
-    position: fixed;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    z-index: 100;
-    box-shadow: 4px 0 16px rgba(0,0,0,0.4);
-    width: min(220px, 75vw);
-  }
+  @include truncate;
 }
 </style>

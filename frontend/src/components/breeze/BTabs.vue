@@ -50,35 +50,41 @@ function select(name) {
   </div>
 </template>
 
-<style scoped>
-.breeze-tabs__bar {
-  display: flex;
-  background: var(--breeze-bg-alt);
-  border-radius: 4px;
-  padding: 2px;
-  gap: 2px;
-}
-.breeze-tabs__segment {
-  flex: 1;
-  padding: 6px 16px;
-  border: none;
-  border-radius: 3px;
-  background: transparent;
-  color: var(--breeze-text-secondary);
-  font-family: inherit;
-  font-size: 14px;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-  white-space: nowrap;
-}
-.breeze-tabs__segment:hover {
-  color: var(--breeze-text);
-}
-.breeze-tabs__segment.active {
-  background: var(--breeze-surface-raised);
-  color: var(--breeze-text);
-}
-.breeze-tabs__content {
-  margin-top: 0;
+<style lang="scss" scoped>
+.breeze-tabs {
+  &__bar {
+    display: flex;
+    background: var(--breeze-bg-alt);
+    border-radius: 4px;
+    padding: 2px;
+    gap: 2px;
+  }
+
+  &__segment {
+    flex: 1;
+    padding: 6px 16px;
+    border: none;
+    border-radius: 3px;
+    background: transparent;
+    color: var(--breeze-text-secondary);
+    font-family: inherit;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+    white-space: nowrap;
+
+    &:hover {
+      color: var(--breeze-text);
+    }
+
+    &.active {
+      background: var(--breeze-surface-raised);
+      color: var(--breeze-text);
+    }
+  }
+
+  &__content {
+    margin-top: 0;
+  }
 }
 </style>

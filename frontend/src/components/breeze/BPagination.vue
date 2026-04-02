@@ -58,49 +58,53 @@ function go(p) {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-pagination {
   display: inline-flex;
   align-items: center;
   gap: 2px;
-}
-.breeze-pagination__btn {
-  min-width: 28px;
-  height: 28px;
-  padding: 0 6px;
-  border: none;
-  border-radius: 3px;
-  background: none;
-  color: var(--breeze-text-secondary);
-  font-family: inherit;
-  font-size: 13px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  transition: all var(--transition-fast);
-}
-.breeze-pagination--small .breeze-pagination__btn {
-  min-width: 24px;
-  height: 24px;
-  font-size: 12px;
-}
-.breeze-pagination__btn:hover:not(:disabled) {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--breeze-text);
-}
-.breeze-pagination__btn.active {
-  background: var(--breeze-accent);
-  color: #fff;
-}
-.breeze-pagination__btn:disabled {
-  opacity: 0.35;
-  cursor: not-allowed;
-}
-.breeze-pagination__ellipsis {
-  min-width: 28px;
-  text-align: center;
-  color: var(--breeze-text-disabled);
-  font-size: 12px;
+
+  &--small &__btn {
+    min-width: 24px;
+    height: 24px;
+    font-size: 12px;
+  }
+
+  &__btn {
+    min-width: 28px;
+    height: 28px;
+    padding: 0 6px;
+    border: none;
+    border-radius: 3px;
+    background: none;
+    color: var(--breeze-text-secondary);
+    font-family: inherit;
+    font-size: 13px;
+    cursor: pointer;
+    @include inline-flex-center;
+    transition: all var(--transition-fast);
+
+    &:hover:not(:disabled) {
+      background: $hover-white-light;
+      color: var(--breeze-text);
+    }
+
+    &.active {
+      background: var(--breeze-accent);
+      color: #fff;
+    }
+
+    &:disabled {
+      opacity: 0.35;
+      cursor: not-allowed;
+    }
+  }
+
+  &__ellipsis {
+    min-width: 28px;
+    text-align: center;
+    color: var(--breeze-text-disabled);
+    font-size: 12px;
+  }
 }
 </style>

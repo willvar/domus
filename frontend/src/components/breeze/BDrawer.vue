@@ -28,75 +28,91 @@ function onMaskClick() {
   </Teleport>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-drawer-mask {
   position: fixed;
   inset: 0;
-  z-index: 5000;
+  z-index: $z-modal;
   background: rgba(0, 0, 0, 0.4);
 }
+
 .breeze-drawer-panel {
   position: absolute;
   background: var(--breeze-surface-raised);
   overflow-y: auto;
+
+  &--bottom {
+    bottom: 0;
+    left: 0;
+    right: 0;
+    border-radius: 12px 12px 0 0;
+    max-height: 80vh;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  &--right {
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 320px;
+    max-width: 80vw;
+  }
+
+  &--left {
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 320px;
+    max-width: 80vw;
+  }
 }
-.breeze-drawer-panel--bottom {
-  bottom: 0;
-  left: 0;
-  right: 0;
-  border-radius: 12px 12px 0 0;
-  max-height: 80vh;
-  padding-bottom: env(safe-area-inset-bottom);
-}
-.breeze-drawer-panel--right {
-  top: 0;
-  right: 0;
-  bottom: 0;
-  width: 320px;
-  max-width: 80vw;
-}
-.breeze-drawer-panel--left {
-  top: 0;
-  left: 0;
-  bottom: 0;
-  width: 320px;
-  max-width: 80vw;
-}
+
 /* Transitions */
 .breeze-drawer-enter-active {
   transition: opacity 0.25s ease;
+
+  .breeze-drawer-panel {
+    transition: transform 0.25s ease;
+  }
 }
-.breeze-drawer-enter-active .breeze-drawer-panel {
-  transition: transform 0.25s ease;
-}
+
 .breeze-drawer-leave-active {
   transition: opacity 0.2s ease;
+
+  .breeze-drawer-panel {
+    transition: transform 0.2s ease;
+  }
 }
-.breeze-drawer-leave-active .breeze-drawer-panel {
-  transition: transform 0.2s ease;
-}
+
 .breeze-drawer-enter-from {
   opacity: 0;
+
+  .breeze-drawer-panel--bottom {
+    transform: translateY(100%);
+  }
+
+  .breeze-drawer-panel--right {
+    transform: translateX(100%);
+  }
+
+  .breeze-drawer-panel--left {
+    transform: translateX(-100%);
+  }
 }
-.breeze-drawer-enter-from .breeze-drawer-panel--bottom {
-  transform: translateY(100%);
-}
-.breeze-drawer-enter-from .breeze-drawer-panel--right {
-  transform: translateX(100%);
-}
-.breeze-drawer-enter-from .breeze-drawer-panel--left {
-  transform: translateX(-100%);
-}
+
 .breeze-drawer-leave-to {
   opacity: 0;
-}
-.breeze-drawer-leave-to .breeze-drawer-panel--bottom {
-  transform: translateY(100%);
-}
-.breeze-drawer-leave-to .breeze-drawer-panel--right {
-  transform: translateX(100%);
-}
-.breeze-drawer-leave-to .breeze-drawer-panel--left {
-  transform: translateX(-100%);
+
+  .breeze-drawer-panel--bottom {
+    transform: translateY(100%);
+  }
+
+  .breeze-drawer-panel--right {
+    transform: translateX(100%);
+  }
+
+  .breeze-drawer-panel--left {
+    transform: translateX(-100%);
+  }
 }
 </style>

@@ -17,36 +17,43 @@ defineProps({
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-card {
   background: var(--breeze-surface);
   border-radius: 6px;
-}
-.breeze-card--bordered {
-  border: 1px solid var(--breeze-border);
-}
-.breeze-card__header {
-  padding: 12px 16px;
-  font-weight: 600;
-  font-size: 15px;
-  color: var(--breeze-text);
-  border-bottom: 1px solid var(--breeze-border);
-}
-.breeze-card--small .breeze-card__header {
-  padding: 8px 12px;
-  font-size: 14px;
-}
-.breeze-card__body {
-  padding: 16px;
-}
-.breeze-card--small .breeze-card__body {
-  padding: 12px;
-}
-.breeze-card__footer {
-  padding: 12px 16px;
-  border-top: 1px solid var(--breeze-border);
-}
-.breeze-card--small .breeze-card__footer {
-  padding: 8px 12px;
+
+  &--bordered {
+    border: 1px solid var(--breeze-border);
+  }
+
+  &__header {
+    padding: 12px 16px;
+    font-weight: 600;
+    font-size: 15px;
+    color: var(--breeze-text);
+    border-bottom: 1px solid var(--breeze-border);
+  }
+
+  &--small &__header {
+    padding: 8px 12px;
+    font-size: 14px;
+  }
+
+  &__body {
+    padding: 16px;
+  }
+
+  &--small &__body {
+    padding: 12px;
+  }
+
+  &__footer {
+    padding: 12px 16px;
+    border-top: 1px solid var(--breeze-border);
+  }
+
+  &--small &__footer {
+    padding: 8px 12px;
+  }
 }
 </style>

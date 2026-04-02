@@ -149,7 +149,7 @@ onUnmounted(() => {
           <div
             v-if="showSubMenu && subDirs.length > 0"
             ref="subMenuRef"
-            class="plasma-dropdown"
+            class="plasma-dropdown breadcrumb-dropdown"
             :style="subMenuStyle"
           >
             <button
@@ -167,7 +167,7 @@ onUnmounted(() => {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breadcrumb-bar {
   display: flex;
   align-items: center;
@@ -176,6 +176,10 @@ onUnmounted(() => {
   background: var(--breeze-surface);
   border-bottom: 1px solid var(--breeze-border);
   flex-shrink: 0;
+
+  @include mobile {
+    height: 34px;
+  }
 }
 
 /* ─── Path editing input (Breeze-style) ─── */
@@ -189,9 +193,10 @@ onUnmounted(() => {
   color: var(--breeze-text, #fcfcfc);
   font-size: 14px;
   outline: none;
-}
-.path-input::placeholder {
-  color: var(--breeze-text-disabled, #505962);
+
+  &::placeholder {
+    color: var(--breeze-text-disabled, #505962);
+  }
 }
 
 /* ─── Breadcrumb segments ─── */
@@ -201,7 +206,13 @@ onUnmounted(() => {
   gap: 0;
   overflow: hidden;
   flex: 1;
+
+  @include mobile {
+    flex-direction: row;
+    justify-content: flex-end;
+  }
 }
+
 .breadcrumb-segment {
   padding: 2px 6px;
   border-radius: 3px;
@@ -209,85 +220,57 @@ onUnmounted(() => {
   font-size: var(--font-size-sm);
   color: var(--breeze-text-secondary);
   cursor: default;
+
+  &:hover {
+    color: var(--breeze-text);
+    background: var(--breeze-hover);
+  }
+
+  &.active {
+    color: var(--breeze-text);
+    font-weight: 500;
+  }
+
+  &.search-indicator {
+    color: var(--breeze-accent);
+    font-weight: 500;
+  }
+
+  @include mobile {
+    padding: 4px 8px;
+    font-size: 13px;
+  }
 }
-.breadcrumb-segment:hover {
-  color: var(--breeze-text);
-  background: var(--breeze-hover);
-}
-.breadcrumb-segment.active {
-  color: var(--breeze-text);
-  font-weight: 500;
-}
-.breadcrumb-segment.search-indicator {
-  color: var(--breeze-accent);
-  font-weight: 500;
-}
+
 .breadcrumb-sep {
   color: var(--breeze-text-disabled);
   font-size: 14px;
   padding: 2px 1px;
   border-radius: 3px;
   cursor: default;
-}
-.breadcrumb-sep:hover,
-.breadcrumb-sep.active {
-  color: var(--breeze-text-secondary);
-  background: var(--breeze-hover);
+
+  &:hover,
+  &.active {
+    color: var(--breeze-text-secondary);
+    background: var(--breeze-hover);
+  }
+
+  @include mobile {
+    padding: 4px 2px;
+  }
 }
 
-/* ─── Subdirectory dropdown (Plasma style) ─── */
-.plasma-dropdown {
-  position: fixed;
-  z-index: 10000;
+/* ─── Breadcrumb dropdown overrides ─── */
+.plasma-dropdown.breadcrumb-dropdown {
   min-width: 140px;
   max-height: 320px;
   overflow-y: auto;
-  padding: 4px 0;
-  background: var(--breeze-surface-raised, #31363b);
-  border: 1px solid var(--breeze-border, #3b4045);
-  border-radius: 4px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-}
-.dropdown-item {
-  display: block;
-  width: 100%;
-  padding: 5px 16px;
-  border: none;
-  background: none;
-  color: var(--breeze-text, #fcfcfc);
-  font-size: 14px;
-  line-height: 22px;
-  text-align: left;
-  cursor: default;
-  white-space: nowrap;
-}
-.dropdown-item:hover {
-  background: var(--breeze-accent, #3daee9);
-  color: #fff;
+
+  .dropdown-item {
+    white-space: nowrap;
+  }
 }
 
 /* ─── Transition ─── */
-.ctx-menu-enter-active {
-  transition: opacity 0.12s ease, transform 0.12s ease;
-}
-.ctx-menu-leave-active {
-  transition: opacity 0.08s ease;
-}
-.ctx-menu-enter-from {
-  opacity: 0;
-  transform: scale(0.96);
-}
-.ctx-menu-leave-to {
-  opacity: 0;
-}
-
-@media (max-width: 767px) {
-  .breadcrumb-bar { height: 34px; }
-  .breadcrumb-segments {
-    flex-direction: row;
-    justify-content: flex-end;
-  }
-  .breadcrumb-segment { padding: 4px 8px; font-size: 13px; }
-  .breadcrumb-sep { padding: 4px 2px; }
-}
+@include ctx-menu-transition;
 </style>

@@ -92,14 +92,16 @@ watch(() => props.show, (v) => {
   </TrayPopup>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .prefs-scroll {
   padding: 12px;
+
+  :deep(.breeze-card) {
+    background: rgba(255, 255, 255, 0.02);
+    border-color: #3b4045;
+  }
 }
-.prefs-scroll :deep(.breeze-card) {
-  background: rgba(255, 255, 255, 0.02);
-  border-color: #3b4045;
-}
+
 .prefs-hint {
   font-size: 12px;
   color: var(--breeze-text-disabled);

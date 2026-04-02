@@ -14,7 +14,7 @@ defineProps({
   </dl>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-descriptions {
   margin: 0;
   padding: 0;

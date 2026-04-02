@@ -148,21 +148,39 @@ onUnmounted(() => {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .viewer-toolbar {
-  display: flex; align-items: center; height: 32px; padding: 0 12px;
-  background: var(--breeze-bg-alt); border-bottom: 1px solid var(--breeze-border); flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  background: var(--breeze-bg-alt);
+  border-bottom: 1px solid var(--breeze-border);
+  flex-shrink: 0;
 }
+
 .toolbar-label { color: #bbb; font-size: 12px; }
+
 .viewer-body.audio-body {
-  flex: 1; display: flex; flex-direction: column; align-items: stretch;
-  justify-content: flex-end; min-height: 0; background: var(--breeze-bg); padding: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-end;
+  min-height: 0;
+  background: var(--breeze-bg);
+  padding: 0;
 }
+
 .audio-waveform {
-  flex: 1; width: 100%; min-height: 0;
+  flex: 1;
+  width: 100%;
+  min-height: 0;
 }
+
 .audio-player {
-  width: 100%; flex-shrink: 0;
+  width: 100%;
+  flex-shrink: 0;
   filter: invert(0.85) hue-rotate(180deg);
 }
 </style>

@@ -40,7 +40,7 @@ function progressClass(op) {
   </Transition>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .op-panel {
   position: fixed;
   bottom: 36px;
@@ -53,44 +53,46 @@ function progressClass(op) {
   box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.12);
   overflow: hidden;
 }
+
 .op-header {
   padding: 10px 12px;
   font-size: 13px;
   font-weight: 600;
   border-bottom: 1px solid var(--breeze-border, #3b4045);
 }
-.op-scroll {
-  padding: 8px 12px;
-}
+
+.op-scroll { padding: 8px 12px; }
+
 .op-item {
   padding: 6px 0;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
-.op-desc {
-  font-size: var(--font-size-sm);
-}
+
+.op-desc { font-size: var(--font-size-sm); }
+
 .op-detail {
   font-size: var(--font-size-xs);
   color: var(--breeze-text-secondary);
 }
-.op-error {
-  color: var(--breeze-danger);
-}
 
-/* ─── Progress bar ─── */
+.op-error { color: var(--breeze-danger); }
+
+// Progress bar
 .progress-bar {
   height: 4px;
   background: var(--breeze-border, #3b4045);
   border-radius: 2px;
   overflow: hidden;
 }
+
 .progress-fill {
   height: 100%;
   border-radius: 2px;
   transition: width 0.3s ease;
 }
+
 .progress-info { background: var(--breeze-accent, #3daee9); }
 .progress-success { background: var(--breeze-success, #27ae60); }
 .progress-error { background: var(--breeze-danger, #da4453); }
@@ -98,6 +100,7 @@ function progressClass(op) {
 .slide-up-enter-active, .slide-up-leave-active {
   transition: all 0.3s ease;
 }
+
 .slide-up-enter-from, .slide-up-leave-to {
   transform: translateY(20px);
   opacity: 0;

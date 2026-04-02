@@ -161,7 +161,7 @@ if (auth.needsSetup) {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .app-layout {
   display: flex;
   flex-direction: column;

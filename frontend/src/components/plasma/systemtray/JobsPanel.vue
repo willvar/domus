@@ -211,49 +211,75 @@ onMounted(() => {
   </TrayPopup>
 </template>
 
-<style scoped>
-.jobs-empty {
-  padding: 24px 12px;
-}
+<style lang="scss" scoped>
+.jobs-empty { padding: 24px 12px; }
+
 .empty-state {
   text-align: center;
   color: var(--breeze-text-disabled, #505962);
   font-size: 13px;
 }
-.jobs-scroll {
-  padding: 6px;
-}
+
+.jobs-scroll { padding: 6px; }
+
 .job-item {
   padding: 8px;
   border-radius: 4px;
   background: rgba(255, 255, 255, 0.02);
   margin-bottom: 4px;
+
+  &:last-child { margin-bottom: 0; }
+  &--active { background: rgba(61, 174, 233, 0.06); }
 }
-.job-item:last-child { margin-bottom: 0; }
-.job-item--active { background: rgba(61, 174, 233, 0.06); }
+
 .job-header { display: flex; align-items: center; gap: 6px; }
 .job-icon { font-size: 13px; flex-shrink: 0; }
-.job-name { flex: 1; font-size: 12px; color: #fcfcfc; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-name { flex: 1; font-size: 12px; color: #fcfcfc; @include truncate; }
 .job-status { font-size: 11px; padding: 1px 6px; border-radius: 3px; flex-shrink: 0; }
+
 .status-success { color: #63e2b7; }
 .status-error { color: #e88080; }
 .status-warning { color: #f2c97d; }
 .status-info { color: #70c0e8; }
 .status-default { color: #9aa0a6; }
+
 .job-progress { margin-top: 6px; }
+
 .progress-bar { height: 4px; background: var(--breeze-border, #3b4045); border-radius: 2px; overflow: hidden; }
-.progress-fill { height: 100%; border-radius: 2px; background: var(--breeze-text-secondary, #a1a9b1); transition: width 0.3s ease; }
-.progress-fill.progress-info { background: var(--breeze-accent, #3daee9); }
-.progress-fill.progress-success { background: var(--breeze-success, #27ae60); }
-.progress-fill.progress-error { background: var(--breeze-danger, #da4453); }
+
+.progress-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--breeze-text-secondary, #a1a9b1);
+  transition: width 0.3s ease;
+
+  &.progress-info { background: var(--breeze-accent, #3daee9); }
+  &.progress-success { background: var(--breeze-success, #27ae60); }
+  &.progress-error { background: var(--breeze-danger, #da4453); }
+}
+
 .job-phase { font-size: 11px; color: #6e7a86; margin-top: 2px; display: block; }
-.job-error { font-size: 11px; color: #e88080; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.job-error { font-size: 11px; color: #e88080; margin-top: 4px; @include truncate; }
 .job-footer { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
 .job-time { font-size: 11px; color: #505962; }
 .job-actions { display: flex; gap: 2px; }
-.tray-btn { padding: 2px 8px; border: none; border-radius: 3px; background: none; color: var(--breeze-text-secondary, #a1a9b1); font-size: 12px; cursor: default; }
-.tray-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--breeze-text, #fcfcfc); }
-.tray-btn--accent { color: var(--breeze-accent, #3daee9); }
-.tray-btn--danger { color: var(--breeze-danger, #da4453); }
-.tray-btn--danger:hover { background: rgba(218, 68, 83, 0.15); }
+
+.tray-btn {
+  padding: 2px 8px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--breeze-text-secondary, #a1a9b1);
+  font-size: 12px;
+  cursor: default;
+
+  &:hover { background: $hover-white-medium; color: var(--breeze-text, #fcfcfc); }
+  &--accent { color: var(--breeze-accent, #3daee9); }
+
+  &--danger {
+    color: var(--breeze-danger, #da4453);
+
+    &:hover { background: rgba(218, 68, 83, 0.15); }
+  }
+}
 </style>

@@ -76,25 +76,60 @@ const summary = computed(() => {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .viewer-toolbar {
-  display: flex; align-items: center; height: 32px; padding: 0 12px;
-  background: var(--breeze-bg-alt); border-bottom: 1px solid var(--breeze-border); flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  background: var(--breeze-bg-alt);
+  border-bottom: 1px solid var(--breeze-border);
+  flex-shrink: 0;
 }
+
 .toolbar-label { color: #bbb; font-size: 12px; }
 
 .viewer-body.archive-body {
-  flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto; background: var(--breeze-bg);
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--breeze-bg);
 }
+
 .archive-error { padding: 24px; color: #da4453; text-align: center; }
-.archive-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-.archive-table th {
-  text-align: left; padding: 6px 12px; color: #888; font-weight: 600; font-size: 11px; text-transform: uppercase;
-  border-bottom: 1px solid var(--breeze-border); position: sticky; top: 0; background: var(--breeze-bg-alt);
+
+.archive-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+
+  th {
+    text-align: left;
+    padding: 6px 12px;
+    color: #888;
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    border-bottom: 1px solid var(--breeze-border);
+    position: sticky;
+    top: 0;
+    background: var(--breeze-bg-alt);
+  }
+
+  td {
+    padding: 4px 12px;
+    color: #ccc;
+    border-bottom: 1px solid $hover-white-subtle;
+  }
+
+  tr {
+    &:hover td { background: rgba(255, 255, 255, 0.03); }
+    &.is-dir td { color: #7cc7ff; }
+  }
 }
-.archive-table td { padding: 4px 12px; color: #ccc; border-bottom: 1px solid rgba(255,255,255,0.04); }
-.archive-table tr:hover td { background: rgba(255,255,255,0.03); }
-.archive-table tr.is-dir td { color: #7cc7ff; }
+
 .entry-icon { margin-right: 6px; }
 .size-col { white-space: nowrap; color: #888; width: 90px; }
 .date-col { white-space: nowrap; color: #888; width: 160px; }
