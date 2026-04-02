@@ -80,8 +80,9 @@ func (h *Handler) handlePatchContent(c *fiber.Ctx) error {
 	}
 
 	// Validate base_size against DB record
-	var fileRecord model.FileRecord
-	if err := h.DB.Where("path = ?", resolvedPath).First(&fileRecord).Error; err != nil {
+	session := c.Locals("session").(*model.Session)
+	fileRecord, err := model.GetFile(session.UserID, resolvedPath)
+	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "file_not_found"})
 	}
 	if body.BaseSize != fileRecord.Size {
@@ -116,7 +117,6 @@ func (h *Handler) handlePatchContent(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_result_size"})
 	}
 
-	session := c.Locals("session").(*model.Session)
 	kek, err := h.getFileEncryptionKey(session)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
