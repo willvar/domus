@@ -123,55 +123,107 @@ onUnmounted(() => cm.destroy())
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .viewer-toolbar {
-  display: flex; align-items: center; height: 32px; padding: 0 8px;
-  background: var(--breeze-bg-alt); border-bottom: 1px solid var(--breeze-border); gap: 6px; flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--breeze-bg-alt);
+  border-bottom: 1px solid var(--breeze-border);
+  gap: 6px;
+  flex-shrink: 0;
 }
+
 .viewer-mode-group {
-  display: flex; align-items: center; gap: 4px; margin-right: 8px; padding-right: 8px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+  padding-right: 8px;
   border-right: 1px solid var(--breeze-border);
 }
-.viewer-btn { background: none; border: none; color: #bbb; padding: 4px 8px; border-radius: 4px; display: flex; align-items: center; gap: 4px; font-size: 12px; }
-.viewer-btn:hover { background: rgba(255,255,255,0.1); color: #fff; }
-.viewer-btn:disabled { opacity: 0.4; }
-.viewer-btn.edit-btn { color: #8cb4ff; }
-@media (max-width: 767px) { .viewer-toolbar { height: 44px; } .viewer-btn { min-height: 44px; padding: 8px 12px; font-size: 14px; } }
-.viewer-btn.save-btn { color: #5cb85c; }
-.viewer-btn.mode-btn.active { background: rgba(61,174,233,0.18); color: #7cc7ff; }
+
+.viewer-btn {
+  background: none;
+  border: none;
+  color: #bbb;
+  padding: 4px 8px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+
+  &:hover { background: $hover-white-strong; color: #fff; }
+  &:disabled { opacity: 0.4; }
+  &.edit-btn { color: #8cb4ff; }
+  &.save-btn { color: #5cb85c; }
+  &.mode-btn.active { background: rgba(61, 174, 233, 0.18); color: #7cc7ff; }
+}
+
 .toolbar-sep { width: 1px; height: 16px; background: var(--breeze-border); margin: 0 4px; flex-shrink: 0; }
 .page-indicator { font-size: 12px; color: #999; white-space: nowrap; padding: 0 4px; }
 
-.viewer-body { flex: 1; display: flex; min-height: 0; overflow: auto; background: var(--breeze-bg); }
-.viewer-body.viewer-body-split { overflow: hidden; }
+.viewer-body {
+  flex: 1;
+  display: flex;
+  min-height: 0;
+  overflow: auto;
+  background: var(--breeze-bg);
+
+  &.viewer-body-split { overflow: hidden; }
+}
+
 .viewer-pane { flex: 1 1 50%; min-width: 0; min-height: 0; }
-.viewer-cm-wrap { width: 100%; height: 100%; overflow: hidden; }
-.viewer-cm-wrap :deep(.cm-editor) { height: 100%; }
-.viewer-cm-wrap :deep(.cm-editor.cm-focused) { outline: none; }
+
+.viewer-cm-wrap {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+
+  :deep(.cm-editor) {
+    height: 100%;
+
+    &.cm-focused { outline: none; }
+  }
+}
 
 .md-render-wrap {
-  width: 100%; height: 100%; overflow-y: auto; background: #fff;
+  width: 100%;
+  height: 100%;
+  overflow-y: auto;
+  background: #fff;
 }
-.markdown-body {
-  padding: 24px 32px; color: #1e1e1e; font-size: 15px; line-height: 1.7; max-width: 900px; margin: 0 auto;
-}
-.markdown-body :deep(h1) { font-size: 2em; border-bottom: 1px solid #eee; padding-bottom: 0.3em; margin: 1em 0 0.5em; }
-.markdown-body :deep(h2) { font-size: 1.5em; border-bottom: 1px solid #eee; padding-bottom: 0.3em; margin: 1em 0 0.5em; }
-.markdown-body :deep(h3) { font-size: 1.25em; margin: 1em 0 0.5em; }
-.markdown-body :deep(p) { margin: 0.5em 0; }
-.markdown-body :deep(code) { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
-.markdown-body :deep(pre) { background: #282c34; color: #abb2bf; padding: 16px; border-radius: 6px; overflow-x: auto; }
-.markdown-body :deep(pre code) { background: none; padding: 0; color: inherit; }
-.markdown-body :deep(blockquote) { border-left: 4px solid #3daee9; padding: 0.5em 1em; margin: 0.5em 0; color: #555; background: #f8f8f8; }
-.markdown-body :deep(table) { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
-.markdown-body :deep(th), .markdown-body :deep(td) { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
-.markdown-body :deep(th) { background: #f0f0f0; font-weight: 600; }
-.markdown-body :deep(img) { max-width: 100%; }
-.markdown-body :deep(a) { color: #3daee9; }
-.markdown-body :deep(ul), .markdown-body :deep(ol) { padding-left: 2em; }
-.markdown-body :deep(hr) { border: none; border-top: 1px solid #eee; margin: 1.5em 0; }
 
-@media (max-width: 767px) {
+.markdown-body {
+  padding: 24px 32px;
+  color: #1e1e1e;
+  font-size: 15px;
+  line-height: 1.7;
+  max-width: 900px;
+  margin: 0 auto;
+
+  :deep(h1) { font-size: 2em; border-bottom: 1px solid #eee; padding-bottom: 0.3em; margin: 1em 0 0.5em; }
+  :deep(h2) { font-size: 1.5em; border-bottom: 1px solid #eee; padding-bottom: 0.3em; margin: 1em 0 0.5em; }
+  :deep(h3) { font-size: 1.25em; margin: 1em 0 0.5em; }
+  :deep(p) { margin: 0.5em 0; }
+  :deep(code) { background: #f0f0f0; padding: 2px 6px; border-radius: 3px; font-size: 0.9em; }
+  :deep(pre) { background: #282c34; color: #abb2bf; padding: 16px; border-radius: 6px; overflow-x: auto; }
+  :deep(pre code) { background: none; padding: 0; color: inherit; }
+  :deep(blockquote) { border-left: 4px solid #3daee9; padding: 0.5em 1em; margin: 0.5em 0; color: #555; background: #f8f8f8; }
+  :deep(table) { border-collapse: collapse; width: 100%; margin: 0.5em 0; }
+  :deep(th), :deep(td) { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+  :deep(th) { background: #f0f0f0; font-weight: 600; }
+  :deep(img) { max-width: 100%; }
+  :deep(a) { color: #3daee9; }
+  :deep(ul), :deep(ol) { padding-left: 2em; }
+  :deep(hr) { border: none; border-top: 1px solid #eee; margin: 1.5em 0; }
+}
+
+@include mobile {
+  .viewer-toolbar { height: 44px; }
+  .viewer-btn { min-height: 44px; padding: 8px 12px; font-size: 14px; }
   .viewer-body.viewer-body-split { flex-direction: column; }
   .viewer-pane { flex: 1 1 50%; min-height: 0; }
   .markdown-body { padding: 16px; }

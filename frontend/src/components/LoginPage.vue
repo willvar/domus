@@ -256,20 +256,19 @@ function resetTo(newTab) {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .login-page {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @include flex-center;
   height: 100vh;
   background: var(--breeze-bg);
 }
+
 .login-card {
   width: 400px;
   border-radius: 8px;
 }
 
-@media (max-width: 767px) {
+@include mobile {
   .login-page { padding: 0; }
   .login-card {
     width: 100%;
@@ -279,16 +278,32 @@ function resetTo(newTab) {
     box-shadow: none;
   }
 }
+
 .login-header {
   text-align: center;
   margin-bottom: 24px;
+
+  h1 {
+    font-size: 24px;
+    font-weight: 600;
+    margin: 0;
+    color: var(--breeze-text);
+  }
+
+  p {
+    color: var(--breeze-text-secondary);
+    margin: 4px 0 0;
+    font-size: var(--font-size-md);
+  }
 }
+
 .login-icon {
   font-size: 48px;
   margin-bottom: 8px;
   display: flex;
   justify-content: center;
 }
+
 .login-avatar {
   width: 64px;
   height: 64px;
@@ -296,19 +311,10 @@ function resetTo(newTab) {
   object-fit: cover;
   border: 2px solid var(--breeze-border);
 }
-.login-header h1 {
-  font-size: 24px;
-  font-weight: 600;
-  margin: 0;
-  color: var(--breeze-text);
-}
-.login-header p {
-  color: var(--breeze-text-secondary);
-  margin: 4px 0 0;
-  font-size: var(--font-size-md);
-}
+
 .tab-form { margin-top: 16px; }
 .verify-section { padding-top: 8px; }
+
 .verify-hint {
   text-align: center;
   color: var(--breeze-text-secondary);

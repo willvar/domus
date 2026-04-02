@@ -149,7 +149,7 @@ function processingText(u) {
   <input ref="fileInputRef" type="file" style="display:none" @change="onFileSelected">
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .upload-panel {
   position: fixed;
   bottom: 36px;
@@ -165,6 +165,7 @@ function processingText(u) {
   flex-direction: column;
   overflow: hidden;
 }
+
 .upload-header {
   display: flex;
   justify-content: space-between;
@@ -173,78 +174,90 @@ function processingText(u) {
   border-bottom: 1px solid var(--breeze-border, #3b4045);
   flex-shrink: 0;
 }
+
 .upload-title {
   font-weight: 600;
   font-size: 13px;
 }
+
 .upload-actions {
   display: flex;
   gap: 4px;
 }
+
 .upload-scroll {
   overflow-y: auto;
   flex: 1;
   min-height: 0;
 }
+
 .upload-item {
   display: flex;
   flex-direction: column;
   gap: 4px;
   padding: 8px 12px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid $hover-white-subtle;
+
+  &:last-child { border-bottom: none; }
 }
-.upload-item:last-child {
-  border-bottom: none;
-}
+
 .upload-item-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
+
 .upload-filename {
   font-size: var(--font-size-sm);
   max-width: 200px;
 }
+
 .upload-size {
   font-size: var(--font-size-xs);
   color: var(--breeze-text-secondary);
 }
+
 .upload-item-footer {
   display: flex;
   justify-content: space-between;
   align-items: center;
 }
+
 .upload-status {
   font-size: var(--font-size-xs);
   color: var(--breeze-text-secondary);
 }
+
 .upload-item-actions {
   display: flex;
   gap: 4px;
 }
+
 .upload-error {
   font-size: var(--font-size-xs);
   color: var(--breeze-danger);
 }
 
-/* ─── Progress bar ─── */
+// Progress bar
 .progress-bar {
   height: 4px;
   background: var(--breeze-border, #3b4045);
   border-radius: 2px;
   overflow: hidden;
 }
+
 .progress-fill {
   height: 100%;
   border-radius: 2px;
   transition: width 0.3s ease;
 }
+
 .progress-info { background: var(--breeze-accent, #3daee9); }
 .progress-success { background: var(--breeze-success, #27ae60); }
 .progress-error { background: var(--breeze-danger, #da4453); }
 .progress-warning { background: var(--breeze-warning, #f67400); }
 
-/* ─── Flat tray button ─── */
+// Flat tray button
 .tray-btn {
   padding: 2px 8px;
   border: none;
@@ -253,30 +266,30 @@ function processingText(u) {
   color: var(--breeze-text-secondary, #a1a9b1);
   font-size: 12px;
   cursor: default;
-}
-.tray-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--breeze-text, #fcfcfc);
-}
-.tray-btn--accent {
-  color: var(--breeze-accent, #3daee9);
-}
-.tray-btn--icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 4px;
+
+  &:hover {
+    background: $hover-white-medium;
+    color: var(--breeze-text, #fcfcfc);
+  }
+
+  &--accent { color: var(--breeze-accent, #3daee9); }
+
+  &--icon {
+    @include flex-center;
+    padding: 4px;
+  }
 }
 
 .slide-up-enter-active, .slide-up-leave-active {
   transition: all 0.3s ease;
 }
+
 .slide-up-enter-from, .slide-up-leave-to {
   transform: translateY(20px);
   opacity: 0;
 }
 
-@media (max-width: 767px) {
+@include mobile {
   .upload-panel { left: 8px; right: 8px; width: auto; bottom: 72px; }
 }
 </style>

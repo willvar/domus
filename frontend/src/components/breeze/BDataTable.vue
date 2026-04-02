@@ -215,121 +215,147 @@ function getRowAttrs(row) {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-table {
   position: relative;
   width: 100%;
+
+  &--bordered {
+    border: 1px solid var(--breeze-border);
+    border-radius: 4px;
+    overflow: hidden;
+  }
+
+  &--small {
+    .breeze-table__th {
+      padding: 6px 10px;
+      font-size: 12px;
+    }
+
+    .breeze-table__td {
+      padding: 6px 10px;
+      font-size: 13px;
+    }
+  }
+
+  &--medium {
+    .breeze-table__th {
+      padding: 8px 12px;
+      font-size: 13px;
+    }
+
+    .breeze-table__td {
+      padding: 8px 12px;
+      font-size: 14px;
+    }
+  }
+
+  &--striped {
+    .breeze-table__row:nth-child(odd) {
+      background: var(--breeze-surface);
+
+      &:hover {
+        background: $hover-white-light;
+      }
+    }
+  }
+
+  &__scroll {
+    overflow: auto;
+    width: 100%;
+  }
+
+  &__table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+  }
+
+  &__head {
+    position: sticky;
+    top: 0;
+    z-index: $z-sticky;
+  }
+
+  &__th {
+    background: var(--breeze-surface);
+    color: var(--breeze-text-secondary);
+    font-weight: 500;
+    text-align: left;
+    border-bottom: 1px solid var(--breeze-border);
+    white-space: nowrap;
+    position: relative;
+    user-select: none;
+
+    &.sortable {
+      cursor: pointer;
+
+      &:hover {
+        background: $hover-white-subtle;
+      }
+    }
+  }
+
+  &__th-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  &__sort-icon {
+    font-size: 10px;
+    color: var(--breeze-text-disabled);
+    margin-left: 4px;
+  }
+
+  &__resize-handle {
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 4px;
+    cursor: col-resize;
+
+    &:hover {
+      background: var(--breeze-accent);
+    }
+  }
+
+  &__row {
+    transition: background var(--transition-fast);
+
+    &:hover {
+      background: $hover-white-subtle;
+    }
+  }
+
+  &__td {
+    color: var(--breeze-text);
+    border-bottom: 1px solid var(--breeze-border);
+  }
+
+  &__ellipsis {
+    @include truncate;
+  }
+
+  /* Loading overlay */
+  &__loading {
+    position: absolute;
+    inset: 0;
+    background: rgba(20, 22, 24, 0.4);
+    @include flex-center;
+    z-index: 3;
+  }
+
+  &__spinner {
+    width: 24px;
+    height: 24px;
+    border: 2px solid var(--breeze-border);
+    border-top-color: var(--breeze-accent);
+    border-radius: 50%;
+    animation: b-table-spin 0.7s linear infinite;
+  }
 }
-.breeze-table--bordered {
-  border: 1px solid var(--breeze-border);
-  border-radius: 4px;
-  overflow: hidden;
-}
-.breeze-table__scroll {
-  overflow: auto;
-  width: 100%;
-}
-.breeze-table__table {
-  width: 100%;
-  border-collapse: collapse;
-  table-layout: fixed;
-}
-.breeze-table__head {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-}
-.breeze-table__th {
-  background: var(--breeze-surface);
-  color: var(--breeze-text-secondary);
-  font-weight: 500;
-  text-align: left;
-  border-bottom: 1px solid var(--breeze-border);
-  white-space: nowrap;
-  position: relative;
-  user-select: none;
-}
-.breeze-table--small .breeze-table__th {
-  padding: 6px 10px;
-  font-size: 12px;
-}
-.breeze-table--medium .breeze-table__th {
-  padding: 8px 12px;
-  font-size: 13px;
-}
-.breeze-table__th.sortable {
-  cursor: pointer;
-}
-.breeze-table__th.sortable:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
-.breeze-table__th-text {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.breeze-table__sort-icon {
-  font-size: 10px;
-  color: var(--breeze-text-disabled);
-  margin-left: 4px;
-}
-.breeze-table__resize-handle {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  cursor: col-resize;
-}
-.breeze-table__resize-handle:hover {
-  background: var(--breeze-accent);
-}
-.breeze-table__row {
-  transition: background var(--transition-fast);
-}
-.breeze-table__row:hover {
-  background: rgba(255, 255, 255, 0.04);
-}
-.breeze-table--striped .breeze-table__row:nth-child(odd) {
-  background: var(--breeze-surface);
-}
-.breeze-table--striped .breeze-table__row:nth-child(odd):hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-.breeze-table__td {
-  color: var(--breeze-text);
-  border-bottom: 1px solid var(--breeze-border);
-}
-.breeze-table--small .breeze-table__td {
-  padding: 6px 10px;
-  font-size: 13px;
-}
-.breeze-table--medium .breeze-table__td {
-  padding: 8px 12px;
-  font-size: 14px;
-}
-.breeze-table__ellipsis {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-/* Loading overlay */
-.breeze-table__loading {
-  position: absolute;
-  inset: 0;
-  background: rgba(20, 22, 24, 0.4);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 3;
-}
-.breeze-table__spinner {
-  width: 24px;
-  height: 24px;
-  border: 2px solid var(--breeze-border);
-  border-top-color: var(--breeze-accent);
-  border-radius: 50%;
-  animation: b-table-spin 0.7s linear infinite;
-}
+
 @keyframes b-table-spin {
   to { transform: rotate(360deg); }
 }

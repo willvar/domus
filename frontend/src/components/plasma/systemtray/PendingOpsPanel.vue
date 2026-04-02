@@ -76,12 +76,21 @@ async function handleDiscardAll() {
   </TrayPopup>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .pending-empty-wrap { padding: 24px 12px; }
 .empty-state { text-align: center; color: var(--breeze-text-disabled, #505962); font-size: 13px; }
 .pending-scroll { overflow-y: auto; max-height: 360px; padding: 4px 0; }
-.pending-item { padding: 8px 12px; display: flex; flex-direction: column; gap: 4px; border-bottom: 1px solid #31363b; }
-.pending-item:last-child { border-bottom: none; }
+
+.pending-item {
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-bottom: 1px solid #31363b;
+
+  &:last-child { border-bottom: none; }
+}
+
 .pending-item-header { display: flex; align-items: center; gap: 6px; }
 .pending-icon { font-size: 14px; flex-shrink: 0; }
 .pending-desc { font-size: var(--font-size-sm); max-width: 280px; }
@@ -89,8 +98,18 @@ async function handleDiscardAll() {
 .pending-error { color: var(--breeze-danger); max-width: 200px; }
 .pending-time { flex-shrink: 0; }
 .pending-item-actions { display: flex; gap: 4px; margin-top: 2px; }
-.tray-btn { padding: 2px 8px; border: none; border-radius: 3px; background: none; color: var(--breeze-text-secondary, #a1a9b1); font-size: 12px; cursor: default; }
-.tray-btn:hover { background: rgba(255, 255, 255, 0.08); color: var(--breeze-text, #fcfcfc); }
-.tray-btn:disabled { opacity: 0.5; }
-.tray-btn--accent { color: var(--breeze-accent, #3daee9); }
+
+.tray-btn {
+  padding: 2px 8px;
+  border: none;
+  border-radius: 3px;
+  background: none;
+  color: var(--breeze-text-secondary, #a1a9b1);
+  font-size: 12px;
+  cursor: default;
+
+  &:hover { background: $hover-white-medium; color: var(--breeze-text, #fcfcfc); }
+  &:disabled { opacity: 0.5; }
+  &--accent { color: var(--breeze-accent, #3daee9); }
+}
 </style>

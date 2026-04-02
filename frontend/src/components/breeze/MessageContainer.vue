@@ -21,19 +21,20 @@ const { messages, typeColors } = useMessageState()
   </Teleport>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-message-container {
   position: fixed;
   top: 16px;
   left: 50%;
   transform: translateX(-50%);
-  z-index: 99999;
+  z-index: $z-message;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 8px;
   pointer-events: none;
 }
+
 .breeze-message {
   background: var(--breeze-surface-raised);
   border: 1px solid var(--breeze-border);
@@ -47,16 +48,20 @@ const { messages, typeColors } = useMessageState()
   max-width: 480px;
   word-break: break-word;
 }
+
 .breeze-msg-enter-active {
   transition: all 0.2s ease;
 }
+
 .breeze-msg-leave-active {
   transition: all 0.15s ease;
 }
+
 .breeze-msg-enter-from {
   opacity: 0;
   transform: translateY(-8px);
 }
+
 .breeze-msg-leave-to {
   opacity: 0;
   transform: translateY(-8px);

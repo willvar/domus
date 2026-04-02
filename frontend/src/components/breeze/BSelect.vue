@@ -80,77 +80,88 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-select {
   width: 100%;
+
+  &__trigger {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    height: 32px;
+    padding: 0 8px;
+    background: var(--breeze-bg-alt);
+    border: 1px solid var(--breeze-border);
+    border-radius: 3px;
+    color: var(--breeze-text);
+    font-family: inherit;
+    font-size: 14px;
+    cursor: pointer;
+    transition: border-color var(--transition-fast);
+    text-align: left;
+
+    &:focus {
+      border-color: var(--breeze-accent);
+      outline: none;
+    }
+  }
+
+  &__text {
+    flex: 1;
+    min-width: 0;
+    @include truncate;
+  }
+
+  &__placeholder {
+    flex: 1;
+    color: var(--breeze-text-disabled);
+  }
+
+  &__arrow {
+    flex-shrink: 0;
+    color: var(--breeze-text-secondary);
+    transition: transform var(--transition-fast);
+
+    &.open {
+      transform: rotate(180deg);
+    }
+  }
+
+  &__dropdown {
+    background: var(--breeze-surface-raised);
+    border: 1px solid var(--breeze-border);
+    border-radius: 4px;
+    box-shadow: $shadow-dropdown;
+    max-height: 240px;
+    overflow-y: auto;
+    padding: 4px 0;
+  }
+
+  &__option {
+    padding: 6px 10px;
+    font-size: 14px;
+    color: var(--breeze-text);
+    cursor: pointer;
+    transition: background var(--transition-fast);
+
+    &:hover {
+      background: $hover-white-light;
+    }
+
+    &.active {
+      color: var(--breeze-accent);
+    }
+  }
 }
-.breeze-select__trigger {
-  display: flex;
-  align-items: center;
-  width: 100%;
-  height: 32px;
-  padding: 0 8px;
-  background: var(--breeze-bg-alt);
-  border: 1px solid var(--breeze-border);
-  border-radius: 3px;
-  color: var(--breeze-text);
-  font-family: inherit;
-  font-size: 14px;
-  cursor: pointer;
-  transition: border-color var(--transition-fast);
-  text-align: left;
-}
-.breeze-select__trigger:focus {
-  border-color: var(--breeze-accent);
-  outline: none;
-}
-.breeze-select__text {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.breeze-select__placeholder {
-  flex: 1;
-  color: var(--breeze-text-disabled);
-}
-.breeze-select__arrow {
-  flex-shrink: 0;
-  color: var(--breeze-text-secondary);
-  transition: transform var(--transition-fast);
-}
-.breeze-select__arrow.open {
-  transform: rotate(180deg);
-}
-.breeze-select__dropdown {
-  background: var(--breeze-surface-raised);
-  border: 1px solid var(--breeze-border);
-  border-radius: 4px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-  max-height: 240px;
-  overflow-y: auto;
-  padding: 4px 0;
-}
-.breeze-select__option {
-  padding: 6px 10px;
-  font-size: 14px;
-  color: var(--breeze-text);
-  cursor: pointer;
-  transition: background var(--transition-fast);
-}
-.breeze-select__option:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-.breeze-select__option.active {
-  color: var(--breeze-accent);
-}
+
 .breeze-dropdown-enter-active {
   transition: all 0.12s ease;
 }
+
 .breeze-dropdown-leave-active {
   transition: all 0.08s ease;
 }
+
 .breeze-dropdown-enter-from,
 .breeze-dropdown-leave-to {
   opacity: 0;

@@ -174,7 +174,7 @@ function tabStyle(tab) {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .tab-bar {
   display: flex;
   align-items: stretch;
@@ -193,10 +193,10 @@ function tabStyle(tab) {
   gap: 0;
   overflow-x: auto;
   scrollbar-width: none;
-}
 
-.tab-list::-webkit-scrollbar {
-  display: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
 }
 
 .tab {
@@ -213,84 +213,85 @@ function tabStyle(tab) {
   border-right: 1px solid var(--breeze-border);
   position: relative;
   cursor: default;
-}
 
-.tab:hover {
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--breeze-text);
-}
+  &:hover {
+    background: $hover-white-subtle;
+    color: var(--breeze-text);
 
-.tab.active {
-  background: rgba(255, 255, 255, 0.03);
-  color: var(--breeze-text);
-  border-top-color: var(--breeze-accent);
-}
+    .tab-close {
+      opacity: 1;
+    }
+  }
 
-.tab.dragging {
-  opacity: 0.85;
-  background: var(--breeze-surface-raised);
-}
+  &.active {
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--breeze-text);
+    border-top-color: var(--breeze-accent);
+  }
 
-.tab-icon {
-  width: 14px;
-  height: 14px;
-  fill: var(--icon-folder);
-  flex-shrink: 0;
-}
+  &.dragging {
+    opacity: 0.85;
+    background: var(--breeze-surface-raised);
+  }
 
-.tab-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+  &-icon {
+    width: 14px;
+    height: 14px;
+    fill: var(--icon-folder);
+    flex-shrink: 0;
+  }
 
-.tab-close {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border: none;
-  background: none;
-  color: var(--breeze-text-secondary);
-  border-radius: 3px;
-  font-size: 14px;
-  line-height: 1;
-  padding: 0;
-  flex-shrink: 0;
-  opacity: 0.6;
-  transition: opacity 0.15s, background 0.15s;
-}
+  &-label {
+    @include truncate;
+  }
 
-.tab:hover .tab-close {
-  opacity: 1;
-}
+  &-close {
+    @include inline-flex-center;
+    width: 16px;
+    height: 16px;
+    border: none;
+    background: none;
+    color: var(--breeze-text-secondary);
+    border-radius: 3px;
+    font-size: 14px;
+    line-height: 1;
+    padding: 0;
+    flex-shrink: 0;
+    opacity: 0.6;
+    transition: opacity 0.15s, background 0.15s;
 
-.tab-close:hover {
-  background: rgba(255, 255, 255, 0.12);
-  color: var(--breeze-text);
-  opacity: 1;
-}
+    &:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: var(--breeze-text);
+      opacity: 1;
+    }
 
-.tab-new {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  border: none;
-  background: none;
-  color: var(--breeze-text-secondary);
-  font-size: 16px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--breeze-border);
-}
+    @include mobile {
+      width: 44px;
+      height: 44px;
+      padding: 12px;
+      opacity: 1;
+    }
+  }
 
-.tab-new:hover {
-  background: rgba(255, 255, 255, 0.04);
-  color: var(--breeze-text);
-}
+  &-new {
+    @include inline-flex-center;
+    width: 32px;
+    border: none;
+    background: none;
+    color: var(--breeze-text-secondary);
+    font-size: 16px;
+    flex-shrink: 0;
+    border-right: 1px solid var(--breeze-border);
 
-@media (max-width: 767px) {
-  .tab-close { width: 44px; height: 44px; padding: 12px; opacity: 1; }
-  .tab-new { width: 44px; }
+    &:hover {
+      background: $hover-white-subtle;
+      color: var(--breeze-text);
+    }
+
+    @include mobile {
+      width: 44px;
+    }
+  }
 }
 </style>

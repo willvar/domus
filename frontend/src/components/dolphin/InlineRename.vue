@@ -64,7 +64,7 @@ async function commit() {
   />
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .rename-input {
   width: 100%;
   min-width: 60px;

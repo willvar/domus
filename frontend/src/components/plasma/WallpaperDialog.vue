@@ -272,7 +272,7 @@ defineExpose({ open })
   </BModal>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .wp-dialog {
   width: 560px;
   max-width: 95vw;
@@ -291,11 +291,13 @@ defineExpose({ open })
   padding: 12px 16px;
   border-bottom: 1px solid var(--breeze-border);
 }
+
 .wp-title {
   font-size: 14px;
   font-weight: 500;
   color: var(--breeze-text);
 }
+
 .wp-close {
   background: none;
   border: none;
@@ -304,10 +306,11 @@ defineExpose({ open })
   padding: 4px;
   border-radius: 4px;
   display: flex;
-}
-.wp-close:hover {
-  color: var(--breeze-text);
-  background: rgba(255,255,255,0.06);
+
+  &:hover {
+    color: var(--breeze-text);
+    background: $hover-white-light;
+  }
 }
 
 .wp-preview {
@@ -315,11 +318,10 @@ defineExpose({ open })
   border-radius: 6px;
   overflow: hidden;
   aspect-ratio: 16 / 9;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @include flex-center;
   border: 1px solid var(--breeze-border);
 }
+
 .wp-preview-media {
   width: 100%;
   height: 100%;
@@ -349,12 +351,18 @@ defineExpose({ open })
   position: relative;
   flex-shrink: 0;
   transition: border-color 0.15s;
-}
-.wp-thumb:hover {
-  border-color: rgba(255,255,255,0.2);
-}
-.wp-thumb.selected {
-  border-color: var(--breeze-accent);
+
+  &:hover {
+    border-color: rgba(255, 255, 255, 0.2);
+
+    .wp-thumb-delete {
+      display: flex;
+    }
+  }
+
+  &.selected {
+    border-color: var(--breeze-accent);
+  }
 }
 
 .wp-thumb-img {
@@ -365,23 +373,22 @@ defineExpose({ open })
 }
 
 .wp-thumb-upload {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(255,255,255,0.04);
+  @include flex-center;
+  background: $hover-white-subtle;
   border: 2px dashed var(--breeze-border);
   color: var(--breeze-text-secondary);
-}
-.wp-thumb-upload:hover {
-  border-color: var(--breeze-accent);
-  color: var(--breeze-accent);
+
+  &:hover {
+    border-color: var(--breeze-accent);
+    color: var(--breeze-accent);
+  }
 }
 
 .wp-thumb-delete {
   position: absolute;
   top: 2px;
   right: 2px;
-  background: rgba(0,0,0,0.6);
+  background: rgba(0, 0, 0, 0.6);
   border: none;
   border-radius: 3px;
   color: #fff;
@@ -389,12 +396,10 @@ defineExpose({ open })
   cursor: pointer;
   display: none;
   line-height: 0;
-}
-.wp-thumb:hover .wp-thumb-delete {
-  display: flex;
-}
-.wp-thumb-delete:hover {
-  background: var(--breeze-danger);
+
+  &:hover {
+    background: var(--breeze-danger);
+  }
 }
 
 .wp-footer {
@@ -405,9 +410,12 @@ defineExpose({ open })
   border-top: 1px solid var(--breeze-border);
 }
 
-@media (max-width: 767px) {
+@include mobile {
   .wp-grid { max-height: 100px; }
-  .wp-footer { flex-direction: column; }
-  .wp-footer :deep(button) { width: 100%; }
+  .wp-footer {
+    flex-direction: column;
+
+    :deep(button) { width: 100%; }
+  }
 }
 </style>

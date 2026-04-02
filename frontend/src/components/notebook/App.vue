@@ -130,48 +130,76 @@ onUnmounted(() => {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .viewer-toolbar {
-  display: flex; align-items: center; height: 32px; padding: 0 12px;
-  background: var(--breeze-bg-alt); border-bottom: 1px solid var(--breeze-border); flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 12px;
+  background: var(--breeze-bg-alt);
+  border-bottom: 1px solid var(--breeze-border);
+  flex-shrink: 0;
 }
+
 .toolbar-label { color: #bbb; font-size: 12px; }
 
 .viewer-body.nb-body {
-  flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto;
-  background: var(--breeze-bg); padding: 16px; gap: 4px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--breeze-bg);
+  padding: 16px;
+  gap: 4px;
 }
 
 .nb-cell {
-  border-left: 3px solid transparent; border-radius: 4px;
-  background: rgba(255,255,255,0.02);
+  border-left: 3px solid transparent;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+
+  &-code { border-left-color: #3daee9; }
+  &-markdown { border-left-color: #27ae60; }
+  &-raw { border-left-color: #888; }
 }
-.nb-cell-code { border-left-color: #3daee9; }
-.nb-cell-markdown { border-left-color: #27ae60; }
-.nb-cell-raw { border-left-color: #888; }
 
-.nb-markdown { padding: 12px 16px; color: #ccc; line-height: 1.6; }
-.nb-markdown :deep(h1) { font-size: 1.6em; color: #eee; margin: 0.5em 0 0.3em; }
-.nb-markdown :deep(h2) { font-size: 1.3em; color: #eee; margin: 0.5em 0 0.3em; }
-.nb-markdown :deep(h3) { font-size: 1.1em; color: #eee; margin: 0.5em 0 0.3em; }
-.nb-markdown :deep(p) { margin: 0.4em 0; }
-.nb-markdown :deep(code) { background: rgba(255,255,255,0.08); padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
-.nb-markdown :deep(pre) { background: #282c34; padding: 12px; border-radius: 4px; overflow-x: auto; }
-.nb-markdown :deep(pre code) { background: none; padding: 0; }
-.nb-markdown :deep(a) { color: #3daee9; }
-.nb-markdown :deep(table) { border-collapse: collapse; }
-.nb-markdown :deep(th), .nb-markdown :deep(td) { border: 1px solid #555; padding: 6px 10px; }
-.nb-markdown :deep(img) { max-width: 100%; }
+.nb-markdown {
+  padding: 12px 16px;
+  color: #ccc;
+  line-height: 1.6;
 
-.nb-code-input { overflow: hidden; }
-.nb-code-input :deep(.cm-editor) { border-radius: 0; }
-.nb-code-input :deep(.cm-editor.cm-focused) { outline: none; }
+  :deep(h1) { font-size: 1.6em; color: #eee; margin: 0.5em 0 0.3em; }
+  :deep(h2) { font-size: 1.3em; color: #eee; margin: 0.5em 0 0.3em; }
+  :deep(h3) { font-size: 1.1em; color: #eee; margin: 0.5em 0 0.3em; }
+  :deep(p) { margin: 0.4em 0; }
+  :deep(code) { background: $hover-white-medium; padding: 2px 5px; border-radius: 3px; font-size: 0.9em; }
+  :deep(pre) { background: #282c34; padding: 12px; border-radius: 4px; overflow-x: auto; }
+  :deep(pre code) { background: none; padding: 0; }
+  :deep(a) { color: #3daee9; }
+  :deep(table) { border-collapse: collapse; }
+  :deep(th), :deep(td) { border: 1px solid #555; padding: 6px 10px; }
+  :deep(img) { max-width: 100%; }
+}
 
-.nb-output { padding: 8px 16px; }
-.nb-output :deep(.nb-stream) { color: #bbb; font-size: 13px; margin: 0; white-space: pre-wrap; word-break: break-all; }
-.nb-output :deep(.nb-error) { color: #e06c75; font-size: 13px; margin: 0; white-space: pre-wrap; }
-.nb-output :deep(.nb-img) { max-width: 100%; margin: 4px 0; }
-.nb-output :deep(.nb-html-output) { color: #ccc; overflow-x: auto; }
+.nb-code-input {
+  overflow: hidden;
+
+  :deep(.cm-editor) {
+    border-radius: 0;
+
+    &.cm-focused { outline: none; }
+  }
+}
+
+.nb-output {
+  padding: 8px 16px;
+
+  :deep(.nb-stream) { color: #bbb; font-size: 13px; margin: 0; white-space: pre-wrap; word-break: break-all; }
+  :deep(.nb-error) { color: #e06c75; font-size: 13px; margin: 0; white-space: pre-wrap; }
+  :deep(.nb-img) { max-width: 100%; margin: 4px 0; }
+  :deep(.nb-html-output) { color: #ccc; overflow-x: auto; }
+}
 
 .nb-raw { color: #999; padding: 12px 16px; margin: 0; font-size: 13px; }
 </style>

@@ -15,32 +15,33 @@ const emit = defineEmits(['update:checked'])
   </label>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-checkbox {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   cursor: pointer;
   user-select: none;
-}
-.breeze-checkbox__box {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 16px;
-  height: 16px;
-  border: 1px solid var(--breeze-border);
-  border-radius: 2px;
-  background: var(--breeze-bg-alt);
-  transition: all var(--transition-fast);
-  flex-shrink: 0;
-}
-.breeze-checkbox__box--checked {
-  background: var(--breeze-accent);
-  border-color: var(--breeze-accent);
-}
-.breeze-checkbox__label {
-  font-size: 14px;
-  color: var(--breeze-text);
+
+  &__box {
+    @include inline-flex-center;
+    width: 16px;
+    height: 16px;
+    border: 1px solid var(--breeze-border);
+    border-radius: 2px;
+    background: var(--breeze-bg-alt);
+    transition: all var(--transition-fast);
+    flex-shrink: 0;
+
+    &--checked {
+      background: var(--breeze-accent);
+      border-color: var(--breeze-accent);
+    }
+  }
+
+  &__label {
+    font-size: 14px;
+    color: var(--breeze-text);
+  }
 }
 </style>

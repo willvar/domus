@@ -19,7 +19,7 @@ provide('bFormCtx', props)
 export default { emits: ['submit'] }
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-form {
   display: flex;
   flex-direction: column;

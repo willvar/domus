@@ -46,7 +46,7 @@ function decrement() {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-input-number {
   display: flex;
   align-items: center;
@@ -56,51 +56,55 @@ function decrement() {
   height: 32px;
   width: 100%;
   transition: border-color var(--transition-fast);
-}
-.breeze-input-number:focus-within {
-  border-color: var(--breeze-accent);
-}
-.breeze-input-number__btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 100%;
-  border: none;
-  background: none;
-  color: var(--breeze-text-secondary);
-  font-size: 16px;
-  cursor: pointer;
-  flex-shrink: 0;
-  padding: 0;
-}
-.breeze-input-number__btn:hover {
-  color: var(--breeze-text);
-  background: rgba(255, 255, 255, 0.06);
-}
-.breeze-input-number__inner {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  background: transparent;
-  color: var(--breeze-text);
-  font-family: inherit;
-  font-size: 14px;
-  outline: none;
-  text-align: center;
-  caret-color: var(--breeze-accent);
-  -moz-appearance: textfield;
-  padding: 0;
-}
-.breeze-input-number__inner::-webkit-inner-spin-button,
-.breeze-input-number__inner::-webkit-outer-spin-button {
-  -webkit-appearance: none;
-  margin: 0;
-}
-.breeze-input-number__suffix {
-  font-size: 12px;
-  color: var(--breeze-text-secondary);
-  padding-right: 4px;
-  flex-shrink: 0;
+
+  &:focus-within {
+    border-color: var(--breeze-accent);
+  }
+
+  &__btn {
+    @include inline-flex-center;
+    width: 28px;
+    height: 100%;
+    border: none;
+    background: none;
+    color: var(--breeze-text-secondary);
+    font-size: 16px;
+    cursor: pointer;
+    flex-shrink: 0;
+    padding: 0;
+
+    &:hover {
+      color: var(--breeze-text);
+      background: $hover-white-light;
+    }
+  }
+
+  &__inner {
+    flex: 1;
+    min-width: 0;
+    border: none;
+    background: transparent;
+    color: var(--breeze-text);
+    font-family: inherit;
+    font-size: 14px;
+    outline: none;
+    text-align: center;
+    caret-color: var(--breeze-accent);
+    -moz-appearance: textfield;
+    padding: 0;
+
+    &::-webkit-inner-spin-button,
+    &::-webkit-outer-spin-button {
+      -webkit-appearance: none;
+      margin: 0;
+    }
+  }
+
+  &__suffix {
+    font-size: 12px;
+    color: var(--breeze-text-secondary);
+    padding-right: 4px;
+    flex-shrink: 0;
+  }
 }
 </style>

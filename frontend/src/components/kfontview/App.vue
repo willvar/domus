@@ -56,21 +56,40 @@ onUnmounted(() => {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .viewer-toolbar {
-  display: flex; align-items: center; height: 32px; padding: 0 8px;
-  background: var(--breeze-bg-alt); border-bottom: 1px solid var(--breeze-border); flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--breeze-bg-alt);
+  border-bottom: 1px solid var(--breeze-border);
+  flex-shrink: 0;
 }
+
 .font-sample-input {
-  flex: 1; background: rgba(255,255,255,0.06); border: 1px solid var(--breeze-border);
-  color: #ccc; padding: 4px 10px; border-radius: 4px; font-size: 13px; outline: none;
+  flex: 1;
+  background: $hover-white-light;
+  border: 1px solid var(--breeze-border);
+  color: #ccc;
+  padding: 4px 10px;
+  border-radius: 4px;
+  font-size: 13px;
+  outline: none;
+
+  &:focus { border-color: #3daee9; }
 }
-.font-sample-input:focus { border-color: #3daee9; }
 
 .viewer-body.font-body {
-  flex: 1; display: flex; flex-direction: column; min-height: 0; overflow-y: auto;
-  background: var(--breeze-bg); padding: 24px;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--breeze-bg);
+  padding: 24px;
 }
+
 .font-samples { display: flex; flex-direction: column; gap: 20px; }
 .font-sample-row { display: flex; align-items: baseline; gap: 16px; }
 .font-size-label { color: #888; font-size: 12px; min-width: 44px; text-align: right; flex-shrink: 0; }

@@ -180,7 +180,7 @@ const desktopTouch = useTouchHandlers({
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .desktop {
   position: absolute;
   inset: 0;
@@ -193,22 +193,10 @@ const desktopTouch = useTouchHandlers({
   inset: 0;
   width: 100%;
   height: 100%;
-}
 
-.wallpaper-media {
-  object-fit: cover;
-}
-
-.desktop-icons {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  flex-direction: column;
-  flex-wrap: wrap;
-  align-content: flex-start;
-  gap: 8px;
-  padding: 16px;
-  height: 100%;
+  &-media {
+    object-fit: cover;
+  }
 }
 
 .desktop-icon {
@@ -220,26 +208,37 @@ const desktopTouch = useTouchHandlers({
   padding: 8px 4px;
   border-radius: 6px;
   user-select: none;
-}
-.desktop-icon:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
 
-.desktop-icon-img {
-  width: 40px;
-  height: 40px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--breeze-accent);
-}
+  &:hover {
+    background: $hover-white-light;
+  }
 
-.desktop-icon-label {
-  font-size: 11px;
-  color: #dde1e5;
-  text-align: center;
-  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
-  word-break: break-all;
-  line-height: 1.3;
+  &s {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex-direction: column;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    gap: 8px;
+    padding: 16px;
+    height: 100%;
+  }
+
+  &-img {
+    width: 40px;
+    height: 40px;
+    @include flex-center;
+    color: var(--breeze-accent);
+  }
+
+  &-label {
+    font-size: 11px;
+    color: #dde1e5;
+    text-align: center;
+    text-shadow: 0 1px 4px rgba(0, 0, 0, 0.8);
+    word-break: break-all;
+    line-height: 1.3;
+  }
 }
 </style>

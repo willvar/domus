@@ -1,11 +1,12 @@
 <script setup>
-import { computed, ref, watch, onUnmounted } from 'vue'
+import { computed, ref, watch, nextTick, onUnmounted } from 'vue'
 import { useWindowManagerStore } from '../../stores/windowManager'
 import { useAuthStore } from '../../stores/auth'
 import { useJobsStore } from '../../stores/jobs'
 import { useUploadStore } from '../../stores/upload'
 import { usePendingOpsStore } from '../../stores/pendingOps'
 import { useI18n } from '../../composables/useI18n'
+import { consumeContextMenuSuppress, suppressNextContextMenu } from '../../composables/useContextMenu'
 import IconGrid from '~icons/mdi/view-grid'
 import IconSync from '~icons/mdi/refresh'
 import IconAccount from '~icons/mdi/account'
@@ -54,6 +55,72 @@ function handleClick(win) {
     wm.bringToFront(win.id)
   }
 }
+
+// --- Taskbar item context menu ---
+const ctxWinId = ref(null)
+const taskbarCtxRef = ref(null)
+const taskbarCtxStyle = ref({})
+
+function handleTaskbarContext(e, win) {
+  if (consumeContextMenuSuppress()) return
+  ctxWinId.value = win.id
+  const rect = e.currentTarget.getBoundingClientRect()
+  taskbarCtxStyle.value = { left: `${rect.left}px`, top: `${rect.top}px` }
+  nextTick(() => {
+    const menuEl = taskbarCtxRef.value
+    if (!menuEl) return
+    const menuRect = menuEl.getBoundingClientRect()
+    let left = rect.left
+    let top = rect.top - menuRect.height - 4
+    if (left + menuRect.width > window.innerWidth - 4) left = window.innerWidth - menuRect.width - 4
+    if (top < 4) top = rect.bottom + 4
+    taskbarCtxStyle.value = { left: `${left}px`, top: `${top}px` }
+  })
+}
+
+const ctxWin = computed(() => ctxWinId.value ? wm.findWindow(ctxWinId.value) : null)
+
+const taskbarCtxItems = computed(() => {
+  const win = ctxWin.value
+  if (!win) return []
+  const items = []
+  if (win.minimized) {
+    items.push({ label: t('menu.restore_window'), key: 'restore' })
+  } else {
+    items.push({ label: t('menu.minimize_window'), key: 'minimize' })
+  }
+  items.push({ label: win.maximized ? t('menu.restore_window') : t('menu.maximize_window'), key: 'maximize' })
+  items.push({ type: 'divider' })
+  items.push({ label: t('menu.close_window'), key: 'close', danger: true })
+  return items
+})
+
+function handleTaskbarCtx(key) {
+  const id = ctxWinId.value
+  ctxWinId.value = null
+  if (!id) return
+  switch (key) {
+    case 'minimize': wm.minimizeWindow(id); break
+    case 'restore': wm.restoreWindow(id); break
+    case 'maximize': wm.toggleMaximize(id); break
+    case 'close': wm.closeWindow(id); break
+  }
+}
+
+function onTaskbarCtxClickOutside(e) {
+  if (taskbarCtxRef.value && !taskbarCtxRef.value.contains(e.target)) {
+    if (e.button === 2) suppressNextContextMenu()
+    ctxWinId.value = null
+  }
+}
+
+watch(ctxWinId, (val) => {
+  if (val) {
+    document.addEventListener('mousedown', onTaskbarCtxClickOutside, true)
+  } else {
+    document.removeEventListener('mousedown', onTaskbarCtxClickOutside, true)
+  }
+})
 
 // --- User menu dropdown ---
 const showUserMenu = ref(false)
@@ -115,6 +182,7 @@ watch(showUserMenu, (val) => {
 })
 onUnmounted(() => {
   document.removeEventListener('mousedown', onUserMenuClickOutside, true)
+  document.removeEventListener('mousedown', onTaskbarCtxClickOutside, true)
 })
 
 function toggleTasks() {
@@ -159,6 +227,7 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
         }"
         :title="win.title"
         @click="handleClick(win)"
+        @contextmenu.prevent="handleTaskbarContext($event, win)"
       >
         <component :is="win.icon" v-if="win.icon" class="taskbar-item-icon" width="48" height="48" />
       </button>
@@ -208,6 +277,29 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
       <Teleport to="body">
         <Transition name="ctx-menu">
           <div
+            v-if="ctxWinId"
+            ref="taskbarCtxRef"
+            class="plasma-context-menu"
+            :style="taskbarCtxStyle"
+          >
+            <template v-for="(item, i) in taskbarCtxItems" :key="item.key || `div-${i}`">
+              <div v-if="item.type === 'divider'" class="ctx-divider" />
+              <button
+                v-else
+                class="ctx-item"
+                :class="{ danger: item.danger }"
+                @click="handleTaskbarCtx(item.key)"
+              >
+                {{ item.label }}
+              </button>
+            </template>
+          </div>
+        </Transition>
+      </Teleport>
+
+      <Teleport to="body">
+        <Transition name="ctx-menu">
+          <div
             v-if="showUserMenu"
             ref="userMenuRef"
             class="plasma-context-menu"
@@ -232,7 +324,7 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .taskbar {
   height: 64px;
   background: #141618;
@@ -242,71 +334,99 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
   padding: 4px 4px;
   padding-bottom: calc(4px + env(safe-area-inset-bottom));
   flex-shrink: 0;
-}
 
-.taskbar-left {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-}
+  @include mobile {
+    height: 48px;
+    padding: 2px 2px;
+    padding-bottom: calc(2px + env(safe-area-inset-bottom));
+  }
 
-.taskbar-right {
-  margin-left: auto;
-  display: flex;
-  align-items: center;
-  padding-right: 6px;
-  gap: 2px;
-}
+  &-left {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+  }
 
-.taskbar-item {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 64px;
-  height: 100%;
-  padding: 4px 8px;
-  border: none;
-  border-radius: 0;
-  background: #272b30;
-  border-top: 2px solid #3b4248;
-  color: var(--breeze-text);
-}
-.taskbar-item:hover {
-  background: #333840;
-}
+  &-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    padding-right: 6px;
+    gap: 2px;
 
-.taskbar-item--active {
-  background: #2a7aab;
-  border-top-color: #4db8d9;
-}
-.taskbar-item--active:hover {
-  background: #3291c4;
-  border-top-color: #5cc8e8;
-}
+    @include mobile {
+      gap: 2px;
+    }
+  }
 
-.taskbar-item-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-}
+  &-item {
+    @include flex-center;
+    width: 64px;
+    height: 100%;
+    padding: 4px 8px;
+    border: none;
+    border-radius: 0;
+    background: #272b30;
+    border-top: 2px solid #3b4248;
+    color: var(--breeze-text);
 
-.taskbar-tray-btn {
-  position: relative;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  color: var(--breeze-text-secondary);
-}
-.taskbar-tray-btn:hover {
-  color: var(--breeze-text);
-}
-.taskbar-tray-btn--active {
-  color: #3daee9;
+    &:hover {
+      background: #333840;
+    }
+
+    &--active {
+      background: #2a7aab;
+      border-top-color: #4db8d9;
+
+      &:hover {
+        background: #3291c4;
+        border-top-color: #5cc8e8;
+      }
+    }
+
+    &-icon {
+      @include flex-center;
+    }
+
+    @include mobile {
+      width: 48px;
+      height: 44px;
+    }
+
+    &__btn {
+      @include mobile {
+        width: 36px;
+        height: 36px;
+        border-radius: 6px;
+      }
+    }
+
+    &__icon {
+      @include mobile {
+        width: 20px;
+        height: 20px;
+      }
+    }
+  }
+
+  &-tray-btn {
+    position: relative;
+    @include flex-center;
+    width: 40px;
+    height: 40px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--breeze-text-secondary);
+
+    &:hover {
+      color: var(--breeze-text);
+    }
+
+    &--active {
+      color: #3daee9;
+    }
+  }
 }
 
 .tray-avatar {
@@ -330,73 +450,11 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
   font-weight: 600;
   line-height: 14px;
   text-align: center;
-}
-.tray-badge--warning {
-  background: #e6a23c;
+
+  &--warning {
+    background: #e6a23c;
+  }
 }
 
-/* ─── Plasma context menu (user menu) ─── */
-.plasma-context-menu {
-  position: fixed;
-  z-index: 10000;
-  min-width: 160px;
-  padding: 4px 0;
-  background: var(--breeze-surface-raised, #31363b);
-  border: 1px solid var(--breeze-border, #3b4045);
-  border-radius: 4px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-}
-
-.ctx-item {
-  display: block;
-  width: 100%;
-  padding: 5px 16px;
-  margin: 0;
-  border: none;
-  background: none;
-  color: var(--breeze-text, #fcfcfc);
-  font-size: 14px;
-  line-height: 22px;
-  text-align: left;
-  cursor: default;
-}
-.ctx-item:hover:not(:disabled) {
-  background: var(--breeze-accent, #3daee9);
-  color: #fff;
-}
-.ctx-item.danger:hover:not(:disabled) {
-  background: var(--breeze-danger, #da4453);
-}
-.ctx-item.disabled {
-  color: var(--breeze-text-disabled, #505962);
-  cursor: default;
-}
-
-.ctx-divider {
-  height: 1px;
-  margin: 4px 8px;
-  background: var(--breeze-border, #3b4045);
-}
-
-.ctx-menu-enter-active {
-  transition: opacity 0.12s ease, transform 0.12s ease;
-}
-.ctx-menu-leave-active {
-  transition: opacity 0.08s ease;
-}
-.ctx-menu-enter-from {
-  opacity: 0;
-  transform: scale(0.96);
-}
-.ctx-menu-leave-to {
-  opacity: 0;
-}
-
-@media (max-width: 767px) {
-  .taskbar { height: 48px; padding: 2px 2px; padding-bottom: calc(2px + env(safe-area-inset-bottom)); }
-  .taskbar-item { width: 48px; height: 44px; }
-  .taskbar-item__btn { width: 36px; height: 36px; border-radius: 6px; }
-  .taskbar-item__icon { width: 20px; height: 20px; }
-  .taskbar-right { gap: 2px; }
-}
+@include ctx-menu-transition;
 </style>

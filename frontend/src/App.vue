@@ -33,11 +33,9 @@ onMounted(async () => {
   <NotificationContainer />
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .loading-screen {
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @include flex-center;
   height: 100%;
   background: var(--breeze-bg);
 }

@@ -217,7 +217,7 @@ function handleSearchKeydown(e) {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .toolbar {
   display: flex;
   align-items: center;
@@ -228,11 +228,20 @@ function handleSearchKeydown(e) {
   border-bottom: 1px solid var(--breeze-border);
   gap: var(--gap-xs);
   flex-shrink: 0;
-}
-.toolbar-left, .toolbar-right {
-  display: flex;
-  align-items: center;
-  gap: 2px;
+
+  &-left,
+  &-right {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  &-sep {
+    width: 1px;
+    height: 18px;
+    background: var(--breeze-border);
+    margin: 0 4px;
+  }
 }
 
 /* ─── Button group ─── */
@@ -247,75 +256,34 @@ function handleSearchKeydown(e) {
   width: 28px;
   height: 28px;
   padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @include flex-center;
   border: none;
   border-radius: 3px;
   background: none;
   color: var(--breeze-text-secondary);
   cursor: default;
   transition: background var(--transition-fast), color var(--transition-fast);
-}
-.nav-btn:hover:not(:disabled) {
-  background: var(--toolbar-button-hover);
-  color: var(--breeze-text);
-}
-.nav-btn:active:not(:disabled),
-.nav-btn.active {
-  background: var(--toolbar-button-active);
-  color: var(--breeze-text);
-}
-.nav-btn:disabled {
-  opacity: 0.35;
-  cursor: default;
-}
 
-/* ─── Separator ─── */
-.toolbar-sep {
-  width: 1px;
-  height: 18px;
-  background: var(--breeze-border);
-  margin: 0 4px;
-}
+  &:hover:not(:disabled) {
+    background: var(--toolbar-button-hover);
+    color: var(--breeze-text);
+  }
 
-/* ─── View mode dropdown (Plasma style) ─── */
-.plasma-dropdown {
-  position: fixed;
-  z-index: 10000;
-  min-width: 120px;
-  padding: 4px 0;
-  background: var(--breeze-surface-raised, #31363b);
-  border: 1px solid var(--breeze-border, #3b4045);
-  border-radius: 4px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
-}
-.dropdown-item {
-  display: block;
-  width: 100%;
-  padding: 5px 16px;
-  border: none;
-  background: none;
-  color: var(--breeze-text, #fcfcfc);
-  font-size: 14px;
-  line-height: 22px;
-  text-align: left;
-  cursor: default;
-}
-.dropdown-item:hover {
-  background: var(--breeze-accent, #3daee9);
-  color: #fff;
-}
-.dropdown-item.selected {
-  color: var(--breeze-accent, #3daee9);
-}
-.dropdown-item.selected:hover {
-  color: #fff;
-}
-.dropdown-divider {
-  height: 1px;
-  margin: 4px 8px;
-  background: var(--breeze-border, #3b4045);
+  &:active:not(:disabled),
+  &.active {
+    background: var(--toolbar-button-active);
+    color: var(--breeze-text);
+  }
+
+  &:disabled {
+    opacity: 0.35;
+    cursor: default;
+  }
+
+  @include mobile {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }
 
 /* ─── Search box (Breeze-style input) ─── */
@@ -329,16 +297,23 @@ function handleSearchKeydown(e) {
   border: 1px solid var(--breeze-border, #3b4045);
   border-radius: 3px;
   transition: border-color var(--transition-fast);
+
+  &:focus-within {
+    border-color: var(--breeze-accent, #3daee9);
+  }
+
+  @include mobile {
+    width: 120px;
+  }
 }
-.search-box:focus-within {
-  border-color: var(--breeze-accent, #3daee9);
-}
+
 .search-icon {
   flex-shrink: 0;
   margin-left: 6px;
   color: var(--breeze-text-secondary);
   pointer-events: none;
 }
+
 .search-input {
   flex: 1;
   width: 100%;
@@ -349,15 +324,15 @@ function handleSearchKeydown(e) {
   color: var(--breeze-text, #fcfcfc);
   font-size: 13px;
   outline: none;
+
+  &::placeholder {
+    color: var(--breeze-text-disabled, #505962);
+  }
 }
-.search-input::placeholder {
-  color: var(--breeze-text-disabled, #505962);
-}
+
 .search-clear {
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @include flex-center;
   width: 18px;
   height: 18px;
   margin-right: 3px;
@@ -366,29 +341,13 @@ function handleSearchKeydown(e) {
   background: none;
   color: var(--breeze-text-secondary);
   cursor: default;
-}
-.search-clear:hover {
-  background: var(--toolbar-button-hover);
-  color: var(--breeze-text);
+
+  &:hover {
+    background: var(--toolbar-button-hover);
+    color: var(--breeze-text);
+  }
 }
 
 /* ─── Dropdown transition (shared with context menu) ─── */
-.ctx-menu-enter-active {
-  transition: opacity 0.12s ease, transform 0.12s ease;
-}
-.ctx-menu-leave-active {
-  transition: opacity 0.08s ease;
-}
-.ctx-menu-enter-from {
-  opacity: 0;
-  transform: scale(0.96);
-}
-.ctx-menu-leave-to {
-  opacity: 0;
-}
-
-@media (max-width: 767px) {
-  .search-box { width: 120px; }
-  .nav-btn { min-width: 44px; min-height: 44px; }
-}
+@include ctx-menu-transition;
 </style>

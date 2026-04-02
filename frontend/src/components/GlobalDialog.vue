@@ -7,6 +7,7 @@ import BCard from './breeze/BCard.vue'
 import BButton from './breeze/BButton.vue'
 import BInput from './breeze/BInput.vue'
 import BCheckbox from './breeze/BCheckbox.vue'
+import IconAlertCircle from '~icons/mdi/alert-circle'
 
 const { t } = useI18n()
 const dialogState = useDialogState()
@@ -90,14 +91,18 @@ function formatSize(bytes) {
     :show="visible"
     preset="dialog"
     :title="dialogState?.title ?? ''"
-    :positive-text="t('dialog.ok')"
+    :positive-text="dialogState?.positiveText || t('dialog.ok')"
+    :positive-type="dialogState?.positiveType || 'primary'"
     :negative-text="dialogState?.type === 'alert' ? undefined : t('dialog.cancel')"
     @positive-click="handleConfirm"
     @negative-click="handleCancel"
     @close="handleCancel"
     @mask-click="handleCancel"
   >
-    <div v-if="dialogState?.content" class="dialog-content" v-html="linkify(dialogState.content)" />
+    <div v-if="dialogState?.icon || dialogState?.content" class="dialog-body-row">
+      <IconAlertCircle v-if="dialogState?.icon === 'warning'" class="dialog-icon--warning" width="36" height="36" />
+      <div v-if="dialogState?.content" class="dialog-content" v-html="linkify(dialogState.content)" />
+    </div>
     <BInput
       v-if="dialogState?.type === 'prompt'"
       ref="inputRef"
@@ -160,11 +165,23 @@ function formatSize(bytes) {
   </BModal>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
+.dialog-body-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.dialog-icon--warning {
+  flex-shrink: 0;
+  color: #f0ad4e;
+}
+
 .dialog-content {
   white-space: pre-line;
   line-height: 1.5;
   color: var(--breeze-text);
+  padding-top: 6px;
 }
 
 .duplicate-summary {

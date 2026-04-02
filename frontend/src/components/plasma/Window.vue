@@ -430,24 +430,30 @@ onUnmounted(() => {
   </Transition>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .plasma-window {
   flex-direction: column;
   background: var(--breeze-surface);
   border: 1px solid var(--breeze-border);
   border-radius: 6px;
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+  box-shadow: $shadow-window;
   animation: window-open 0.2s ease;
-}
-.plasma-window--closing {
-  animation: window-close 0.15s ease forwards;
-  pointer-events: none;
+
+  &--closing {
+    animation: window-close 0.15s ease forwards;
+    pointer-events: none;
+  }
+
+  &--maximized .plasma-window-body {
+    border-radius: 0;
+  }
 }
 
 @keyframes window-open {
   from { opacity: 0; transform: scale(0.92); }
   to   { opacity: 1; transform: scale(1); }
 }
+
 @keyframes window-close {
   from { opacity: 1; transform: scale(1); }
   to   { opacity: 0; transform: scale(0.92); }
@@ -463,29 +469,31 @@ onUnmounted(() => {
   user-select: none;
   flex-shrink: 0;
   gap: 8px;
-}
 
-.plasma-titlebar-icon {
-  display: flex;
-  align-items: center;
-  width: 20px;
-  height: 20px;
-  flex-shrink: 0;
-}
+  &-icon {
+    display: flex;
+    align-items: center;
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+  }
 
-.plasma-titlebar-title {
-  flex: 1;
-  font-size: 13px;
-  color: var(--breeze-text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+  &-title {
+    flex: 1;
+    font-size: 13px;
+    color: var(--breeze-text);
+    @include truncate;
+  }
 
-.plasma-titlebar-buttons {
-  display: flex;
-  gap: 6px;
-  flex-shrink: 0;
+  &-buttons {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+
+    @include mobile {
+      gap: 8px;
+    }
+  }
 }
 
 .plasma-btn {
@@ -495,19 +503,24 @@ onUnmounted(() => {
   border-radius: 50%;
   background: transparent;
   color: #fcfcfc;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @include flex-center;
   padding: 0;
   transition: background 0.15s, color 0.15s;
-}
-.plasma-btn:hover {
-  background: #fcfcfc;
-  color: var(--breeze-surface-raised);
-}
-.plasma-btn-close:hover {
-  background: #da4453;
-  color: var(--breeze-surface-raised);
+
+  &:hover {
+    background: #fcfcfc;
+    color: var(--breeze-surface-raised);
+  }
+
+  &-close:hover {
+    background: #da4453;
+    color: var(--breeze-surface-raised);
+  }
+
+  @include mobile {
+    width: 36px;
+    height: 36px;
+  }
 }
 
 .plasma-window-body {
@@ -518,15 +531,16 @@ onUnmounted(() => {
   flex-direction: column;
   border-radius: 0 0 6px 6px;
 }
-.plasma-window--maximized .plasma-window-body {
-  border-radius: 0;
-}
 
-/* --- Resize edges --- */
 .resize-edge {
   position: absolute;
-  z-index: 10;
+  z-index: $z-resize;
+
+  @include mobile {
+    display: none;
+  }
 }
+
 .resize-n { top: -4px; left: 8px; right: 8px; height: 8px; cursor: ns-resize; }
 .resize-s { bottom: -4px; left: 8px; right: 8px; height: 8px; cursor: ns-resize; }
 .resize-w { left: -4px; top: 8px; bottom: 8px; width: 8px; cursor: ew-resize; }
@@ -536,22 +550,16 @@ onUnmounted(() => {
 .resize-sw { bottom: -4px; left: -4px; width: 12px; height: 12px; cursor: nesw-resize; }
 .resize-se { bottom: -4px; right: -4px; width: 12px; height: 12px; cursor: nwse-resize; }
 
-/* --- Snap preview --- */
 .snap-preview {
   position: absolute;
-  z-index: 9999;
+  z-index: $z-snap-preview;
   background: rgba(61, 174, 233, 0.2);
   border: 2px solid var(--breeze-accent);
   border-radius: 6px;
   pointer-events: none;
 }
+
 .snap-fade-enter-active { transition: opacity 0.15s ease; }
 .snap-fade-leave-active { transition: opacity 0.1s ease; }
 .snap-fade-enter-from, .snap-fade-leave-to { opacity: 0; }
-
-@media (max-width: 767px) {
-  .resize-edge { display: none; }
-  .plasma-titlebar-buttons { gap: 8px; }
-  .plasma-btn { width: 36px; height: 36px; }
-}
 </style>

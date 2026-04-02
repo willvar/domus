@@ -140,31 +140,36 @@ function close() {
 }
 </script>
 
-<style scoped>
+<style lang="scss" scoped>
 .share-field {
   margin-bottom: 12px;
+
+  label {
+    display: block;
+    font-size: 13px;
+    margin-bottom: 4px;
+    color: var(--text-secondary, #666);
+  }
 }
-.share-field label {
-  display: block;
-  font-size: 13px;
-  margin-bottom: 4px;
-  color: var(--text-secondary, #666);
-}
+
 .share-result {
   margin-top: 16px;
   padding-top: 12px;
   border-top: 1px solid var(--border-color, #e0e0e0);
+
+  label {
+    display: block;
+    font-size: 13px;
+    margin-bottom: 4px;
+    color: var(--text-secondary, #666);
+  }
 }
-.share-result label {
-  display: block;
-  font-size: 13px;
-  margin-bottom: 4px;
-  color: var(--text-secondary, #666);
-}
+
 .share-link-row {
   display: flex;
   gap: 8px;
 }
+
 .share-link-input {
   flex: 1;
   padding: 4px 8px;
@@ -173,6 +178,7 @@ function close() {
   border-radius: 4px;
   background: var(--bg-secondary, #f5f5f5);
 }
+
 .share-error {
   margin-top: 8px;
   color: #c00;

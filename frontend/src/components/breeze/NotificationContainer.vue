@@ -40,17 +40,18 @@ function onMouseLeave(n) {
   </Teleport>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .breeze-notification-container {
   position: fixed;
   top: 16px;
   right: 16px;
-  z-index: 99998;
+  z-index: $z-notification;
   display: flex;
   flex-direction: column;
   gap: 8px;
   max-width: 380px;
 }
+
 .breeze-notification {
   background: var(--breeze-surface-raised);
   border: 1px solid var(--breeze-border);
@@ -59,32 +60,39 @@ function onMouseLeave(n) {
   padding: 12px 16px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
   color: var(--breeze-text);
+
+  &__title {
+    font-weight: 600;
+    font-size: 14px;
+    margin-bottom: 4px;
+  }
+
+  &__content {
+    font-size: 13px;
+    color: var(--breeze-text-secondary);
+    line-height: 1.5;
+  }
+
+  &__action {
+    margin-top: 8px;
+    display: flex;
+    justify-content: flex-end;
+  }
 }
-.breeze-notification__title {
-  font-weight: 600;
-  font-size: 14px;
-  margin-bottom: 4px;
-}
-.breeze-notification__content {
-  font-size: 13px;
-  color: var(--breeze-text-secondary);
-  line-height: 1.5;
-}
-.breeze-notification__action {
-  margin-top: 8px;
-  display: flex;
-  justify-content: flex-end;
-}
+
 .breeze-notif-enter-active {
   transition: all 0.3s ease;
 }
+
 .breeze-notif-leave-active {
   transition: all 0.2s ease;
 }
+
 .breeze-notif-enter-from {
   opacity: 0;
   transform: translateX(40px);
 }
+
 .breeze-notif-leave-to {
   opacity: 0;
   transform: translateX(40px);

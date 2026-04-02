@@ -563,7 +563,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const count = selectedFiles.value.length
 
     if (isTrash.value) {
-      if (!await showConfirm(t('dialog.confirm_permanent_delete', { n: count }))) return
+      if (!await showConfirm(t('dialog.permanent_delete_title'), t('dialog.confirm_permanent_delete', { n: count }), { icon: 'warning', positiveType: 'error' })) return
       for (const path of selectedFiles.value) {
         const file = getFileByPath(path)
         if (!file?._trashId) continue
@@ -574,7 +574,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         }
       }
     } else {
-      if (!await showConfirm(t('dialog.confirm_delete', { n: count }))) return
+      if (!await showConfirm(t('dialog.delete_title'), t('dialog.confirm_delete', { n: count }), { icon: 'warning', positiveType: 'error' })) return
       const promises = selectedFiles.value.map(path => {
         return ws.request('file.delete', { path })
       })
@@ -601,7 +601,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   async function emptyTrash() {
-    if (!await showConfirm(t('dialog.confirm_empty_trash'))) return
+    if (!await showConfirm(t('dialog.empty_trash_title'), t('dialog.confirm_empty_trash'), { icon: 'warning', positiveType: 'error' })) return
     try {
       await ws.request('trash.clear')
     } catch (e) {

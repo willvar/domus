@@ -62,7 +62,7 @@ const iconName = computed(() => {
   </div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .info-panel {
   width: var(--info-panel-width);
   min-width: var(--info-panel-width);
@@ -72,21 +72,25 @@ const iconName = computed(() => {
   overflow-y: auto;
   flex-shrink: 0;
 }
+
 .info-preview {
   text-align: center;
   margin-bottom: var(--gap-lg);
 }
+
 .info-icon {
   display: flex;
   justify-content: center;
   margin-bottom: var(--gap-sm);
 }
+
 .info-name {
   font-size: var(--font-size-md);
   font-weight: 500;
   word-break: break-all;
   color: var(--breeze-text);
 }
+
 .info-details {
   font-size: var(--font-size-sm);
 }

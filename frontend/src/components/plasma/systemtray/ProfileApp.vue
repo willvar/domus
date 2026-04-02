@@ -404,7 +404,7 @@ async function disableOTP() {
   </PlasmaWindow>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .profile-app {
   flex: 1;
   min-height: 0;
@@ -416,80 +416,86 @@ async function disableOTP() {
   padding-top: 8px;
 }
 
-/* Avatar */
+// Avatar
 .profile-avatar-section {
   display: flex;
   justify-content: center;
   margin-bottom: 20px;
 }
+
 .profile-avatar {
   position: relative;
   width: 80px;
   height: 80px;
   border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @include flex-center;
   cursor: pointer;
   overflow: hidden;
   border: 2px solid var(--breeze-border);
+
+  &:hover .profile-avatar-overlay {
+    opacity: 1;
+  }
 }
+
 .profile-avatar-img {
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
+
 .profile-avatar-initial {
   font-size: 32px;
   font-weight: 600;
   color: #fff;
   user-select: none;
 }
+
 .profile-avatar-overlay {
   position: absolute;
   inset: 0;
   background: rgba(0, 0, 0, 0.5);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  @include flex-center;
   color: #fff;
   opacity: 0;
   transition: opacity 0.15s;
 }
-.profile-avatar:hover .profile-avatar-overlay {
-  opacity: 1;
-}
 
-/* Fields */
+// Fields
 .profile-field {
   display: flex;
   align-items: center;
   justify-content: space-between;
   padding: 8px 0;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid $hover-white-subtle;
+
+  &:last-child {
+    border-bottom: none;
+  }
 }
-.profile-field:last-child {
-  border-bottom: none;
-}
+
 .profile-label {
   font-size: 13px;
   color: var(--breeze-text-secondary);
   flex-shrink: 0;
 }
+
 .profile-value {
   font-size: 13px;
   color: var(--breeze-text);
-}
-.profile-value--muted {
-  color: var(--breeze-text-disabled);
+
+  &--muted {
+    color: var(--breeze-text-disabled);
+  }
 }
 
-/* Display name edit */
+// Display name edit
 .profile-name-display {
   display: flex;
   align-items: center;
   gap: 6px;
 }
+
 .profile-name-edit {
   display: flex;
   align-items: center;
@@ -497,10 +503,9 @@ async function disableOTP() {
   flex: 1;
   max-width: 260px;
 }
+
 .profile-edit-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
+  @include inline-flex-center;
   width: 22px;
   height: 22px;
   border: none;
@@ -509,23 +514,26 @@ async function disableOTP() {
   border-radius: 3px;
   cursor: pointer;
   padding: 0;
+
+  &:hover {
+    background: $hover-white-medium;
+    color: var(--breeze-accent);
+  }
 }
-.profile-edit-btn:hover {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--breeze-accent);
-}
+
 .profile-locked {
   display: inline-flex;
   align-items: center;
   color: var(--breeze-text-disabled);
 }
 
-/* Security tab */
+// Security tab
 .security-content {
   padding-top: 8px;
-}
-.security-content :deep(.breeze-card) {
-  background: rgba(255, 255, 255, 0.02);
-  border-color: #3b4045;
+
+  :deep(.breeze-card) {
+    background: rgba(255, 255, 255, 0.02);
+    border-color: #3b4045;
+  }
 }
 </style>
