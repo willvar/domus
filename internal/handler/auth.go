@@ -29,10 +29,12 @@ func (h *Handler) issueSession(c *fiber.Ctx, user *model.User, method string) er
 		return c.Status(500).JSON(fiber.Map{"error": "session_creation_failed"})
 	}
 
+	secure := strings.EqualFold(c.Protocol(), "https")
 	c.Cookie(&fiber.Cookie{
 		Name:     middleware.SessionCookieName,
 		Value:    auth.SignCookie(sessionID, h.Config.Server.SessionSecret),
 		HTTPOnly: true,
+		Secure:   secure,
 		SameSite: "Lax",
 		MaxAge:   86400 * 7,
 		Path:     "/",
@@ -317,10 +319,13 @@ func (h *Handler) handleLogout(c *fiber.Ctx) error {
 	sessionID := c.Locals("sessionID").(string)
 	h.Sessions.Delete(sessionID)
 
+	secure := strings.EqualFold(c.Protocol(), "https")
 	c.Cookie(&fiber.Cookie{
 		Name:     middleware.SessionCookieName,
 		Value:    "",
 		HTTPOnly: true,
+		Secure:   secure,
+		SameSite: "Lax",
 		MaxAge:   -1,
 		Path:     "/",
 	})

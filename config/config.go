@@ -178,5 +178,6 @@ func Save(path string, cfg *Config) error {
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
-	return os.WriteFile(path, data, 0644)
+	// Config may contain secrets (session/encryption/SMTP credentials).
+	return os.WriteFile(path, data, 0600)
 }
