@@ -1,0 +1,48 @@
+@use 'variables' as *;
+
+@mixin flex-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@mixin inline-flex-center {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+@mixin truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@mixin mobile {
+  @media (max-width: $bp-mobile) {
+    @content;
+  }
+}
+
+@mixin popup-surface {
+  background: var(--breeze-surface-raised);
+  border: 1px solid var(--breeze-border);
+  border-radius: 4px;
+  box-shadow: $shadow-dropdown;
+}
+
+@mixin ctx-menu-transition($name: ctx-menu) {
+  .#{$name}-enter-active {
+    transition: opacity 0.12s ease, transform 0.12s ease;
+  }
+  .#{$name}-leave-active {
+    transition: opacity 0.08s ease;
+  }
+  .#{$name}-enter-from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  .#{$name}-leave-to {
+    opacity: 0;
+  }
+}
