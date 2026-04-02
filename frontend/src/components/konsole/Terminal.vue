@@ -1,11 +1,11 @@
 <script setup>
 import { ref, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
-import { Terminal } from 'xterm'
+import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import { useWebSocket } from '../../composables/useWebSocket'
 import { useAuthStore } from '../../stores/auth'
-import 'xterm/css/xterm.css'
+import '@xterm/xterm/css/xterm.css'
 
 const props = defineProps({
   initialCwd: { type: String, default: '' },
@@ -568,20 +568,21 @@ watch(() => props.initialCwd, () => {
   <div class="konsole-terminal" ref="termRef"></div>
 </template>
 
-<style scoped>
+<style lang="scss" scoped>
 .konsole-terminal {
   width: 100%;
   height: 100%;
   overflow: hidden;
   background: #1b1e20;
-}
 
-.konsole-terminal :deep(.xterm) {
-  height: 100%;
-  padding: 4px 0 0 4px;
-}
+  :deep(.xterm) {
+    height: 100%;
+    padding: 4px 0 0 4px;
+  }
 
-.konsole-terminal :deep(.xterm-viewport) {
-  overflow-y: auto !important;
+  :deep(.xterm-viewport) {
+    background-color: #1b1e20 !important;
+    overflow-y: auto !important;
+  }
 }
 </style>

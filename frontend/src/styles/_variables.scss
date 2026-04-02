@@ -1,0 +1,23 @@
+// ── Breakpoints ──
+$bp-mobile: 767px;
+
+// ── Z-index scale ──
+$z-sticky: 2;
+$z-resize: 10;
+$z-overlay: 50;
+$z-tray: 1000;
+$z-modal: 5000;
+$z-snap-preview: 9999;
+$z-popup: 10000;
+$z-notification: 99998;
+$z-message: 99999;
+
+// ── Shadow presets ──
+$shadow-dropdown: 0 4px 16px rgba(0, 0, 0, 0.4);
+$shadow-window: 0 8px 32px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+
+// ── Hover backgrounds (static, not themed) ──
+$hover-white-subtle: rgba(255, 255, 255, 0.04);
+$hover-white-light: rgba(255, 255, 255, 0.06);
+$hover-white-medium: rgba(255, 255, 255, 0.08);
+$hover-white-strong: rgba(255, 255, 255, 0.1);
