@@ -424,6 +424,10 @@ func (h *Handler) wsFileMkdir(conn *ws.Conn, _ string, data json.RawMessage) (an
 		return nil, err
 	}
 
+	if !strings.HasSuffix(resolvedPath, "/") {
+		resolvedPath += "/"
+	}
+
 	if err := h.Store.CreateDirectory(resolvedPath); err != nil {
 		return nil, &wsError{Code: "mkdir_failed"}
 	}
