@@ -4,6 +4,7 @@ import { useAuthStore } from './stores/auth'
 const routes = [
   { path: '/', component: () => import('./views/PlasmaShell.vue') },
   { path: '/admin', component: () => import('./views/AdminView.vue'), meta: { requiresRoot: true } },
+  { path: '/s/:shareId', component: () => import('./views/ShareView.vue'), meta: { public: true } },
   { path: '/:pathMatch(.*)*', redirect: '/' },
 ]
 
