@@ -12,6 +12,10 @@ import (
 
 var db *gorm.DB
 
+// hasFTS indicates whether pg_jieba full-text search is available.
+// When false, search falls back to ILIKE with pg_trgm index.
+var hasFTS bool
+
 // SetDB sets the package-level db variable. This is intended for use in tests
 // where the caller manages the database connection directly.
 func SetDB(d *gorm.DB) {
@@ -66,9 +70,17 @@ func InitDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	// One-time migration: drop legacy uploads table (merged into files)
 	db.Exec("DROP TABLE IF EXISTS uploads")
 
-	// Ensure pg_jieba extension and GIN index for full-text search
+	// Full-text search: prefer pg_jieba for Chinese segmentation
 	db.Exec("CREATE EXTENSION IF NOT EXISTS pg_jieba")
-	db.Exec("CREATE INDEX IF NOT EXISTS idx_fts ON files USING gin(search_vector)")
+	var ftsConf string
+	if err := db.Raw("SELECT cfgname FROM pg_ts_config WHERE cfgname = 'jiebacfg' LIMIT 1").Scan(&ftsConf).Error; err == nil && ftsConf == "jiebacfg" {
+		hasFTS = true
+		db.Exec("CREATE INDEX IF NOT EXISTS idx_fts ON files USING gin(search_vector)")
+	}
+
+	// pg_trgm for ILIKE fallback search (always available, built-in contrib)
+	db.Exec("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+	db.Exec("CREATE INDEX IF NOT EXISTS idx_files_name_trgm ON files USING gin(name gin_trgm_ops)")
 
 	return db, nil
 }

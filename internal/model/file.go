@@ -1,6 +1,7 @@
 package model
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -133,11 +134,30 @@ func DeleteFilesByPrefix(userID string, prefix string) error {
 
 // UpdateFileSearchVector updates the full-text search index for a file.
 // text is the combined content to index (file name, optionally + file content).
+// No-op when pg_jieba is not available (ILIKE fallback doesn't need a search vector).
 func UpdateFileSearchVector(userID, path, text string) error {
+	if !hasFTS {
+		return nil
+	}
 	return db.Exec(
 		"UPDATE files SET search_vector = to_tsvector('jiebacfg', ?) WHERE user_id = ? AND path = ?",
 		text, userID, path,
 	).Error
+}
+
+// RebuildAllSearchVectors rebuilds the full-text search index for all files.
+// Useful after pg_jieba becomes available on a previously fallback-only instance.
+func RebuildAllSearchVectors() (int64, error) {
+	if !hasFTS {
+		return 0, fmt.Errorf("pg_jieba is not available")
+	}
+	res := db.Exec("UPDATE files SET search_vector = to_tsvector('jiebacfg', name) WHERE status = 'ready'")
+	return res.RowsAffected, res.Error
+}
+
+// HasFullTextSearch returns whether pg_jieba full-text search is available.
+func HasFullTextSearch() bool {
+	return hasFTS
 }
 
 // SearchFileResult holds a search result with rank score.
@@ -147,21 +167,39 @@ type SearchFileResult struct {
 }
 
 // SearchFiles performs full-text search across a user's files.
+// Uses pg_jieba tsvector when available, falls back to ILIKE with pg_trgm.
 func SearchFiles(userID, query string, limit int) ([]SearchFileResult, error) {
 	if limit <= 0 {
 		limit = 50
 	}
 	var results []SearchFileResult
+
+	if hasFTS {
+		err := db.Raw(`
+			SELECT f.*, ts_rank(f.search_vector, q) AS rank
+			FROM files f, plainto_tsquery('jiebacfg', ?) q
+			WHERE f.user_id = ?
+			  AND f.status = 'ready'
+			  AND f.search_vector @@ q
+			  AND f.name NOT LIKE '.%'
+			ORDER BY rank DESC
+			LIMIT ?
+		`, query, userID, limit).Scan(&results).Error
+		return results, err
+	}
+
+	// Fallback: ILIKE on file name (accelerated by pg_trgm GIN index)
+	pattern := "%" + query + "%"
 	err := db.Raw(`
-		SELECT f.*, ts_rank(f.search_vector, q) AS rank
-		FROM files f, plainto_tsquery('jiebacfg', ?) q
-		WHERE f.user_id = ?
-		  AND f.status = 'ready'
-		  AND f.search_vector @@ q
-		  AND f.name NOT LIKE '.%'
+		SELECT *, similarity(name, ?) AS rank
+		FROM files
+		WHERE user_id = ?
+		  AND status = 'ready'
+		  AND name ILIKE ?
+		  AND name NOT LIKE '.%'
 		ORDER BY rank DESC
 		LIMIT ?
-	`, query, userID, limit).Scan(&results).Error
+	`, query, userID, pattern, limit).Scan(&results).Error
 	return results, err
 }
 
