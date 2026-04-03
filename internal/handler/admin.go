@@ -36,7 +36,7 @@ func (h *Handler) handleCreateUser(c *fiber.Ctx) error {
 	if body.Role == "" {
 		body.Role = "user"
 	}
-	if body.Role != "root" && body.Role != "user" {
+	if !isValidUserRole(body.Role) {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_role"})
 	}
 
@@ -91,6 +91,14 @@ func (h *Handler) handleUpdateUser(c *fiber.Ctx) error {
 
 	role := user.Role
 	if body.Role != "" {
+		if !isValidUserRole(body.Role) {
+			return c.Status(400).JSON(fiber.Map{"error": "invalid_role"})
+		}
+		if code, guardErr := ensureNotDemotingLastRoot(user, body.Role); guardErr != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "update_user_failed"})
+		} else if code != "" {
+			return c.Status(400).JSON(fiber.Map{"error": code})
+		}
 		role = body.Role
 	}
 
@@ -100,7 +108,7 @@ func (h *Handler) handleUpdateUser(c *fiber.Ctx) error {
 
 	// If role changed, invalidate sessions
 	if body.Role != "" && body.Role != user.Role {
-		h.Sessions.DeleteByUserID(user.ID)
+		h.revokeUserSessions(user.ID)
 	}
 
 	h.Audit.LogFromCtx(c, "user_update", user.Username, "", "success", 0)
@@ -122,11 +130,13 @@ func (h *Handler) handleDeleteUser(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "user_not_found"})
 	}
+	if code, guardErr := ensureNotDeletingLastRoot(user); guardErr != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "delete_user_failed"})
+	} else if code != "" {
+		return c.Status(400).JSON(fiber.Map{"error": code})
+	}
 
-	// Delete user's sessions
-	h.Sessions.DeleteByUserID(user.ID)
-
-	if err := model.DeleteUser(user.ID); err != nil {
+	if err := h.deleteUserCompletely(user); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "delete_user_failed"})
 	}
 
@@ -142,7 +152,7 @@ func (h *Handler) handleResetUserOTP(c *fiber.Ctx) error {
 	if err := model.UpdateUserTOTP(id, "", false); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "update_failed"})
 	}
-	h.Sessions.DeleteByUserID(id)
+	h.revokeUserSessions(id)
 	h.Audit.LogFromCtx(c, "user_reset_otp", id, "", "success", 0)
 	return c.JSON(fiber.Map{"ok": true})
 }
@@ -155,7 +165,7 @@ func (h *Handler) handleResetUserEmail(c *fiber.Ctx) error {
 	if err := model.UpdateUserEmail(id, ""); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "update_failed"})
 	}
-	h.Sessions.DeleteByUserID(id)
+	h.revokeUserSessions(id)
 	h.Audit.LogFromCtx(c, "user_reset_email", id, "", "success", 0)
 	return c.JSON(fiber.Map{"ok": true})
 }
