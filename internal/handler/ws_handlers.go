@@ -54,6 +54,10 @@ func (h *Handler) registerWSActions() {
 	r.Handle("file.patchContent", h.wsFilePatchContent)
 	r.Handle("file.search", h.wsFileSearch)
 
+	// --- Shares ---
+	r.Handle("share.list", h.wsShareList)
+	r.Handle("share.patchContent", h.wsSharePatchContent)
+
 	// --- Upload progress ---
 	r.Handle("upload.progress", h.wsUploadProgress)
 
@@ -222,7 +226,6 @@ func (h *Handler) wsStorageUsage(conn *ws.Conn, _ string, _ json.RawMessage) (an
 		"count": count,
 	}, nil
 }
-
 
 func (h *Handler) wsChangePassword(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
 	var p struct {
@@ -471,9 +474,11 @@ func (h *Handler) wsFileRename(conn *ws.Conn, _ string, data json.RawMessage) (a
 
 	if p.IsDir {
 		_ = model.MoveFilesByPrefix(conn.Session.UserID, oldResolved, newResolved)
+		_ = model.MoveSharesByPrefix(conn.Session.UserID, oldResolved, newResolved)
 	} else {
 		newName := filepath.Base(newResolved)
 		_ = model.MoveFile(conn.Session.UserID, oldResolved, newResolved, newName)
+		_ = model.MoveSharesByPath(conn.Session.UserID, oldResolved, newResolved)
 	}
 
 	// Re-index search vector with new file name
@@ -604,9 +609,11 @@ func (h *Handler) wsFileMove(conn *ws.Conn, _ string, data json.RawMessage) (any
 		}
 		if p.IsDir {
 			_ = model.MoveFilesByPrefix(userID, srcResolved, dstResolved)
+			_ = model.MoveSharesByPrefix(userID, srcResolved, dstResolved)
 		} else {
 			newName := filepath.Base(dstResolved)
 			_ = model.MoveFile(userID, srcResolved, dstResolved, newName)
+			_ = model.MoveSharesByPath(userID, srcResolved, dstResolved)
 		}
 		h.finishTaskOp(userID, taskID, "move", srcName, "completed")
 		h.notifyParentDir(conn.Session.Username, srcResolved)
@@ -642,13 +649,14 @@ func (h *Handler) wsFileDelete(conn *ws.Conn, _ string, data json.RawMessage) (a
 		}
 		if fileRecord.Status != "ready" {
 			if fileRecord.UploadID != "" {
-				if job, err := model.FindActiveJobByParam("upload", fileRecord.UploadID); err == nil {
+				if job, err := model.FindActiveJobByParam("oss_upload", fileRecord.UploadID); err == nil {
 					h.Dispatcher.Cancel(job.JobID)
 				}
 				tempDir := filepath.Join(config.TempDir, "upload", fileRecord.UploadID)
 				_ = os.RemoveAll(tempDir)
 			}
 			_ = model.DeleteFile(conn.Session.UserID, resolvedPath)
+			_ = model.DeleteSharesByPath(conn.Session.UserID, resolvedPath)
 			h.Audit.Log(conn.Session.UserID, conn.Session.Username, "", "file_delete", p.Path, "", "success", 0)
 			h.notifyParentDir(conn.Session.Username, resolvedPath)
 			return map[string]any{"ok": true}, nil
@@ -704,8 +712,10 @@ func (h *Handler) wsFileDelete(conn *ws.Conn, _ string, data json.RawMessage) (a
 		_ = model.CreateTrashRecord(userID, p.Path, trashKey, totalSize, isDir)
 		if isDir {
 			_ = model.DeleteFilesByPrefix(userID, resolvedPath)
+			_ = model.DeleteSharesByPrefix(userID, resolvedPath)
 		} else {
 			_ = model.DeleteFile(userID, resolvedPath)
+			_ = model.DeleteSharesByPath(userID, resolvedPath)
 		}
 		h.finishTaskOp(userID, taskID, "delete", deleteName, "completed")
 		h.Audit.Log(userID, conn.Session.Username, "", "file_delete", p.Path, "", "success", 0)
@@ -870,6 +880,161 @@ func (h *Handler) wsFileSearch(conn *ws.Conn, _ string, data json.RawMessage) (a
 		})
 	}
 	return map[string]any{"results": items}, nil
+}
+
+// --- Share actions ---
+
+func (h *Handler) wsShareList(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
+	views, err := model.ListSharesAsFiles(conn.Session.UserID)
+	if err != nil {
+		return nil, &wsError{Code: "list_failed"}
+	}
+	if views == nil {
+		views = []model.ShareFileView{}
+	}
+	return views, nil
+}
+
+func (h *Handler) wsSharePatchContent(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
+	var p struct {
+		ShareID  string `json:"share_id"`
+		BaseSize int64  `json:"base_size"`
+		Edits    []Edit `json:"edits"`
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		return nil, &wsError{Code: "invalid_request"}
+	}
+	if p.ShareID == "" {
+		return nil, &wsError{Code: "share_id_required"}
+	}
+	if len(p.Edits) == 0 {
+		return nil, &wsError{Code: "edits_required"}
+	}
+
+	share, err := model.GetShareByID(p.ShareID)
+	if err != nil {
+		return nil, &wsError{Code: "share_not_found"}
+	}
+	if conn.Session.UserID != share.TargetUserID {
+		return nil, &wsError{Code: "forbidden"}
+	}
+	if share.Permission != "write" {
+		return nil, &wsError{Code: "readonly_share"}
+	}
+	if share.ExpiresAt != nil && time.Now().After(*share.ExpiresAt) {
+		return nil, &wsError{Code: "share_expired"}
+	}
+
+	// Load the file record from the owner's files
+	ownerUser, err := model.GetUserByID(share.OwnerID)
+	if err != nil {
+		return nil, &wsError{Code: "internal_error"}
+	}
+	fileRecord, err := model.GetFile(share.OwnerID, share.FilePath)
+	if err != nil {
+		return nil, &wsError{Code: "file_not_found"}
+	}
+	if p.BaseSize != fileRecord.Size {
+		return nil, &wsError{Code: "base_size_mismatch"}
+	}
+
+	sort.Slice(p.Edits, func(i, j int) bool {
+		return p.Edits[i].Offset < p.Edits[j].Offset
+	})
+	for i, edit := range p.Edits {
+		if edit.Offset < 0 || edit.Delete < 0 {
+			return nil, &wsError{Code: "invalid_edit"}
+		}
+		if edit.Offset+edit.Delete > p.BaseSize {
+			return nil, &wsError{Code: "edit_out_of_bounds"}
+		}
+		if i > 0 {
+			prev := p.Edits[i-1]
+			if edit.Offset < prev.Offset+prev.Delete {
+				return nil, &wsError{Code: "overlapping_edits"}
+			}
+		}
+	}
+
+	newSize := p.BaseSize
+	for _, edit := range p.Edits {
+		newSize += int64(len(edit.Insert)) - edit.Delete
+	}
+	if newSize < 0 {
+		return nil, &wsError{Code: "invalid_result_size"}
+	}
+
+	// Use owner's KEK to decrypt/encrypt the file
+	ownerKEK, err := h.loadUserKEK(share.OwnerID)
+	if err != nil {
+		return nil, &wsError{Code: "internal_error"}
+	}
+	wrappedDEKBytes, err := hex.DecodeString(fileRecord.WrappedDEK)
+	if err != nil {
+		return nil, &wsError{Code: "internal_error"}
+	}
+	dek, err := auth.UnwrapDEK(ownerKEK, wrappedDEKBytes)
+	if err != nil {
+		return nil, &wsError{Code: "internal_error"}
+	}
+
+	reader, err := h.Store.GetObjectContent(share.FilePath)
+	if err != nil {
+		return nil, &wsError{Code: "read_file_failed"}
+	}
+
+	decR, decW := io.Pipe()
+	editR, editW := io.Pipe()
+	var pipelineErr error
+	var encryptedBuf bytes.Buffer
+
+	done1 := make(chan struct{})
+	go func() {
+		defer close(done1)
+		err := auth.DecryptStream(dek, reader, decW)
+		_ = reader.Close()
+		_ = decW.CloseWithError(err)
+	}()
+
+	done2 := make(chan struct{})
+	go func() {
+		defer close(done2)
+		err := applyEdits(decR, editW, p.Edits)
+		_ = editW.CloseWithError(err)
+	}()
+
+	done3 := make(chan struct{})
+	go func() {
+		defer close(done3)
+		pipelineErr = auth.EncryptStream(dek, editR, &encryptedBuf)
+	}()
+
+	<-done1
+	<-done2
+	<-done3
+
+	if pipelineErr != nil {
+		return nil, &wsError{Code: "pipeline_failed"}
+	}
+
+	if err := h.Store.PutObjectBytes(share.FilePath, encryptedBuf.Bytes()); err != nil {
+		return nil, &wsError{Code: "save_file_failed"}
+	}
+
+	fileName := filepath.Base(share.FilePath)
+	ct := mime.TypeByExtension(filepath.Ext(share.FilePath))
+	_ = model.UpsertFile(share.OwnerID, share.FilePath, fileName, false, newSize, ct, "")
+
+	// Update share record with new file size
+	share.FileSize = newSize
+	_ = model.UpdateShareFileSize(share.ShareID, newSize)
+
+	h.Audit.Log(conn.Session.UserID, conn.Session.Username, "", "file_write", share.FilePath, "shared", "success", 0)
+
+	// Notify the owner that their directory changed
+	h.notifyParentDir(ownerUser.Username, share.FilePath)
+
+	return map[string]any{"ok": true, "new_size": newSize}, nil
 }
 
 // --- Trash actions ---
@@ -1237,7 +1402,7 @@ func (h *Handler) wsAdminCreateUser(conn *ws.Conn, _ string, data json.RawMessag
 	if p.Role == "" {
 		p.Role = "user"
 	}
-	if p.Role != "root" && p.Role != "user" {
+	if !isValidUserRole(p.Role) {
 		return nil, &wsError{Code: "invalid_role"}
 	}
 
@@ -1287,6 +1452,14 @@ func (h *Handler) wsAdminUpdateUser(conn *ws.Conn, _ string, data json.RawMessag
 
 	role := user.Role
 	if p.Role != "" {
+		if !isValidUserRole(p.Role) {
+			return nil, &wsError{Code: "invalid_role"}
+		}
+		if code, guardErr := ensureNotDemotingLastRoot(user, p.Role); guardErr != nil {
+			return nil, &wsError{Code: "update_user_failed"}
+		} else if code != "" {
+			return nil, &wsError{Code: code}
+		}
 		role = p.Role
 	}
 
@@ -1295,8 +1468,7 @@ func (h *Handler) wsAdminUpdateUser(conn *ws.Conn, _ string, data json.RawMessag
 	}
 
 	if p.Role != "" && p.Role != user.Role {
-		h.Sessions.DeleteByUserID(user.ID)
-		h.Hub.PushSessionExpired(user.ID)
+		h.revokeUserSessions(user.ID)
 	}
 
 	h.Audit.Log(conn.Session.UserID, conn.Session.Username, "", "user_update", user.Username, "", "success", 0)
@@ -1318,11 +1490,13 @@ func (h *Handler) wsAdminDeleteUser(conn *ws.Conn, _ string, data json.RawMessag
 	if err != nil {
 		return nil, &wsError{Code: "user_not_found"}
 	}
+	if code, guardErr := ensureNotDeletingLastRoot(user); guardErr != nil {
+		return nil, &wsError{Code: "delete_user_failed"}
+	} else if code != "" {
+		return nil, &wsError{Code: code}
+	}
 
-	h.Sessions.DeleteByUserID(user.ID)
-	h.Hub.DisconnectUser(user.ID)
-
-	if err := model.DeleteUser(user.ID); err != nil {
+	if err := h.deleteUserCompletely(user); err != nil {
 		return nil, &wsError{Code: "delete_user_failed"}
 	}
 
@@ -1343,7 +1517,7 @@ func (h *Handler) wsAdminResetUserOTP(conn *ws.Conn, _ string, data json.RawMess
 	if err := model.UpdateUserTOTP(p.ID, "", false); err != nil {
 		return nil, &wsError{Code: "update_failed"}
 	}
-	h.Sessions.DeleteByUserID(p.ID)
+	h.revokeUserSessions(p.ID)
 	h.Audit.Log(conn.Session.UserID, conn.Session.Username, "", "user_reset_otp", p.ID, "", "success", 0)
 	return map[string]any{"ok": true}, nil
 }
@@ -1361,7 +1535,7 @@ func (h *Handler) wsAdminResetUserEmail(conn *ws.Conn, _ string, data json.RawMe
 	if err := model.UpdateUserEmail(p.ID, ""); err != nil {
 		return nil, &wsError{Code: "update_failed"}
 	}
-	h.Sessions.DeleteByUserID(p.ID)
+	h.revokeUserSessions(p.ID)
 	h.Audit.Log(conn.Session.UserID, conn.Session.Username, "", "user_reset_email", p.ID, "", "success", 0)
 	return map[string]any{"ok": true}, nil
 }
