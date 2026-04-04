@@ -97,6 +97,17 @@ func splitFileName(name string) (string, string) {
 	return name[:dot], name[dot:]
 }
 
+func totalUploadParts(size, chunkSize int64) int {
+	if size <= 0 || chunkSize <= 0 {
+		return 0
+	}
+	parts := int(size / chunkSize)
+	if size%chunkSize != 0 {
+		parts++
+	}
+	return parts
+}
+
 // handleUploadConflictCheck checks which files already exist at the target path.
 func (h *Handler) handleUploadConflictCheck(c *fiber.Ctx) error {
 	var body struct {
@@ -218,20 +229,21 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "temp_dir_failed"})
 	}
 
+	// Create a user-facing task to track the full upload lifecycle
+	taskID := uuid.New().String()
+	if err := model.CreateTask(session.UserID, taskID, "upload", fileName); err != nil {
+		_ = os.RemoveAll(tempDir)
+		return c.Status(500).JSON(fiber.Map{"error": "create_task_failed"})
+	}
+
 	chunkSize := int(config.UploadChunkSize)
-	if err := model.CreateUploadFile(session.UserID, uploadID, resolvedPath, fileName, body.FileSize, chunkSize); err != nil {
+	if err := model.CreateUploadFile(session.UserID, uploadID, taskID, resolvedPath, fileName, body.FileSize, chunkSize); err != nil {
+		_ = model.DeleteTask(taskID)
 		_ = os.RemoveAll(tempDir)
 		return c.Status(500).JSON(fiber.Map{"error": "record_upload_failed"})
 	}
 
-	totalParts := int(body.FileSize / config.UploadChunkSize)
-	if body.FileSize%config.UploadChunkSize != 0 {
-		totalParts++
-	}
-
-	// Create a user-facing task to track the full upload lifecycle
-	taskID := uuid.New().String()
-	_ = model.CreateTask(session.UserID, taskID, "upload", fileName)
+	totalParts := totalUploadParts(body.FileSize, config.UploadChunkSize)
 
 	// Notify directory so file list shows the uploading placeholder
 	if h.Hub != nil {
@@ -260,13 +272,32 @@ func (h *Handler) handleUploadPart(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	if _, err := model.GetUploadFile(session.UserID, uploadID); err != nil {
+	record, err := model.GetUploadFile(session.UserID, uploadID)
+	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
+	}
+	chunkSize := int64(record.ChunkSize)
+	if chunkSize <= 0 {
+		chunkSize = config.UploadChunkSize
+	}
+	totalParts := totalUploadParts(record.Size, chunkSize)
+	if totalParts <= 0 {
+		return c.Status(409).JSON(fiber.Map{"error": "upload_has_no_parts"})
+	}
+	if pn > totalParts {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_part_number"})
+	}
+	expectedSize := chunkSize
+	if pn == totalParts {
+		expectedSize = record.Size - int64(totalParts-1)*chunkSize
 	}
 
 	fileHeader, err := c.FormFile("chunk")
 	if err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "chunk_required"})
+	}
+	if fileHeader.Size > 0 && fileHeader.Size != expectedSize {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_chunk_size"})
 	}
 
 	file, err := fileHeader.Open()
@@ -288,7 +319,7 @@ func (h *Handler) handleUploadPart(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "open_temp_failed"})
 	}
 
-	offset := int64(pn-1) * config.UploadChunkSize
+	offset := int64(pn-1) * chunkSize
 	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		_ = f.Close()
 		mu.Unlock()
@@ -301,15 +332,28 @@ func (h *Handler) handleUploadPart(c *fiber.Ctx) error {
 		mu.Unlock()
 		return c.Status(500).JSON(fiber.Map{"error": "write_chunk_failed"})
 	}
+	if written != expectedSize {
+		mu.Unlock()
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_chunk_size"})
+	}
 
 	// Track completed parts
 	freshRecord, err := model.GetUploadFile(session.UserID, uploadID)
 	if err == nil {
 		var parts []int
 		_ = json.Unmarshal([]byte(freshRecord.CompletedParts), &parts)
-		parts = append(parts, pn)
-		partsJSON, _ := json.Marshal(parts)
-		_ = model.UpdateUploadFileParts(uploadID, string(partsJSON))
+		exists := false
+		for _, part := range parts {
+			if part == pn {
+				exists = true
+				break
+			}
+		}
+		if !exists {
+			parts = append(parts, pn)
+			partsJSON, _ := json.Marshal(parts)
+			_ = model.UpdateUploadFileParts(uploadID, string(partsJSON))
+		}
 	}
 	mu.Unlock()
 
@@ -333,6 +377,28 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}
+	chunkSize := int64(record.ChunkSize)
+	if chunkSize <= 0 {
+		chunkSize = config.UploadChunkSize
+	}
+	totalParts := totalUploadParts(record.Size, chunkSize)
+	if totalParts > 0 {
+		var completedParts []int
+		_ = json.Unmarshal([]byte(record.CompletedParts), &completedParts)
+		seen := make(map[int]struct{}, len(completedParts))
+		for _, pn := range completedParts {
+			if pn >= 1 && pn <= totalParts {
+				seen[pn] = struct{}{}
+			}
+		}
+		if len(seen) < totalParts {
+			return c.Status(400).JSON(fiber.Map{
+				"error":          "upload_incomplete",
+				"expected_parts": totalParts,
+				"uploaded_parts": len(seen),
+			})
+		}
+	}
 
 	// Queue for async server-side processing
 	_ = model.UpdateFileStatus(body.UploadID, "processing")
@@ -341,6 +407,9 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 	// Create a dispatcher job linked to the user-facing task
 	jobID := uuid.New().String()
 	taskID := body.TaskID
+	if taskID == "" {
+		taskID = record.TaskID
+	}
 	params := OSSUploadParams{
 		UploadID: body.UploadID,
 		OSSKey:   record.Path,
@@ -501,6 +570,7 @@ func (h *Handler) handleUploadAbort(c *fiber.Ctx) error {
 	if uploadID == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "upload_id required"})
 	}
+	taskID := c.Query("task_id", "")
 
 	session := c.Locals("session").(*model.Session)
 	record, err := model.GetUploadFile(session.UserID, uploadID)
@@ -515,6 +585,12 @@ func (h *Handler) handleUploadAbort(c *fiber.Ctx) error {
 	// Delete the file record (it was only a placeholder)
 	_ = model.DeleteFile(session.UserID, record.Path)
 	uploadMu.Delete(uploadID)
+	if taskID == "" {
+		taskID = record.TaskID
+	}
+	if taskID != "" {
+		_ = model.UpdateTaskStatus(taskID, "cancelled")
+	}
 
 	return c.JSON(fiber.Map{"ok": true})
 }
@@ -545,13 +621,18 @@ func (h *Handler) handleUploadStatus(c *fiber.Ctx) error {
 	if parts == nil {
 		parts = []store.UploadPartInfo{}
 	}
+	status := record.Status
+	if status == "uploading" {
+		status = "active"
+	}
 
 	return c.JSON(fiber.Map{
 		"upload_id":  record.UploadID,
+		"task_id":    record.TaskID,
 		"file_name":  record.Name,
 		"file_size":  record.Size,
 		"chunk_size": record.ChunkSize,
-		"status":     record.Status,
+		"status":     status,
 		"parts":      parts,
 	})
 }

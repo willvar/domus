@@ -116,7 +116,6 @@ func UpdateUserDisplayName(id string, displayName string) error {
 	return db.Model(&User{}).Where("id = ?", id).Update("display_name", displayName).Error
 }
 
-
 func DeleteUser(id string) error {
 	return db.Where("id = ?", id).Delete(&User{}).Error
 }
@@ -124,6 +123,14 @@ func DeleteUser(id string) error {
 func UserCount() (int, error) {
 	var count int64
 	if err := db.Model(&User{}).Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return int(count), nil
+}
+
+func CountUsersByRole(role string) (int, error) {
+	var count int64
+	if err := db.Model(&User{}).Where("role = ?", role).Count(&count).Error; err != nil {
 		return 0, err
 	}
 	return int(count), nil

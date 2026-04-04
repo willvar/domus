@@ -19,12 +19,13 @@ type Session struct {
 
 // DBSession is the GORM model for persistent sessions.
 type DBSession struct {
-	ID        string    `gorm:"primaryKey"`
-	UserID    string    `gorm:"not null;index"`
-	Username  string    `gorm:"not null"`
-	Role      string    `gorm:"not null"`
-	CreatedAt time.Time `gorm:"not null"`
-	ExpiresAt time.Time `gorm:"not null;index"`
+	ID          string    `gorm:"primaryKey"`
+	UserID      string    `gorm:"not null;index"`
+	Username    string    `gorm:"not null"`
+	Role        string    `gorm:"not null"`
+	Permissions int       `gorm:"not null;default:0"`
+	CreatedAt   time.Time `gorm:"not null"`
+	ExpiresAt   time.Time `gorm:"not null;index"`
 }
 
 func (DBSession) TableName() string { return "sessions" }
@@ -57,12 +58,13 @@ func (s *SessionStore) Create(userID string, username, role string) (string, err
 
 	now := time.Now()
 	dbSession := &DBSession{
-		ID:        id,
-		UserID:    userID,
-		Username:  username,
-		Role:      role,
-		CreatedAt: now,
-		ExpiresAt: now.Add(7 * 24 * time.Hour),
+		ID:          id,
+		UserID:      userID,
+		Username:    username,
+		Role:        role,
+		Permissions: 0,
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(7 * 24 * time.Hour),
 	}
 	if err := s.DB.Create(dbSession).Error; err != nil {
 		return "", err

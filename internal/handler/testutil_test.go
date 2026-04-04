@@ -35,7 +35,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Skipf("skipping test: could not connect to PostgreSQL: %v", err)
 	}
-	if err := testDB.AutoMigrate(&model.User{}, &model.TrashItem{}, &model.FileRecord{}, &model.DBSession{}, &model.Job{}, &model.AuditLog{}); err != nil {
+	if err := testDB.AutoMigrate(&model.User{}, &model.TrashItem{}, &model.FileRecord{}, &model.DBSession{}, &model.Job{}, &model.Task{}, &model.AuditLog{}, &model.WorkspaceState{}, &model.Share{}); err != nil {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 	testDB.Exec("DELETE FROM users")
@@ -43,6 +43,9 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	testDB.Exec("DELETE FROM files")
 	testDB.Exec("DELETE FROM sessions")
 	testDB.Exec("DELETE FROM jobs")
+	testDB.Exec("DELETE FROM tasks")
+	testDB.Exec("DELETE FROM workspace_states")
+	testDB.Exec("DELETE FROM shares")
 	return testDB
 }
 

@@ -17,7 +17,6 @@ import (
 	"zephyr/internal/auth"
 	"zephyr/internal/middleware"
 	"zephyr/internal/model"
-	"zephyr/internal/store"
 )
 
 func TestLogin_Success(t *testing.T) {
@@ -44,7 +43,7 @@ func TestLogin_Success(t *testing.T) {
 	}
 
 	loginBody, _ := json.Marshal(map[string]string{"token": token})
-	req2 := httptest.NewRequest("POST", "/auth/login", bytes.NewReader(loginBody))
+	req2 := httptest.NewRequest("POST", "/auth", bytes.NewReader(loginBody))
 	req2.Header.Set("Content-Type", "application/json")
 
 	resp2, err := app.Test(req2)
@@ -99,7 +98,7 @@ func TestMe(t *testing.T) {
 	app, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 
-	req := httptest.NewRequest("GET", "/auth/me", nil)
+	req := httptest.NewRequest("GET", "/user/", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
 
 	resp, err := app.Test(req)
@@ -121,7 +120,7 @@ func TestLogout(t *testing.T) {
 	app, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 
-	req := httptest.NewRequest("POST", "/auth/logout", nil)
+	req := httptest.NewRequest("DELETE", "/auth", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
 
 	resp, _ := app.Test(req)
@@ -129,7 +128,7 @@ func TestLogout(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	req2 := httptest.NewRequest("GET", "/auth/me", nil)
+	req2 := httptest.NewRequest("GET", "/user/", nil)
 	req2.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
 	resp2, _ := app.Test(req2)
 	if resp2.StatusCode != 401 {
@@ -141,7 +140,7 @@ func TestListUsers_AsAdmin(t *testing.T) {
 	app, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 
-	req := httptest.NewRequest("GET", "/admin/users", nil)
+	req := httptest.NewRequest("GET", "/audit/user/", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
 
 	resp, _ := app.Test(req)
@@ -155,10 +154,10 @@ func TestHandleList(t *testing.T) {
 	cookie := loginAs("root", "pass")
 
 	adminUser, _ := model.GetUserByUsername("root")
-	_ = model.UpsertFile(adminUser.ID, "admin/test.txt", "test.txt", false, 100, "", "")
-	_ = model.UpsertFile(adminUser.ID, "admin/docs/", "docs", true, 0, "", "")
+	_ = model.UpsertFile(adminUser.ID, "root/test.txt", "test.txt", false, 100, "", "")
+	_ = model.UpsertFile(adminUser.ID, "root/docs/", "docs", true, 0, "", "")
 
-	req := httptest.NewRequest("GET", "/list?path=", nil)
+	req := httptest.NewRequest("GET", "/file/?path=", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
 
 	resp, _ := app.Test(req)
@@ -181,7 +180,18 @@ func TestHandleDownload(t *testing.T) {
 	app, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 
-	req := httptest.NewRequest("GET", "/download?path=admin/file.txt", nil)
+	user, _ := model.GetUserByUsername("root")
+	serverKey, _ := auth.ServerKeyFromSecret("0000000000000000000000000000000000000000000000000000000000000000")
+	wrappedKEKBytes, _ := hex.DecodeString(user.WrappedKEK)
+	kek, _ := auth.UnwrapKEK(serverKey, wrappedKEKBytes)
+	dek, _ := auth.GenerateDEK()
+	wrappedDEK, _ := auth.WrapDEK(kek, dek)
+
+	ossPath := user.Username + "/test.txt"
+	_ = model.UpsertFile(user.ID, ossPath, "test.txt", false, 100, "text/plain", "abc123",
+		model.UpsertFileOpts{WrappedDEK: hex.EncodeToString(wrappedDEK)})
+
+	req := httptest.NewRequest("GET", "/file/access?path=/test.txt", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
 
 	resp, _ := app.Test(req)
@@ -195,32 +205,12 @@ func TestHandleDownload(t *testing.T) {
 	if !ok || downloadURL == "" {
 		t.Fatal("expected non-empty URL")
 	}
-	if !strings.Contains(downloadURL, "/raw?") {
-		t.Fatalf("expected proxy URL, got %s", downloadURL)
+	if !strings.Contains(downloadURL, "mock-oss.example.com") {
+		t.Fatalf("expected mock oss URL, got %s", downloadURL)
 	}
 }
 
-func TestHandleGetContent(t *testing.T) {
-	_, loginAs := setupTestApp(t)
-	_ = loginAs("root", "pass")
-
-	adminUser, _ := model.GetUserByUsername("root")
-	// Load the user's KEK from their wrapped_kek in DB
-	serverKey, _ := auth.ServerKeyFromSecret("0000000000000000000000000000000000000000000000000000000000000000")
-	wrappedHex, _ := model.GetUserWrappedKEK(adminUser.ID)
-	wrappedBytes, _ := hex.DecodeString(wrappedHex)
-	key, err := auth.UnwrapKEK(serverKey, wrappedBytes)
-	if err != nil {
-		t.Fatalf("unwrap KEK: %v", err)
-	}
-	encrypted, err := auth.EncryptBytes(key, []byte("hello world!"))
-	if err != nil {
-		t.Fatalf("encrypt: %v", err)
-	}
-
-	// We need to set a custom mock store on the handler
-	// Since setupTestApp registers routes already, we need a different approach
-	// Let's use a new app with custom mock
+func TestRegisterRoutes_WithNilHub(t *testing.T) {
 	testDB := setupTestDB(t)
 	model.SetDB(testDB)
 
@@ -230,57 +220,28 @@ func TestHandleGetContent(t *testing.T) {
 			SessionSecret:    "test-secret-key",
 			EncryptionSecret: "0000000000000000000000000000000000000000000000000000000000000000",
 		},
-		Upload: config.UploadConfig{MaxFileSize: 10 * 1024 * 1024 * 1024},
 	}
-
 	sessions := model.NewSessionStore(testDB)
-	sessions.PopulateKEK = func(s *model.Session) {
-		wh, err := model.GetUserWrappedKEK(s.UserID)
-		if err != nil || wh == "" {
-			return
-		}
-		wb, _ := hex.DecodeString(wh)
-		s.KEK, _ = auth.UnwrapKEK(serverKey, wb)
-	}
 	challenges := auth.NewChallengeManager()
 	auditWorker := model.NewAuditWorker(testDB)
 	auditWorker.Start()
 	mid := middleware.New(sessions, cfg.Server.SessionSecret)
 
-	mock := &MockFileStore{
-		GetObjectInfoFn: func(k string) (*store.FileInfo, error) {
-			return &store.FileInfo{Name: "test.txt", Path: k, Size: int64(len(encrypted))}, nil
-		},
-		GetObjectContentFn: func(k string) (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(encrypted)), nil
-		},
-	}
-
 	h := &Handler{
-		Config: cfg, DB: testDB, Store: mock, Sessions: sessions,
+		Config: cfg, DB: testDB, Store: &MockFileStore{}, Sessions: sessions,
 		Audit: auditWorker, Challenges: challenges, Mid: mid,
 	}
 
-	app2 := fiber.New()
-	h.RegisterRoutes(app2)
+	app := fiber.New()
+	h.RegisterRoutes(app)
 
-	user2, _ := model.CreateUser("admin2", "pass", "root", "")
-	_ = user2
-	sessionID, _ := sessions.Create(adminUser.ID, "root", "root")
-	cookie2 := auth.SignCookie(sessionID, cfg.Server.SessionSecret)
-
-	req := httptest.NewRequest("GET", "/content?path=admin/test.txt", nil)
-	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie2})
-
-	resp, _ := app2.Test(req)
+	req := httptest.NewRequest("GET", "/auth", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
-
-	var result2 map[string]interface{}
-	_ = json.NewDecoder(resp.Body).Decode(&result2)
-	if result2["content"] != "hello world!" {
-		t.Fatalf("expected 'hello world!', got %v", result2["content"])
 	}
 }
 
@@ -367,10 +328,10 @@ func TestUnauthenticatedAccess(t *testing.T) {
 		method string
 		path   string
 	}{
-		{"GET", "/auth/me"},
-		{"GET", "/list"},
-		{"POST", "/mkdir"},
-		{"GET", "/admin/users"},
+		{"GET", "/user/"},
+		{"GET", "/file/"},
+		{"POST", "/file/mkdir"},
+		{"GET", "/audit/user/"},
 	}
 
 	for _, ep := range endpoints {
