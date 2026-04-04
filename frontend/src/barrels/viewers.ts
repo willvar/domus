@@ -1,0 +1,6 @@
+export { default as AudioViewer } from '../components/elisa/App.vue'
+export { default as MarkdownViewer } from '../components/kate/Markdown.vue'
+export { default as CsvViewer } from '../components/kate/Csv.vue'
+export { default as FontViewer } from '../components/kfontview/App.vue'
+export { default as ArchiveViewer } from '../components/ark/App.vue'
+export { default as NotebookViewer } from '../components/notebook/App.vue'

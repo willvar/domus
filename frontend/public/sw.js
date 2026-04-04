@@ -1,13 +1,16 @@
-// Zephyr Service Worker — Client-side AES-GCM decryption for CDN-cached encrypted files.
+// Zephyr Service Worker — Client-side AES-GCM decryption with Cache API.
 //
 // Architecture:
 //   Main thread sends KEK (Key Encryption Key) via postMessage.
-//   For each file, main thread registers metadata (including wrapped DEK) via postMessage.
-//   SW intercepts /__decrypt__/{id} requests, unwraps DEK with KEK, decrypts file content.
+//   For each file, main thread registers metadata (including DEK + contentHash).
+//   SW intercepts /__decrypt__/{id} requests, checks cache by contentHash,
+//   decrypts on miss, caches the result, returns decrypted content.
 
 const HEADER_SIZE = 5 // [1 byte version][4 bytes chunk_size]
 const NONCE_SIZE = 12
 const TAG_SIZE = 16
+const CACHE_NAME = 'zephyr-decrypt'
+const CACHE_CLEANUP_DELAY = 5 * 60 * 1000 // 5 minutes
 
 // In development (localhost), rewrite cross-origin URLs to go through Vite proxy to avoid CORS.
 // In production, use the original URL directly (CDN handles CORS).
@@ -25,7 +28,8 @@ function resolveFileUrl(url) {
 
 // --- State ---
 let kek = null // CryptoKey (AES-GCM) — user's KEK for unwrapping DEKs
-const registry = new Map() // id → { url, size, chunkSize, contentType, filename, download, wrappedDek, dek? }
+const registry = new Map() // id → { url, size, chunkSize, contentType, filename, download, wrappedDek, dek?, contentHash? }
+const cleanupTimers = new Map() // contentHash → timer id
 
 // --- Lifecycle ---
 self.addEventListener('install', () => self.skipWaiting())
@@ -43,17 +47,51 @@ self.addEventListener('message', async (event) => {
     case 'clear-key':
       kek = null
       registry.clear()
+      // Clear all cleanup timers and purge cache immediately
+      for (const timer of cleanupTimers.values()) clearTimeout(timer)
+      cleanupTimers.clear()
+      caches.delete(CACHE_NAME)
       break
-    case 'register':
+    case 'register': {
       // metadata.dek is a hex string from the server; rename to dekHex
       // to avoid collision with the cached CryptoKey stored as .dek
-      registry.set(id, { ...metadata, dekHex: metadata.dek || null, dek: null })
+      const entry = { ...metadata, dekHex: metadata.dek || null, dek: null }
+      registry.set(id, entry)
+      // Cancel pending cleanup for this contentHash (file re-opened)
+      if (entry.contentHash && cleanupTimers.has(entry.contentHash)) {
+        clearTimeout(cleanupTimers.get(entry.contentHash))
+        cleanupTimers.delete(entry.contentHash)
+      }
       break
-    case 'unregister':
+    }
+    case 'unregister': {
+      const entry = registry.get(id)
       registry.delete(id)
+      // Schedule delayed cache cleanup
+      if (entry?.contentHash) {
+        // Only schedule cleanup if no other registry entry uses this contentHash
+        let stillUsed = false
+        for (const e of registry.values()) {
+          if (e.contentHash === entry.contentHash) { stillUsed = true; break }
+        }
+        if (!stillUsed) {
+          const hash = entry.contentHash
+          const timer = setTimeout(async () => {
+            cleanupTimers.delete(hash)
+            const cache = await caches.open(CACHE_NAME)
+            await cache.delete(cacheKey(hash))
+          }, CACHE_CLEANUP_DELAY)
+          cleanupTimers.set(hash, timer)
+        }
+      }
       break
+    }
   }
 })
+
+function cacheKey(contentHash) {
+  return new Request('/__cache__/' + contentHash)
+}
 
 // --- Fetch interception ---
 self.addEventListener('fetch', (event) => {
@@ -71,7 +109,7 @@ self.addEventListener('fetch', (event) => {
 })
 
 async function handleDecrypt(request, meta) {
-  // Resolve DEK: either import directly (server-unwrapped) or unwrap with KEK (link shares)
+  // Resolve DEK
   if (!meta.dek) {
     if (meta.dekHex) {
       meta.dek = await crypto.subtle.importKey(
@@ -85,6 +123,23 @@ async function handleDecrypt(request, meta) {
   }
 
   const rangeHeader = request.headers.get('Range')
+
+  // Try cache (only for full requests with a contentHash)
+  if (meta.contentHash && !rangeHeader) {
+    const cache = await caches.open(CACHE_NAME)
+    const cached = await cache.match(cacheKey(meta.contentHash))
+    if (cached) {
+      // Rebuild response with correct headers for this specific request
+      const headers = { 'Accept-Ranges': 'bytes' }
+      if (meta.contentType) headers['Content-Type'] = meta.contentType
+      if (meta.size > 0) headers['Content-Length'] = String(meta.size)
+      if (meta.download && meta.filename) {
+        headers['Content-Disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(meta.filename)}`
+      }
+      return new Response(cached.body, { status: 200, headers })
+    }
+  }
+
   if (rangeHeader && meta.size > 0) {
     return handleRange(meta, rangeHeader)
   }
@@ -109,12 +164,15 @@ async function handleFull(meta) {
   const encChunkSize = NONCE_SIZE + chunkSize + TAG_SIZE
 
   let chunkIdx = 0
-  let residual = new Uint8Array(0) // leftover bytes from previous read
+  let residual = new Uint8Array(0)
+
+  // Collect decrypted chunks for caching
+  const shouldCache = !!meta.contentHash
+  const cachedParts = shouldCache ? [] : null
 
   const decryptedStream = new ReadableStream({
     async pull(controller) {
       while (true) {
-        // Accumulate bytes until we have a full encrypted chunk (or stream ends)
         while (residual.length < encChunkSize) {
           const { value, done } = await reader.read()
           if (done) break
@@ -123,10 +181,17 @@ async function handleFull(meta) {
 
         if (residual.length === 0) {
           controller.close()
+          // Cache the complete decrypted file
+          if (shouldCache && cachedParts.length > 0) {
+            const blob = new Blob(cachedParts, { type: meta.contentType || 'application/octet-stream' })
+            const cacheResp = new Response(blob, {
+              headers: { 'Content-Type': meta.contentType || 'application/octet-stream' }
+            })
+            caches.open(CACHE_NAME).then(c => c.put(cacheKey(meta.contentHash), cacheResp))
+          }
           return
         }
 
-        // Determine chunk boundaries (last chunk may be shorter)
         const chunkLen = Math.min(residual.length, encChunkSize)
         const encChunk = residual.slice(0, chunkLen)
         residual = residual.slice(chunkLen)
@@ -140,16 +205,24 @@ async function handleFull(meta) {
             { name: 'AES-GCM', iv: nonce, additionalData: aad },
             meta.dek, ciphertext
           )
-          controller.enqueue(new Uint8Array(plaintext))
+          const bytes = new Uint8Array(plaintext)
+          controller.enqueue(bytes)
+          if (shouldCache) cachedParts.push(bytes.slice()) // clone for cache
           chunkIdx++
         } catch (e) {
           controller.error(new Error(`Decrypt chunk ${chunkIdx} failed: ${e.message}`))
           return
         }
 
-        // If residual is empty and we got a short chunk, stream is done
         if (chunkLen < encChunkSize && residual.length === 0) {
           controller.close()
+          if (shouldCache && cachedParts.length > 0) {
+            const blob = new Blob(cachedParts, { type: meta.contentType || 'application/octet-stream' })
+            const cacheResp = new Response(blob, {
+              headers: { 'Content-Type': meta.contentType || 'application/octet-stream' }
+            })
+            caches.open(CACHE_NAME).then(c => c.put(cacheKey(meta.contentHash), cacheResp))
+          }
           return
         }
       }
@@ -168,6 +241,31 @@ async function handleFull(meta) {
 
 // --- Range request response ---
 async function handleRange(meta, rangeHeader) {
+  // For range requests, try serving from cache if available
+  if (meta.contentHash) {
+    const cache = await caches.open(CACHE_NAME)
+    const cached = await cache.match(cacheKey(meta.contentHash))
+    if (cached) {
+      const fullData = new Uint8Array(await cached.arrayBuffer())
+      const { start, end } = parseRange(rangeHeader, meta.size)
+      if (start === null) {
+        return new Response('Invalid range', {
+          status: 416, headers: { 'Content-Range': `bytes */${meta.size}` }
+        })
+      }
+      const contentLength = end - start + 1
+      return new Response(fullData.slice(start, start + contentLength), {
+        status: 206,
+        headers: {
+          'Content-Range': `bytes ${start}-${end}/${meta.size}`,
+          'Content-Length': String(contentLength),
+          'Content-Type': meta.contentType || 'application/octet-stream',
+          'Accept-Ranges': 'bytes',
+        }
+      })
+    }
+  }
+
   const { start, end } = parseRange(rangeHeader, meta.size)
   if (start === null) {
     return new Response('Invalid range', {
@@ -185,7 +283,6 @@ async function handleRange(meta, rangeHeader) {
   let cipherStart = HEADER_SIZE + startChunk * encChunkSize
   let cipherEnd = HEADER_SIZE + (endChunk + 1) * encChunkSize - 1
 
-  // Clamp to actual encrypted file size
   const totalChunks = Math.ceil(meta.size / chunkSize)
   const lastChunkPlain = meta.size % chunkSize || (meta.size > 0 ? chunkSize : 0)
   const cipherTotal = HEADER_SIZE + (totalChunks - 1) * encChunkSize + NONCE_SIZE + lastChunkPlain + TAG_SIZE
@@ -198,10 +295,7 @@ async function handleRange(meta, rangeHeader) {
     return new Response('Upstream range fetch failed', { status: 502 })
   }
 
-  // Read all fetched encrypted data
   const encData = new Uint8Array(await response.arrayBuffer())
-
-  // Decrypt chunks and collect plaintext
   const plaintextParts = []
   let offset = 0
   let chunkIdx = startChunk
@@ -224,10 +318,7 @@ async function handleRange(meta, rangeHeader) {
     chunkIdx++
   }
 
-  // Concatenate all plaintext
   const fullPlaintext = concatAll(plaintextParts)
-
-  // Trim to the exact requested range
   const trimStart = start - startChunk * chunkSize
   const contentLength = end - start + 1
   const trimmed = fullPlaintext.slice(trimStart, trimStart + contentLength)
@@ -261,13 +352,12 @@ async function unwrapDEK(kek, wrappedDekHex) {
 function parseRange(header, totalSize) {
   if (!header.startsWith('bytes=')) return { start: null, end: null }
   const spec = header.slice(6)
-  if (spec.includes(',')) return { start: null, end: null } // no multi-range
+  if (spec.includes(',')) return { start: null, end: null }
 
   const parts = spec.split('-')
   let start, end
 
   if (parts[0] === '') {
-    // Suffix: bytes=-N
     const n = parseInt(parts[1], 10)
     if (isNaN(n) || n <= 0) return { start: null, end: null }
     start = Math.max(0, totalSize - n)
@@ -296,7 +386,6 @@ function hexToBytes(hex) {
 function uint64BE(n) {
   const buf = new ArrayBuffer(8)
   const view = new DataView(buf)
-  // n fits in 32 bits for chunk indices
   view.setUint32(0, 0)
   view.setUint32(4, n)
   return new Uint8Array(buf)
@@ -330,7 +419,6 @@ async function readExact(reader, n) {
     const take = Math.min(value.length, n - filled)
     buf.set(value.slice(0, take), filled)
     filled += take
-    // If we got more than needed, we'd lose data. But for a 5-byte header this won't happen.
   }
   return buf
 }
