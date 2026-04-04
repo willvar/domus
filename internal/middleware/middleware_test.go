@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -76,27 +77,35 @@ func TestResolvePath_UserValidPath(t *testing.T) {
 	}
 }
 
-func TestResolvePath_UserPathTraversal(t *testing.T) {
+func TestResolvePath_UserPathTraversalNormalized(t *testing.T) {
 	app := resolvePathTestApp()
 	req := httptest.NewRequest("GET", "/resolve?username=alice&role=user&path=alice/../bob/secret.txt", nil)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != 403 {
-		t.Fatalf("expected 403 for path traversal, got %d", resp.StatusCode)
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "alice/bob/secret.txt" {
+		t.Fatalf("expected normalized path alice/bob/secret.txt, got %s", body)
 	}
 }
 
-func TestResolvePath_UserPathOutsideSpace(t *testing.T) {
+func TestResolvePath_UserPathAlwaysNamespaced(t *testing.T) {
 	app := resolvePathTestApp()
 	req := httptest.NewRequest("GET", "/resolve?username=alice&role=user&path=bob/file.txt", nil)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != 403 {
-		t.Fatalf("expected 403 for outside space, got %d", resp.StatusCode)
+	if resp.StatusCode != 200 {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "alice/bob/file.txt" {
+		t.Fatalf("expected namespaced path alice/bob/file.txt, got %s", body)
 	}
 }
 

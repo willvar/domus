@@ -80,7 +80,9 @@ func ListActiveJobs(userID string) ([]Job, error) {
 // ListActiveUploadJobs returns active upload jobs for a user.
 func ListActiveUploadJobs(userID string) ([]Job, error) {
 	var jobs []Job
-	if err := db.Where("user_id = ? AND type = ? AND status IN ?", userID, "upload", []string{"uploading", "pending", "running"}).
+	// Keep backward compatibility for historical "upload" jobs while using
+	// "oss_upload" as the current upload worker type.
+	if err := db.Where("user_id = ? AND type IN ? AND status IN ?", userID, []string{"oss_upload", "upload"}, []string{"uploading", "pending", "running"}).
 		Find(&jobs).Error; err != nil {
 		return nil, err
 	}
@@ -89,7 +91,7 @@ func ListActiveUploadJobs(userID string) ([]Job, error) {
 
 func ListRecentJobs(userID string) ([]Job, error) {
 	var jobs []Job
-	if err := db.Where("user_id = ? AND type IN ?", userID, []string{"transcode", "upload"}).
+	if err := db.Where("user_id = ? AND type IN ?", userID, []string{"transcode", "oss_upload", "upload"}).
 		Order("created_at DESC").Limit(50).Find(&jobs).Error; err != nil {
 		return nil, err
 	}

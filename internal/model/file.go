@@ -9,29 +9,30 @@ import (
 )
 
 type FileRecord struct {
-	ID            int64     `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID        string    `gorm:"not null;uniqueIndex:idx_file_user_path" json:"user_id"`
-	Path          string    `gorm:"not null;uniqueIndex:idx_file_user_path" json:"path"`
-	Parent        string    `gorm:"not null;index:idx_file_parent" json:"parent"`
-	Name          string    `gorm:"not null;index:idx_file_user_name" json:"name"`
-	IsDir         bool      `gorm:"not null;default:false" json:"is_dir"`
-	Size          int64     `gorm:"not null;default:0" json:"size"`
-	ContentType   string    `gorm:"default:''" json:"content_type"`
-	ContentHash   string    `gorm:"default:''" json:"-"`
-	ThumbnailKey        string `gorm:"default:''" json:"-"`
-	ThumbnailWrappedDEK string `gorm:"default:''" json:"-"`
-	MediaWidth          int    `gorm:"not null;default:0" json:"-"`
-	MediaHeight   int       `gorm:"not null;default:0" json:"-"`
-	MediaDuration float64   `gorm:"not null;default:0" json:"-"`
+	ID                  int64   `gorm:"primaryKey;autoIncrement" json:"id"`
+	UserID              string  `gorm:"not null;uniqueIndex:idx_file_user_path" json:"user_id"`
+	Path                string  `gorm:"not null;uniqueIndex:idx_file_user_path" json:"path"`
+	Parent              string  `gorm:"not null;index:idx_file_parent" json:"parent"`
+	Name                string  `gorm:"not null;index:idx_file_user_name" json:"name"`
+	IsDir               bool    `gorm:"not null;default:false" json:"is_dir"`
+	Size                int64   `gorm:"not null;default:0" json:"size"`
+	ContentType         string  `gorm:"default:''" json:"content_type"`
+	ContentHash         string  `gorm:"default:''" json:"-"`
+	ThumbnailKey        string  `gorm:"default:''" json:"-"`
+	ThumbnailWrappedDEK string  `gorm:"default:''" json:"-"`
+	MediaWidth          int     `gorm:"not null;default:0" json:"-"`
+	MediaHeight         int     `gorm:"not null;default:0" json:"-"`
+	MediaDuration       float64 `gorm:"not null;default:0" json:"-"`
 	// Envelope encryption
 	WrappedDEK string `gorm:"default:''" json:"-"`
 	// Upload-related fields
 	Status         string `gorm:"not null;default:'ready';index" json:"status"`
 	UploadID       string `gorm:"default:'';index" json:"-"`
+	TaskID         string `gorm:"default:'';index" json:"-"`
 	ChunkSize      int    `gorm:"not null;default:0" json:"-"`
 	CompletedParts string `gorm:"default:''" json:"-"`
 	// Full-text search
-	SearchVector string `gorm:"type:tsvector" json:"-"`
+	SearchVector string    `gorm:"type:tsvector" json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
@@ -295,7 +296,7 @@ func ClearTrash(userID string) ([]TrashItem, error) {
 
 // Upload-related operations (merged into FileRecord)
 
-func CreateUploadFile(userID, uploadID, path, name string, fileSize int64, chunkSize int) error {
+func CreateUploadFile(userID, uploadID, taskID, path, name string, fileSize int64, chunkSize int) error {
 	return db.Create(&FileRecord{
 		UserID:    userID,
 		Path:      path,
@@ -304,6 +305,7 @@ func CreateUploadFile(userID, uploadID, path, name string, fileSize int64, chunk
 		Size:      fileSize,
 		Status:    "uploading",
 		UploadID:  uploadID,
+		TaskID:    taskID,
 		ChunkSize: chunkSize,
 	}).Error
 }
@@ -339,4 +341,3 @@ func GetStaleUploadFiles(staleAfter time.Duration) ([]FileRecord, error) {
 	}
 	return records, nil
 }
-
