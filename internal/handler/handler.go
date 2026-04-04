@@ -38,12 +38,15 @@ type Handler struct {
 
 // RegisterRoutes registers all API routes on the Fiber app.
 func (h *Handler) RegisterRoutes(app *fiber.App) {
+	if h.Hub == nil {
+		h.Hub = ws.NewHub()
+	}
+
 	// /auth (public)
 	app.Get("/auth", h.handleAuthConfig)
 	app.Post("/auth", h.handleLogin)
 	app.Post("/auth/verify", h.handleVerify)
 	app.Get("/user/avatar/:username", h.handlePublicAvatar)
-	app.Get("/share/:share_id/info", h.handleShareInfo)
 
 	authed := app.Group("", h.Mid.AuthRequired())
 	authed.Delete("/auth", h.handleLogout)
@@ -99,6 +102,7 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	file.Get("/shares", h.handleListShares)
 	file.Delete("/share/:id", h.handleDeleteShare)
 	file.Get("/shared", h.handleListSharedWithMe)
+	file.Get("/shared/:share_id", h.handleShareInfo)
 
 	fileTrash := file.Group("/trash")
 	fileTrash.Get("/", h.handleListTrash)

@@ -48,7 +48,9 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 			if j.TaskID == "" {
 				continue
 			}
-			var p struct{ UploadID string `json:"upload_id"` }
+			var p struct {
+				UploadID string `json:"upload_id"`
+			}
 			if json.Unmarshal([]byte(j.Params), &p) == nil && p.UploadID != "" {
 				if task, err := model.GetTask(j.TaskID); err == nil {
 					uploadTasks[p.UploadID] = taskInfo{TaskID: task.TaskID, Progress: task.Progress, Phase: task.Phase}
@@ -154,9 +156,11 @@ func (h *Handler) handleRename(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
 	if body.IsDir {
 		_ = model.MoveFilesByPrefix(session.UserID, oldResolved, newResolved)
+		_ = model.MoveSharesByPrefix(session.UserID, oldResolved, newResolved)
 	} else {
 		newName := filepath.Base(newResolved)
 		_ = model.MoveFile(session.UserID, oldResolved, newResolved, newName)
+		_ = model.MoveSharesByPath(session.UserID, oldResolved, newResolved)
 	}
 
 	// Notify WebSocket subscribers of both old and new parent directories
@@ -342,9 +346,11 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 				session := c.Locals("session").(*model.Session)
 				if body.IsDir {
 					_ = model.MoveFilesByPrefix(session.UserID, srcResolved, dstResolved)
+					_ = model.MoveSharesByPrefix(session.UserID, srcResolved, dstResolved)
 				} else {
 					newName := filepath.Base(dstResolved)
 					_ = model.MoveFile(session.UserID, srcResolved, dstResolved, newName)
+					_ = model.MoveSharesByPath(session.UserID, srcResolved, dstResolved)
 				}
 				data, _ := json.Marshal(fiber.Map{"done": true})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
@@ -360,12 +366,14 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 			return c.Status(500).JSON(fiber.Map{"error": "move_failed"})
 		}
 		_ = model.MoveFilesByPrefix(session.UserID, srcResolved, dstResolved)
+		_ = model.MoveSharesByPrefix(session.UserID, srcResolved, dstResolved)
 	} else {
 		if err := h.Store.MoveObject(srcResolved, dstResolved); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "move_failed"})
 		}
 		newName := filepath.Base(dstResolved)
 		_ = model.MoveFile(session.UserID, srcResolved, dstResolved, newName)
+		_ = model.MoveSharesByPath(session.UserID, srcResolved, dstResolved)
 	}
 
 	// Notify WebSocket subscribers of both source and destination parent directories
@@ -405,13 +413,14 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 		if fileRecord.Status != "ready" {
 			// Cancel associated oss_upload job if any
 			if fileRecord.UploadID != "" {
-				if job, err := model.FindActiveJobByParam("upload", fileRecord.UploadID); err == nil {
+				if job, err := model.FindActiveJobByParam("oss_upload", fileRecord.UploadID); err == nil {
 					h.Dispatcher.Cancel(job.JobID)
 				}
 				tempDir := filepath.Join(config.TempDir, "upload", fileRecord.UploadID)
 				_ = os.RemoveAll(tempDir)
 			}
 			_ = model.DeleteFile(session.UserID, resolvedPath)
+			_ = model.DeleteSharesByPath(session.UserID, resolvedPath)
 			h.Audit.LogFromCtx(c, "file_delete", path, "", "success", 0)
 			return c.JSON(fiber.Map{"ok": true})
 		}
@@ -462,6 +471,7 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 				} else {
 					_ = model.CreateTrashRecord(session.UserID, path, trashKey, totalSize, true)
 					_ = model.DeleteFilesByPrefix(session.UserID, resolvedPath)
+					_ = model.DeleteSharesByPrefix(session.UserID, resolvedPath)
 					data, _ := json.Marshal(fiber.Map{"done": true})
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 				}
@@ -491,6 +501,7 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 				} else {
 					_ = model.CreateTrashRecord(session.UserID, path, trashKey, totalSize, false)
 					_ = model.DeleteFile(session.UserID, resolvedPath)
+					_ = model.DeleteSharesByPath(session.UserID, resolvedPath)
 					data, _ = json.Marshal(fiber.Map{"done": 1, "total": 1, "current": resolvedPath})
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 					data, _ = json.Marshal(fiber.Map{"done": true})
@@ -512,8 +523,10 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 	// Remove file records
 	if isDir {
 		_ = model.DeleteFilesByPrefix(session.UserID, resolvedPath)
+		_ = model.DeleteSharesByPrefix(session.UserID, resolvedPath)
 	} else {
 		_ = model.DeleteFile(session.UserID, resolvedPath)
+		_ = model.DeleteSharesByPath(session.UserID, resolvedPath)
 	}
 
 	h.Audit.LogFromCtx(c, "file_delete", path, "", "success", 0)
@@ -570,8 +583,9 @@ func (h *Handler) handleFileAccess(c *fiber.Ctx) error {
 		"size":         fileRecord.Size,
 		"name":         fileName,
 		"content_type": ct,
-		"chunk_size":   auth.DefaultChunkSize,
-		"dek":          hex.EncodeToString(dek),
+		"chunk_size":    auth.DefaultChunkSize,
+		"dek":           hex.EncodeToString(dek),
+		"content_hash":  fileRecord.ContentHash,
 	})
 }
 

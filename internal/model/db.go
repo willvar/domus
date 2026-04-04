@@ -70,6 +70,9 @@ func InitDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	// One-time migration: drop legacy uploads table (merged into files)
 	db.Exec("DROP TABLE IF EXISTS uploads")
 
+	// One-time migration: drop share_type column (sharing is now user-to-user only)
+	db.Exec("ALTER TABLE shares DROP COLUMN IF EXISTS share_type")
+
 	// Full-text search: prefer pg_jieba for Chinese segmentation
 	db.Exec("CREATE EXTENSION IF NOT EXISTS pg_jieba")
 	var ftsConf string

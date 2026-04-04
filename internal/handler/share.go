@@ -14,20 +14,21 @@ import (
 	"zephyr/internal/model"
 )
 
-// handleCreateShare creates a link share or user-to-user share.
-// POST /file/share { path, type: "link"|"user", permission: "read"|"write", target_username?, expires_in? }
+const maxShareExpirySeconds int64 = 365 * 24 * 60 * 60
+
+// handleCreateShare creates a user-to-user share.
+// POST /file/share { path, target_username, permission: "read"|"write", expires_in? }
 func (h *Handler) handleCreateShare(c *fiber.Ctx) error {
 	var body struct {
 		Path           string `json:"path"`
-		ShareType      string `json:"type"`
 		Permission     string `json:"permission"`
 		TargetUsername string `json:"target_username"`
-		ExpiresIn      int64  `json:"expires_in"` // seconds, for link shares
+		ExpiresIn      int64  `json:"expires_in"` // seconds, 0 = no expiry
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
 	}
-	if body.Path == "" || (body.ShareType != "link" && body.ShareType != "user") {
+	if body.Path == "" || body.TargetUsername == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
 	}
 	if body.Permission == "" {
@@ -35,6 +36,9 @@ func (h *Handler) handleCreateShare(c *fiber.Ctx) error {
 	}
 	if body.Permission != "read" && body.Permission != "write" {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_permission"})
+	}
+	if body.ExpiresIn < 0 || body.ExpiresIn > maxShareExpirySeconds {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_expiry"})
 	}
 
 	resolvedPath, err := middleware.ResolvePath(c, body.Path)
@@ -47,8 +51,14 @@ func (h *Handler) handleCreateShare(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "file_not_found"})
 	}
+	if fileRecord.IsDir {
+		return c.Status(400).JSON(fiber.Map{"error": "directory_not_shareable"})
+	}
 	if fileRecord.Status != "ready" {
 		return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
+	}
+	if fileRecord.WrappedDEK == "" {
+		return c.Status(409).JSON(fiber.Map{"error": "file_not_encrypted"})
 	}
 
 	// Get the file's DEK
@@ -65,19 +75,39 @@ func (h *Handler) handleCreateShare(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "unwrap_failed"})
 	}
 
+	// Resolve target user
+	targetUser, err := model.GetUserByUsername(body.TargetUsername)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "target_user_not_found"})
+	}
+	if targetUser.ID == session.UserID {
+		return c.Status(400).JSON(fiber.Map{"error": "cannot_share_with_self"})
+	}
+
+	// Wrap DEK with target user's KEK
+	targetKEK, err := h.loadUserKEK(targetUser.ID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	}
+	wrappedForTarget, err := auth.WrapDEK(targetKEK, dek)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "wrap_failed"})
+	}
+
 	shareID := uuid.New().String()
 	fileName := filepath.Base(resolvedPath)
 	ct := mime.TypeByExtension(filepath.Ext(fileName))
 
 	share := &model.Share{
-		ShareID:     shareID,
-		OwnerID:     session.UserID,
-		FilePath:    resolvedPath,
-		FileName:    fileName,
-		FileSize:    fileRecord.Size,
-		ContentType: ct,
-		ShareType:   body.ShareType,
-		Permission:  body.Permission,
+		ShareID:      shareID,
+		OwnerID:      session.UserID,
+		FilePath:     resolvedPath,
+		FileName:     fileName,
+		FileSize:     fileRecord.Size,
+		ContentType:  ct,
+		TargetUserID: targetUser.ID,
+		WrappedDEK:   hex.EncodeToString(wrappedForTarget),
+		Permission:   body.Permission,
 	}
 
 	if body.ExpiresIn > 0 {
@@ -85,50 +115,20 @@ func (h *Handler) handleCreateShare(c *fiber.Ctx) error {
 		share.ExpiresAt = &exp
 	}
 
-	response := fiber.Map{"share_id": shareID}
-
-	switch body.ShareType {
-	case "link":
-		// Generate a random share key and re-wrap DEK
-		shareKey, err := auth.GenerateDEK() // reuse DEK generator for 32-byte random key
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-		}
-		wrappedForShare, err := auth.WrapDEK(shareKey, dek)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "wrap_failed"})
-		}
-		share.WrappedDEK = hex.EncodeToString(wrappedForShare)
-		response["share_key"] = hex.EncodeToString(shareKey)
-
-	case "user":
-		if body.TargetUsername == "" {
-			return c.Status(400).JSON(fiber.Map{"error": "target_username_required"})
-		}
-		targetUser, err := model.GetUserByUsername(body.TargetUsername)
-		if err != nil {
-			return c.Status(404).JSON(fiber.Map{"error": "target_user_not_found"})
-		}
-		share.TargetUserID = targetUser.ID
-
-		// Wrap DEK with target user's KEK
-		targetKEK, err := h.loadUserKEK(targetUser.ID)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-		}
-		wrappedForTarget, err := auth.WrapDEK(targetKEK, dek)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "wrap_failed"})
-		}
-		share.WrappedDEK = hex.EncodeToString(wrappedForTarget)
-	}
-
 	if err := model.CreateShare(share); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "create_share_failed"})
 	}
 
-	h.Audit.LogFromCtx(c, "file_share", body.Path, body.ShareType, "success", 0)
-	return c.JSON(response)
+	// Notify target user to refresh their shared directory
+	if h.Hub != nil {
+		h.Hub.SendToUser(targetUser.ID, map[string]any{
+			"event": "dir.changed",
+			"data":  map[string]any{"path": "__shared__/", "change_type": "refresh"},
+		})
+	}
+
+	h.Audit.LogFromCtx(c, "file_share", body.Path, body.TargetUsername, "success", 0)
+	return c.JSON(fiber.Map{"share_id": shareID})
 }
 
 // handleListShares lists all shares for a file.
@@ -153,7 +153,7 @@ func (h *Handler) handleListShares(c *fiber.Ctx) error {
 	return c.JSON(shares)
 }
 
-// handleDeleteShare revokes a share.
+// handleDeleteShare revokes a share. Both owner and target user can delete.
 // DELETE /file/share/:id
 func (h *Handler) handleDeleteShare(c *fiber.Ctx) error {
 	id, err := c.ParamsInt("id")
@@ -161,9 +161,22 @@ func (h *Handler) handleDeleteShare(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_id"})
 	}
 	session := c.Locals("session").(*model.Session)
-	if err := model.DeleteShare(int64(id), session.UserID); err != nil {
+	deleted, err := model.DeleteShare(int64(id), session.UserID)
+	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
 	}
+	if !deleted {
+		return c.Status(404).JSON(fiber.Map{"error": "share_not_found"})
+	}
+
+	// Notify the current user to refresh shared directory
+	if h.Hub != nil {
+		h.Hub.SendToUser(session.UserID, map[string]any{
+			"event": "dir.changed",
+			"data":  map[string]any{"path": "__shared__/", "change_type": "refresh"},
+		})
+	}
+
 	return c.JSON(fiber.Map{"ok": true})
 }
 
@@ -181,9 +194,9 @@ func (h *Handler) handleListSharedWithMe(c *fiber.Ctx) error {
 	return c.JSON(shares)
 }
 
-// handleShareInfo returns metadata for a shared file.
-// Link shares are public (no auth). User shares require authentication as the target user.
-// GET /share/:share_id/info
+// handleShareInfo returns metadata and decryption key for a shared file.
+// Requires authentication as the target user.
+// GET /file/shared/:share_id
 func (h *Handler) handleShareInfo(c *fiber.Ctx) error {
 	shareID := c.Params("share_id")
 	if shareID == "" {
@@ -193,6 +206,11 @@ func (h *Handler) handleShareInfo(c *fiber.Ctx) error {
 	share, err := model.GetShareByID(shareID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "share_not_found"})
+	}
+
+	session := c.Locals("session").(*model.Session)
+	if session.UserID != share.TargetUserID {
+		return c.Status(403).JSON(fiber.Map{"error": "forbidden"})
 	}
 
 	// Check expiration
@@ -206,53 +224,27 @@ func (h *Handler) handleShareInfo(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "presign_failed"})
 	}
 
-	resp := fiber.Map{
+	// Unwrap DEK server-side
+	kek, err := h.getFileEncryptionKey(session)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	}
+	wrappedBytes, err := hex.DecodeString(share.WrappedDEK)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	}
+	dek, err := auth.UnwrapDEK(kek, wrappedBytes)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "unwrap_failed"})
+	}
+
+	return c.JSON(fiber.Map{
 		"url":          presignedURL,
 		"size":         share.FileSize,
 		"name":         share.FileName,
 		"content_type": share.ContentType,
 		"chunk_size":   auth.DefaultChunkSize,
 		"permission":   share.Permission,
-	}
-
-	switch share.ShareType {
-	case "link":
-		// Link share: return wrapped_dek for client-side unwrap with share_key
-		resp["wrapped_dek"] = share.WrappedDEK
-
-	case "user":
-		// User share: require authentication as the target user
-		cookieValue := c.Cookies(middleware.SessionCookieName)
-		if cookieValue == "" {
-			return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
-		}
-		sessionID, err := auth.VerifyCookie(cookieValue, h.Config.Server.SessionSecret)
-		if err != nil {
-			return c.Status(401).JSON(fiber.Map{"error": "invalid_session"})
-		}
-		session := h.Sessions.Get(sessionID)
-		if session == nil {
-			return c.Status(401).JSON(fiber.Map{"error": "session_expired"})
-		}
-		if session.UserID != share.TargetUserID {
-			return c.Status(403).JSON(fiber.Map{"error": "forbidden"})
-		}
-
-		// Unwrap DEK server-side with target user's KEK
-		kek, err := h.getFileEncryptionKey(session)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-		}
-		wrappedBytes, err := hex.DecodeString(share.WrappedDEK)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-		}
-		dek, err := auth.UnwrapDEK(kek, wrappedBytes)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "unwrap_failed"})
-		}
-		resp["dek"] = hex.EncodeToString(dek)
-	}
-
-	return c.JSON(resp)
+		"dek":          hex.EncodeToString(dek),
+	})
 }
