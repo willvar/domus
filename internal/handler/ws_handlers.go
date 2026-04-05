@@ -383,6 +383,8 @@ func (h *Handler) wsFileList(conn *ws.Conn, _ string, data json.RawMessage) (any
 		}
 	}
 
+	kek, _ := h.getFileEncryptionKey(conn.Session)
+
 	files := make([]store.FileInfo, 0, len(records))
 	for _, r := range records {
 		fi := store.FileInfo{
@@ -405,10 +407,7 @@ func (h *Handler) wsFileList(conn *ws.Conn, _ string, data json.RawMessage) (any
 				fi.JobPhase = ti.Phase
 			}
 		}
-		if r.ThumbnailKey != "" {
-			appPath := toAppPath(r.Path, conn.Session.Username)
-			fi.ThumbnailURL = "/file/thumbnail?path=" + appPath
-		}
+		h.fillThumbnail(&fi, &r, kek)
 		files = append(files, fi)
 	}
 	return map[string]any{"files": files}, nil

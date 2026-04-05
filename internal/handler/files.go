@@ -22,6 +22,27 @@ import (
 	"zephyr/internal/store"
 )
 
+// fillThumbnail populates presigned URL + plaintext DEK for client-side decryption.
+func (h *Handler) fillThumbnail(fi *store.FileInfo, r *model.FileRecord, kek []byte) {
+	if r.ThumbnailKey == "" || r.ThumbnailWrappedDEK == "" || kek == nil {
+		return
+	}
+	presignedURL, err := h.Store.GeneratePresignedURL(r.ThumbnailKey, 4*time.Hour)
+	if err != nil {
+		return
+	}
+	wrappedBytes, err := hex.DecodeString(r.ThumbnailWrappedDEK)
+	if err != nil {
+		return
+	}
+	thumbDEK, err := auth.UnwrapDEK(kek, wrappedBytes)
+	if err != nil {
+		return
+	}
+	fi.ThumbnailURL = presignedURL
+	fi.ThumbnailDEK = hex.EncodeToString(thumbDEK)
+}
+
 func (h *Handler) handleList(c *fiber.Ctx) error {
 	path := c.Query("path", "")
 
@@ -59,6 +80,8 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 		}
 	}
 
+	kek, _ := h.getFileEncryptionKey(session)
+
 	files := make([]store.FileInfo, 0, len(records))
 	for _, r := range records {
 		fi := store.FileInfo{
@@ -81,10 +104,7 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 				fi.JobPhase = ti.Phase
 			}
 		}
-		if r.ThumbnailKey != "" {
-			appPath := middleware.ToAppPath(r.Path, session.Username)
-			fi.ThumbnailURL = "/file/thumbnail?path=" + appPath
-		}
+		h.fillThumbnail(&fi, &r, kek)
 		files = append(files, fi)
 	}
 

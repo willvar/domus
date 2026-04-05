@@ -421,7 +421,27 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       }))
     }
     const res = await ws.request<{ files?: FileListItem[] }>('file.list', { path })
-    return res.files || []
+    const list = res.files || []
+    registerThumbnails(list)
+    return list
+  }
+
+  /** Register thumbnails with the Service Worker for client-side decryption. */
+  function registerThumbnails(list: FileListItem[]): void {
+    const sw = useServiceWorker()
+    for (const file of list) {
+      if (!file.thumbnail_url || !file.thumbnail_dek) continue
+      const decryptUrl = sw.registerDecrypt({
+        url: file.thumbnail_url,
+        size: 0,
+        chunkSize: 0,
+        contentType: 'image/webp',
+        filename: '',
+        dek: file.thumbnail_dek,
+      })
+      file.thumbnail_url = decryptUrl
+      file.thumbnail_dek = undefined
+    }
   }
 
   function goBack(): void {
@@ -876,11 +896,13 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
           ? await api.get<FileAccessResponse>('/file/shared/' + file._shareId)
           : await api.get<FileAccessResponse>('/file/access', { params: { path: file.path } })
         const { url, size, name, content_type, chunk_size, dek, content_hash } = res.data
-        state.url = sw.registerDecrypt({
+        const decryptUrl = sw.registerDecrypt({
           url, size, chunkSize: chunk_size, contentType: content_type, filename: name, dek,
           contentHash: content_hash,
         })
-        ;(state as any)._decryptUrl = state.url
+        ;(state as any)._decryptUrl = decryptUrl
+
+        state.url = decryptUrl
       } catch {
         state.url = ''
       }
