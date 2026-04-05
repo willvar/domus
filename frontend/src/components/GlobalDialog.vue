@@ -1,20 +1,16 @@
-<script setup>
+<script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
 import { useDialogState } from '../composables/useNativeDialog'
 import { useI18n } from '../composables/useI18n'
-import BModal from './breeze/BModal.vue'
-import BCard from './breeze/BCard.vue'
-import BButton from './breeze/BButton.vue'
-import BInput from './breeze/BInput.vue'
-import BCheckbox from './breeze/BCheckbox.vue'
-import IconAlertCircle from '~icons/mdi/alert-circle'
+import { Modal, Card, Button, Input, Checkbox } from '../barrels/breeze'
+import { IconAlertCircle } from '../barrels/icons'
 
 const { t } = useI18n()
 const dialogState = useDialogState()
 
 const visible = ref(false)
 const inputValue = ref('')
-const inputRef = ref(null)
+const inputRef = ref<any>(null)
 const applyToAll = ref(false)
 
 watch(dialogState, (state) => {
@@ -54,13 +50,13 @@ function handleCancel() {
   dialogState.value = null
 }
 
-function handleKeydown(e) {
+function handleKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter') {
     handleConfirm()
   }
 }
 
-function handleDuplicate(action) {
+function handleDuplicate(action: string) {
   const state = dialogState.value
   if (!state) return
   visible.value = false
@@ -68,11 +64,11 @@ function handleDuplicate(action) {
   dialogState.value = null
 }
 
-function linkify(text) {
+function linkify(text: string) {
   return text.replace(/(https?:\/\/[^\s)]+)/g, '<a href="$1" target="_blank" rel="noopener" style="color:var(--breeze-accent)">$1</a>')
 }
 
-function formatSize(bytes) {
+function formatSize(bytes: number | undefined) {
   if (!bytes) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
   let value = bytes
@@ -86,7 +82,7 @@ function formatSize(bytes) {
 </script>
 
 <template>
-  <BModal
+  <Modal
     v-if="dialogState?.type !== 'duplicate'"
     :show="visible"
     preset="dialog"
@@ -103,7 +99,7 @@ function formatSize(bytes) {
       <IconAlertCircle v-if="dialogState?.icon === 'warning'" class="dialog-icon--warning" width="36" height="36" />
       <div v-if="dialogState?.content" class="dialog-content" v-html="linkify(dialogState.content)" />
     </div>
-    <BInput
+    <Input
       v-if="dialogState?.type === 'prompt'"
       ref="inputRef"
       :value="inputValue"
@@ -111,15 +107,15 @@ function formatSize(bytes) {
       @update:value="v => inputValue = v"
       @keydown="handleKeydown"
     />
-  </BModal>
+  </Modal>
 
-  <BModal
+  <Modal
     v-else
     :show="visible"
     @close="handleCancel"
     @mask-click="handleCancel"
   >
-    <BCard
+    <Card
       style="width: 520px"
       :title="dialogState?.title ?? ''"
       :bordered="false"
@@ -146,23 +142,23 @@ function formatSize(bytes) {
       </div>
 
       <div class="duplicate-options">
-        <BCheckbox v-model:checked="applyToAll">
+        <Checkbox v-model:checked="applyToAll">
           {{ t('upload.duplicate_apply_all') }}
-        </BCheckbox>
+        </Checkbox>
       </div>
 
       <template #footer>
         <div class="duplicate-footer">
           <div style="display:flex;justify-content:flex-end;gap:8px">
-            <BButton @click="handleCancel">{{ t('upload.duplicate_cancel') }}</BButton>
-            <BButton @click="handleDuplicate('skip')">{{ t('upload.duplicate_skip') }}</BButton>
-            <BButton @click="handleDuplicate('rename')">{{ t('upload.duplicate_rename') }}</BButton>
-            <BButton type="primary" @click="handleDuplicate('replace')">{{ t('upload.duplicate_replace') }}</BButton>
+            <Button @click="handleCancel">{{ t('upload.duplicate_cancel') }}</Button>
+            <Button @click="handleDuplicate('skip')">{{ t('upload.duplicate_skip') }}</Button>
+            <Button @click="handleDuplicate('rename')">{{ t('upload.duplicate_rename') }}</Button>
+            <Button type="primary" @click="handleDuplicate('replace')">{{ t('upload.duplicate_replace') }}</Button>
           </div>
         </div>
       </template>
-    </BCard>
-  </BModal>
+    </Card>
+  </Modal>
 </template>
 
 <style lang="scss" scoped>

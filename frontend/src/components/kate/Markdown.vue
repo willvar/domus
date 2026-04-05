@@ -1,10 +1,9 @@
-<script setup>
-import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
-import MarkdownIt from 'markdown-it'
+<script setup lang="ts">
+import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import type MarkdownIt from 'markdown-it'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useCodeMirror } from '../../composables/useCodeMirror'
-import IconPrev from '~icons/mdi/chevron-left'
-import IconNext from '~icons/mdi/chevron-right'
+import { IconChevronLeft as IconPrev, IconChevronRight as IconNext } from '../../barrels/icons'
 import { useI18n } from '../../composables/useI18n'
 
 const props = defineProps({
@@ -15,26 +14,30 @@ const props = defineProps({
 const fs = useFileSystemStore()
 const { t } = useI18n()
 const cm = useCodeMirror()
-const cmContainer = ref(null)
-const mdWrap = ref(null)
+const cmContainer = ref<HTMLDivElement | null>(null)
+const mdWrap = ref<HTMLDivElement | null>(null)
 const editBuffer = ref('')
 const mode = ref(window.innerWidth < 768 ? 'preview' : 'split')
 
-const md = new MarkdownIt({ html: false, linkify: true, typographer: true })
+let md: MarkdownIt | null = null
+onMounted(async () => {
+  const { default: MarkdownIt } = await import('markdown-it')
+  md = new MarkdownIt({ html: false, linkify: true, typographer: true })
+})
 
 const renderedHtml = computed(() => {
-  if (!props.state.content) return ''
+  if (!props.state.content || !md) return ''
   return md.render(props.state.content)
 })
 
 const showCode = computed(() => mode.value !== 'preview')
 const showPreview = computed(() => mode.value !== 'code')
 
-function createEditor(readOnly) {
+function createEditor(readOnly: boolean) {
   if (!cmContainer.value || !props.state) return
   const callbacks = readOnly ? {} : {
     onSave: () => { if (props.state.dirty) fs.saveViewer(props.windowId) },
-    onChange: (content) => { props.state.content = content; props.state.dirty = true },
+    onChange: (content: string) => { props.state.content = content; props.state.dirty = true },
   }
   cm.create(cmContainer.value, props.state.content || '', 'markdown', readOnly, callbacks)
 }

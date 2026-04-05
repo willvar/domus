@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { useFileSystemStore } from '../../stores/fileSystem'
 import ViewerApp from '../ViewerApp.vue'
 

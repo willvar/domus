@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, watch, nextTick, onUnmounted } from 'vue'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useWebSocket } from '../../composables/useWebSocket'
@@ -9,13 +9,13 @@ const ws = useWebSocket()
 const { t } = useI18n()
 const editing = ref(false)
 const editPath = ref('')
-const inputRef = ref(null)
+const inputRef = ref<HTMLInputElement | null>(null)
 
 // Subdirectory dropdown state
-const subDirs = ref([])
+const subDirs = ref<{ name: string; path: string }[]>([])
 const showSubMenu = ref(false)
-const subMenuStyle = ref({})
-const subMenuRef = ref(null)
+const subMenuStyle = ref<Record<string, string>>({})
+const subMenuRef = ref<HTMLDivElement | null>(null)
 const activeSegIndex = ref(-1)
 
 watch(() => fs.focusPathBar, (val) => {
@@ -43,17 +43,17 @@ function cancelEdit() {
   editing.value = false
 }
 
-async function loadSubDirs(parentPath) {
+async function loadSubDirs(parentPath: string) {
   try {
     const res = await ws.request('file.list', { path: parentPath })
-    const dirs = (res.files || []).filter(f => f.is_dir)
-    subDirs.value = dirs.map(d => ({ name: d.name, path: d.path }))
+    const dirs = (res.files || []).filter((f: any) => f.is_dir)
+    subDirs.value = dirs.map((d: any) => ({ name: d.name, path: d.path }))
   } catch {
     subDirs.value = []
   }
 }
 
-async function toggleSubMenu(e, segIndex) {
+async function toggleSubMenu(e: MouseEvent, segIndex: number) {
   e.stopPropagation()
   if (showSubMenu.value && activeSegIndex.value === segIndex) {
     showSubMenu.value = false
@@ -62,20 +62,20 @@ async function toggleSubMenu(e, segIndex) {
   const parentPath = segIndex === 0 ? '' : fs.pathSegments[segIndex - 1].path
   await loadSubDirs(parentPath)
   activeSegIndex.value = segIndex
-  const rect = e.currentTarget.getBoundingClientRect()
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
   const left = rect.left
   const top = rect.bottom + 2
   subMenuStyle.value = { left: `${left}px`, top: `${top}px` }
   showSubMenu.value = true
 }
 
-function selectSubDir(path) {
+function selectSubDir(path: string) {
   showSubMenu.value = false
   fs.navigate(path)
 }
 
-function onSubMenuClickOutside(e) {
-  if (subMenuRef.value && !subMenuRef.value.contains(e.target)) {
+function onSubMenuClickOutside(e: MouseEvent) {
+  if (subMenuRef.value && !subMenuRef.value.contains(e.target as Node)) {
     showSubMenu.value = false
   }
 }

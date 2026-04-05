@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { useMessageState } from '../../composables/useMessage'
 
 const { messages, typeColors } = useMessageState()

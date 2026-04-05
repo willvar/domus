@@ -1,16 +1,15 @@
-<script setup>
+<script setup lang="ts">
 import { computed, inject, ref, watch, nextTick, onMounted, onUnmounted } from 'vue'
-import BDrawer from '../breeze/BDrawer.vue'
+import { Drawer } from '../../barrels/breeze'
 import { useFileSystemStore } from '../../stores/fileSystem'
-import { useAuthStore } from '../../stores/auth'
 import { useI18n } from '../../composables/useI18n'
 import { useContextMenuState, closeContextMenu, suppressNextContextMenu } from '../../composables/useContextMenu'
 
 const fs = useFileSystemStore()
-const auth = useAuthStore()
 const { t } = useI18n()
 
-const openTranscodeDialog = inject('openTranscodeDialog', null)
+const openTranscodeDialog = inject<((...args: any[]) => void) | null>('openTranscodeDialog', null)
+const openShareDialog = inject<((path: string) => void) | null>('openShareDialog', null)
 
 const { show, x, y, targetFile, context } = useContextMenuState()
 
@@ -19,15 +18,15 @@ function onResize() { isMobile.value = window.innerWidth < 768 }
 onMounted(() => window.addEventListener('resize', onResize))
 onUnmounted(() => window.removeEventListener('resize', onResize))
 
-const menuRef = ref(null)
-const menuStyle = ref({})
+const menuRef = ref<HTMLDivElement | null>(null)
+const menuStyle = ref<Record<string, string>>({})
 
 const dangerKeys = new Set(['delete', 'empty_trash', 'permanent_delete'])
 
-const pickWallpaper = inject('pickWallpaper', null)
+const pickWallpaper = inject<(() => void) | null>('pickWallpaper', null)
 
 const options = computed(() => {
-  const items = []
+  const items: Array<{ label?: string; key?: string; type?: string }> = []
 
   // Desktop context menu
   if (context.value === 'desktop') {
@@ -42,6 +41,18 @@ const options = computed(() => {
     } else {
       items.push({ label: t('menu.empty_trash'), key: 'empty_trash' })
       items.push({ type: 'divider' })
+      items.push({ label: t('menu.refresh'), key: 'refresh' })
+    }
+    return items
+  }
+
+  if (fs.isShared) {
+    if (targetFile.value) {
+      items.push({ label: t('menu.open'), key: 'open' })
+      items.push({ label: t('menu.download'), key: 'download' })
+      items.push({ type: 'divider' })
+      items.push({ label: t('share.stop_share'), key: 'delete' })
+    } else {
       items.push({ label: t('menu.refresh'), key: 'refresh' })
     }
     return items
@@ -66,6 +77,9 @@ const options = computed(() => {
     }
 
     items.push({ type: 'divider' })
+    if (!targetFile.value.is_dir) {
+      items.push({ label: t('share.title'), key: 'share' })
+    }
     items.push({ label: t('menu.copy'), key: 'copy' })
     items.push({ label: t('menu.cut'), key: 'cut' })
     items.push({ label: t('menu.rename'), key: 'rename' })
@@ -110,8 +124,8 @@ watch(show, async (val) => {
 })
 
 // Click outside / scroll / resize to close
-function onClickOutside(e) {
-  if (menuRef.value && !menuRef.value.contains(e.target)) {
+function onClickOutside(e: MouseEvent) {
+  if (menuRef.value && !menuRef.value.contains(e.target as Node)) {
     if (e.button === 2) suppressNextContextMenu()
     closeContextMenu()
   }
@@ -135,14 +149,17 @@ onUnmounted(() => {
   window.removeEventListener('resize', onDismiss)
 })
 
-function handleSelect(key) {
+function handleSelect(key: string) {
   closeContextMenu()
   switch (key) {
     // Desktop actions
     case 'desktop_wallpaper': if (pickWallpaper) pickWallpaper(); break
     case 'open': fs.openSelected(); break
     case 'download':
-      if (targetFile.value) fs.downloadFile(targetFile.value.path)
+      if (targetFile.value) fs.downloadFile(targetFile.value._shareId ? targetFile.value : targetFile.value.path)
+      break
+    case 'share':
+      if (targetFile.value && openShareDialog) openShareDialog(targetFile.value.path)
       break
     case 'open_as_text':
       if (targetFile.value) fs.openViewer(targetFile.value, { forceType: 'text' })
@@ -158,7 +175,7 @@ function handleSelect(key) {
     case 'restore': fs.restoreSelected(); break
     case 'empty_trash': fs.emptyTrash(); break
     case 'upload':
-      document.querySelector('input[type="file"]')?.click()
+      ;(document.querySelector('input[type="file"]') as HTMLElement)?.click()
       break
     case 'transcode':
       if (targetFile.value && openTranscodeDialog) {
@@ -194,8 +211,8 @@ function handleSelect(key) {
           <button
             v-else
             class="ctx-item"
-            :class="{ danger: dangerKeys.has(item.key) }"
-            @click="handleSelect(item.key)"
+            :class="{ danger: dangerKeys.has(item.key!) }"
+            @click="handleSelect(item.key!)"
           >
             {{ item.label }}
           </button>
@@ -205,20 +222,20 @@ function handleSelect(key) {
   </Teleport>
 
   <!-- Mobile: bottom action sheet -->
-  <BDrawer
+  <Drawer
     v-if="isMobile"
     :show="show"
     placement="bottom"
     height="auto"
-    @update:show="(v) => { if (!v) closeContextMenu() }"
+    @update:show="(v: boolean) => { if (!v) closeContextMenu() }"
   >
     <div class="action-sheet">
       <button
         v-for="item in actionItems"
         :key="item.key"
         class="action-sheet-item"
-        :class="{ 'danger': dangerKeys.has(item.key) }"
-        @click="handleSelect(item.key)"
+        :class="{ 'danger': dangerKeys.has(item.key!) }"
+        @click="handleSelect(item.key!)"
       >
         {{ item.label }}
       </button>
@@ -227,7 +244,7 @@ function handleSelect(key) {
         {{ t('preview.cancel') }}
       </button>
     </div>
-  </BDrawer>
+  </Drawer>
 </template>
 
 <style lang="scss" scoped>

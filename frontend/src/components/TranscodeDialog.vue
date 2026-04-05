@@ -1,15 +1,10 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useWebSocket } from '../composables/useWebSocket'
 import { useI18n } from '../composables/useI18n'
 import { useMessage } from '../composables/useMessage'
 import { useJobsStore } from '../stores/jobs'
-import BModal from './breeze/BModal.vue'
-import BForm from './breeze/BForm.vue'
-import BFormItem from './breeze/BFormItem.vue'
-import BSelect from './breeze/BSelect.vue'
-import BSwitch from './breeze/BSwitch.vue'
-import BButton from './breeze/BButton.vue'
+import { Modal, Form, FormItem, Select, Switch, Button } from '../barrels/breeze'
 
 const ws = useWebSocket()
 const { t, te } = useI18n()
@@ -26,7 +21,7 @@ const preset = ref('medium')
 const outputFormat = ref('')
 const replace = ref(true)
 
-let resolvePromise = null
+let resolvePromise: ((value: string | null) => void) | null = null
 
 const presetOptions = [
   { label: t('transcode.preset_low'), value: 'low' },
@@ -70,7 +65,7 @@ watch(mediaType, (type_) => {
   }
 })
 
-function open(path, name, type_) {
+function open(path: string, name: string, type_: string) {
   filePath.value = path
   fileName.value = name
   mediaType.value = type_
@@ -95,7 +90,7 @@ function close() {
 async function startTranscode() {
   loading.value = true
   try {
-    const res = await ws.request('task.create', {
+    const res = await ws.request<{ task_id: string }>('task.create', {
       type: 'transcode',
       path: filePath.value,
       preset: preset.value,
@@ -117,7 +112,7 @@ async function startTranscode() {
       resolvePromise(taskId)
       resolvePromise = null
     }
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'transcode.failed'))
   } finally {
     loading.value = false
@@ -128,7 +123,7 @@ defineExpose({ open })
 </script>
 
 <template>
-  <BModal
+  <Modal
     :show="show"
     preset="dialog"
     :title="t('transcode.title')"
@@ -140,27 +135,27 @@ defineExpose({ open })
       <span class="file-name">{{ fileName }}</span>
     </div>
 
-    <BForm label-placement="left" label-width="auto" style="margin-top: 12px">
-      <BFormItem :label="t('transcode.preset')">
-        <BSelect v-model:value="preset" :options="presetOptions" />
-      </BFormItem>
-      <BFormItem :label="t('transcode.format')">
-        <BSelect v-model:value="outputFormat" :options="formatOptions" />
-      </BFormItem>
-      <BFormItem :label="t('transcode.replace')">
-        <BSwitch v-model:value="replace" />
-      </BFormItem>
-    </BForm>
+    <Form label-placement="left" label-width="auto" style="margin-top: 12px">
+      <FormItem :label="t('transcode.preset')">
+        <Select v-model:value="preset" :options="presetOptions" />
+      </FormItem>
+      <FormItem :label="t('transcode.format')">
+        <Select v-model:value="outputFormat" :options="formatOptions" />
+      </FormItem>
+      <FormItem :label="t('transcode.replace')">
+        <Switch v-model:value="replace" />
+      </FormItem>
+    </Form>
 
     <template #action>
       <div style="display:flex;justify-content:flex-end;gap:8px">
-        <BButton @click="close">{{ t('dialog.cancel') }}</BButton>
-        <BButton type="primary" :loading="loading" @click="startTranscode">
+        <Button @click="close">{{ t('dialog.cancel') }}</Button>
+        <Button type="primary" :loading="loading" @click="startTranscode">
           {{ t('transcode.start') }}
-        </BButton>
+        </Button>
       </div>
     </template>
-  </BModal>
+  </Modal>
 </template>
 
 <style lang="scss" scoped>

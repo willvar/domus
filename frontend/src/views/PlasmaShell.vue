@@ -1,5 +1,11 @@
-<script setup>
-import { ref, h, provide, watch } from 'vue'
+<script setup lang="ts">
+import { ref, h, provide, watch, defineAsyncComponent } from 'vue'
+import TranscodeDialog from '../components/TranscodeDialog.vue'
+import ShareDialog from '../components/ShareDialog.vue'
+import WallpaperDialog from '../components/plasma/WallpaperDialog.vue'
+import JobsPanel from '../components/plasma/systemtray/JobsPanel.vue'
+import PendingOpsPanel from '../components/plasma/systemtray/PendingOpsPanel.vue'
+import PreferencesPanel from '../components/plasma/systemtray/PreferencesPanel.vue'
 import { useAuthStore } from '../stores/auth'
 import { useFileSystemStore } from '../stores/fileSystem'
 import { useUploadStore } from '../stores/upload'
@@ -9,22 +15,20 @@ import { useWindowHistory } from '../composables/useWindowHistory'
 import { useNotification } from '../composables/useNotification'
 import { useWindowManagerStore } from '../stores/windowManager'
 import { useWorkspaceSync } from '../composables/useWorkspaceSync'
-import BButton from '../components/breeze/BButton.vue'
+import { Button } from '../barrels/breeze'
 import { useI18n } from '../composables/useI18n'
 
+// Critical path — needed on first render
 import PlasmaDesktop from '../components/plasma/Desktop.vue'
 import DolphinApp from '../components/dolphin/App.vue'
-import KonsoleApp from '../components/konsole/App.vue'
 import AppRenderer from '../components/plasma/AppRenderer.vue'
 import PlasmaPanel from '../components/plasma/Panel.vue'
 import ContextMenu from '../components/plasma/ContextMenu.vue'
 import GlobalDialog from '../components/GlobalDialog.vue'
-import TranscodeDialog from '../components/TranscodeDialog.vue'
-import WallpaperDialog from '../components/plasma/WallpaperDialog.vue'
-import JobsPanel from '../components/plasma/systemtray/JobsPanel.vue'
-import PendingOpsPanel from '../components/plasma/systemtray/PendingOpsPanel.vue'
-import ProfileApp from '../components/plasma/systemtray/ProfileApp.vue'
-import PreferencesPanel from '../components/plasma/systemtray/PreferencesPanel.vue'
+
+// Lazy — heavy or rarely used
+const KonsoleApp = defineAsyncComponent(() => import('../components/konsole/App.vue'))
+const ProfileApp = defineAsyncComponent(() => import('../components/plasma/systemtray/ProfileApp.vue'))
 
 const auth = useAuthStore()
 const fs = useFileSystemStore()
@@ -46,7 +50,7 @@ function loadPanelSize() {
   return { width: 360, height: 420 }
 }
 const trayPanelSize = ref(loadPanelSize())
-function updateTrayPanelSize(size) {
+function updateTrayPanelSize(size: { width: number; height: number }) {
   trayPanelSize.value = size
   localStorage.setItem(PANEL_SIZE_KEY, JSON.stringify(size))
 }
@@ -54,13 +58,19 @@ provide('trayPanelSize', trayPanelSize)
 provide('updateTrayPanelSize', updateTrayPanelSize)
 
 const showPrefs = ref(false)
-const transcodeDialogRef = ref(null)
+const transcodeDialogRef = ref<any>(null)
+const shareDialogShow = ref(false)
+const shareDialogPath = ref('')
 
-provide('openTranscodeDialog', (path, name, mediaType) => {
+provide('openTranscodeDialog', (path: string, name: string, mediaType: string) => {
   transcodeDialogRef.value?.open(path, name, mediaType)
 })
+provide('openShareDialog', (path: string) => {
+  shareDialogPath.value = path
+  shareDialogShow.value = true
+})
 
-const wallpaperDialogRef = ref(null)
+const wallpaperDialogRef = ref<any>(null)
 provide('pickWallpaper', () => { wallpaperDialogRef.value?.open() })
 
 // Initialize file system with workspace restore
@@ -127,7 +137,7 @@ if (auth.needsSetup) {
     content: t('login.setup_reminder'),
     duration: 15000,
     keepAliveOnHover: true,
-    action: () => h(BButton, {
+    action: () => h(Button, {
       type: 'primary',
       size: 'small',
       onClick: () => {
@@ -152,6 +162,7 @@ if (auth.needsSetup) {
 
     <ContextMenu />
     <TranscodeDialog ref="transcodeDialogRef" />
+    <ShareDialog :show="shareDialogShow" :file-path="shareDialogPath" @close="shareDialogShow = false" />
     <JobsPanel />
     <PendingOpsPanel />
     <GlobalDialog />

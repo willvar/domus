@@ -1,12 +1,9 @@
-<script setup>
+<script setup lang="ts">
 import { watch } from 'vue'
 import { useI18n } from '../../../composables/useI18n'
 import { usePreferences } from '../../../composables/usePreferences'
 import TrayPopup from './TrayPopup.vue'
-import BCard from '../../breeze/BCard.vue'
-import BFormItem from '../../breeze/BFormItem.vue'
-import BInputNumber from '../../breeze/BInputNumber.vue'
-import BSwitch from '../../breeze/BSwitch.vue'
+import { Card, FormItem, InputNumber, Switch } from '../../../barrels/breeze'
 
 const { t } = useI18n()
 const { prefs, load, update } = usePreferences()
@@ -22,9 +19,9 @@ watch(() => props.show, (v) => {
 <template>
   <TrayPopup :show="show" :title="t('account.preferences')" @update:show="v => emit('update:show', v)">
     <div class="prefs-scroll">
-      <BCard :title="t('account.large_file_limit')" size="small" style="margin-bottom: 16px">
-        <BFormItem :label="t('account.large_file_limit')">
-          <BInputNumber
+      <Card :title="t('account.large_file_limit')" size="small" style="margin-bottom: 16px">
+        <FormItem :label="t('account.large_file_limit')">
+          <InputNumber
             :value="prefs.largeFileLimitMB"
             :min="1"
             :max="500"
@@ -32,20 +29,20 @@ watch(() => props.show, (v) => {
             @update:value="v => update({ largeFileLimitMB: v })"
           >
             <template #suffix>MB</template>
-          </BInputNumber>
-        </BFormItem>
-      </BCard>
+          </InputNumber>
+        </FormItem>
+      </Card>
 
-      <BCard :title="t('account.window_title')" size="small">
-        <BFormItem :label="t('account.always_center')">
-          <BSwitch
+      <Card :title="t('account.window_title')" size="small">
+        <FormItem :label="t('account.always_center')">
+          <Switch
             :value="prefs.alwaysCenter"
             @update:value="v => update({ alwaysCenter: v })"
           />
-        </BFormItem>
+        </FormItem>
         <template v-if="prefs.alwaysCenter">
-          <BFormItem :label="t('account.default_width')">
-            <BInputNumber
+          <FormItem :label="t('account.default_width')">
+            <InputNumber
               :value="prefs.defaultWidth"
               :min="400"
               :max="3840"
@@ -53,10 +50,10 @@ watch(() => props.show, (v) => {
               @update:value="v => update({ defaultWidth: v })"
             >
               <template #suffix>px</template>
-            </BInputNumber>
-          </BFormItem>
-          <BFormItem :label="t('account.default_height')">
-            <BInputNumber
+            </InputNumber>
+          </FormItem>
+          <FormItem :label="t('account.default_height')">
+            <InputNumber
               :value="prefs.defaultHeight"
               :min="300"
               :max="2160"
@@ -64,30 +61,30 @@ watch(() => props.show, (v) => {
               @update:value="v => update({ defaultHeight: v })"
             >
               <template #suffix>px</template>
-            </BInputNumber>
-          </BFormItem>
+            </InputNumber>
+          </FormItem>
         </template>
-      </BCard>
+      </Card>
 
-      <BCard :title="t('prefs.search_title')" size="small" style="margin-top: 16px">
-        <BFormItem :label="t('prefs.index_content')">
-          <BSwitch
+      <Card :title="t('prefs.search_title')" size="small" style="margin-top: 16px">
+        <FormItem :label="t('prefs.index_content')">
+          <Switch
             :value="prefs.indexContent"
             @update:value="v => update({ indexContent: v })"
           />
-        </BFormItem>
+        </FormItem>
         <p class="prefs-hint">{{ t('prefs.index_content_hint') }}</p>
-      </BCard>
+      </Card>
 
-      <BCard :title="t('prefs.session_title')" size="small" style="margin-top: 16px">
-        <BFormItem :label="t('prefs.session_isolation')">
-          <BSwitch
+      <Card :title="t('prefs.session_title')" size="small" style="margin-top: 16px">
+        <FormItem :label="t('prefs.session_isolation')">
+          <Switch
             :value="prefs.sessionIsolation"
             @update:value="v => update({ sessionIsolation: v })"
           />
-        </BFormItem>
+        </FormItem>
         <p class="prefs-hint">{{ t('prefs.session_isolation_hint') }}</p>
-      </BCard>
+      </Card>
     </div>
   </TrayPopup>
 </template>

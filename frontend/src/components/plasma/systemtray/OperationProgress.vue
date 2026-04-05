@@ -1,16 +1,16 @@
-<script setup>
+<script setup lang="ts">
 import { useOperationsStore } from '../../../stores/operations'
 import { useI18n } from '../../../composables/useI18n'
 
 const ops = useOperationsStore()
 const { t } = useI18n()
 
-function progressPercent(op) {
+function progressPercent(op: any) {
   if (!op.total) return 0
   return Math.floor((op.done / op.total) * 100)
 }
 
-function progressClass(op) {
+function progressClass(op: any) {
   if (op.status === 'failed') return 'progress-error'
   if (op.status === 'completed') return 'progress-success'
   return 'progress-info'

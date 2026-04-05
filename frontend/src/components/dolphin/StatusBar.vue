@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useUploadStore } from '../../stores/upload'
@@ -48,7 +48,7 @@ const selectionInfo = computed(() => {
         :min="32"
         :max="96"
         :step="8"
-        @input="fs.iconSize = +$event.target.value"
+        @input="fs.iconSize = +($event.target as HTMLInputElement).value"
       />
     </div>
   </div>

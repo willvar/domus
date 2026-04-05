@@ -1,5 +1,5 @@
-<script setup>
-import { defineComponent, h } from 'vue'
+<script setup lang="ts">
+import { defineComponent } from 'vue'
 import { useNotificationState } from '../../composables/useNotification'
 
 const { notifications, typeColors } = useNotificationState()
@@ -9,10 +9,10 @@ const ActionSlot = defineComponent({
   render() { return this.render() },
 })
 
-function onMouseEnter(n) {
+function onMouseEnter(n: any) {
   if (n.keepAliveOnHover && n._stopTimer) n._stopTimer()
 }
-function onMouseLeave(n) {
+function onMouseLeave(n: any) {
   if (n.keepAliveOnHover && n._startTimer) n._startTimer()
 }
 </script>

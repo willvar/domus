@@ -1,16 +1,11 @@
-<script setup>
+<script setup lang="ts">
 import { ref, reactive, computed, h, onUnmounted } from 'vue'
-import BSpin from '../breeze/BSpin.vue'
-import BDataTable from '../breeze/BDataTable.vue'
+import { Spin, DataTable } from '../../barrels/breeze'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useUploadStore } from '../../stores/upload'
-import { useAuthStore } from '../../stores/auth'
 import { useI18n } from '../../composables/useI18n'
 import { getFileIcon } from '../../composables/useFileIcon'
-import IconCopy from '~icons/mdi/content-copy'
-import IconCut from '~icons/mdi/content-cut'
-import IconDelete from '~icons/mdi/delete-outline'
-import IconClose from '~icons/mdi/close'
+import { IconContentCopy as IconCopy, IconContentCut as IconCut, IconDeleteOutline as IconDelete, IconClose } from '../../barrels/icons'
 import { openContextMenu } from '../../composables/useContextMenu'
 import { useTouchHandlers } from '../../composables/useTouch'
 import DesktopEntry from '../plasma/DesktopEntry.vue'
@@ -19,11 +14,10 @@ import dayjs from 'dayjs'
 
 const fs = useFileSystemStore()
 const upload = useUploadStore()
-const auth = useAuthStore()
 const { t } = useI18n()
 
 const dragOver = ref(false)
-const fileViewRef = ref(null)
+const fileViewRef = ref<HTMLDivElement | null>(null)
 
 // --- Rubber-band selection ---
 const rubberBand = reactive({
@@ -47,11 +41,11 @@ const rubberBandStyle = computed(() => {
   }
 })
 
-function handleRubberBandStart(e) {
+function handleRubberBandStart(e: MouseEvent) {
   // Only left button, only in icons/compact view, not on a file item
   if (e.button !== 0) return
   if (fs.viewMode === 'details') return
-  if (e.target.closest('.file-item')) return
+  if ((e.target as HTMLElement).closest('.file-item')) return
 
   const container = fileViewRef.value
   if (!container) return
@@ -68,7 +62,7 @@ function handleRubberBandStart(e) {
   window.addEventListener('mouseup', handleRubberBandEnd)
 }
 
-function handleRubberBandMove(e) {
+function handleRubberBandMove(e: MouseEvent) {
   const container = fileViewRef.value
   if (!container) return
 
@@ -82,9 +76,9 @@ function handleRubberBandMove(e) {
   const bandX2 = Math.max(rubberBand.startX, rubberBand.currentX)
   const bandY2 = Math.max(rubberBand.startY, rubberBand.currentY)
 
-  const hitPaths = []
+  const hitPaths: string[] = []
   const items = container.querySelectorAll('.file-item[data-path]')
-  for (const item of items) {
+  for (const item of items as NodeListOf<HTMLElement>) {
     const itemRect = item.getBoundingClientRect()
     // Convert item rect to container-relative coordinates
     const ix1 = itemRect.left - rect.left + container.scrollLeft
@@ -94,7 +88,7 @@ function handleRubberBandMove(e) {
 
     // AABB intersection
     if (bandX1 < ix2 && bandX2 > ix1 && bandY1 < iy2 && bandY2 > iy1) {
-      hitPaths.push(item.dataset.path)
+      hitPaths.push(item.dataset.path!)
     }
   }
 
@@ -129,7 +123,7 @@ onUnmounted(() => {
 
 // --- End rubber-band ---
 
-function formatSize(bytes) {
+function formatSize(bytes: number) {
   if (!bytes) return '—'
   if (bytes < 1024) return `${bytes} B`
   const units = ['KiB', 'MiB', 'GiB', 'TiB']
@@ -145,7 +139,7 @@ const columns = computed(() => [
     title: t('fileview.col_name'),
     key: 'name',
     sorter: true,
-    render(row) {
+    render(row: any) {
       const iconComp = getFileIcon(row.name, row.is_dir)
       const isRenaming = fs.renamingFile === row.path
       const status = row.status || 'ready'
@@ -170,19 +164,19 @@ const columns = computed(() => [
     key: 'size',
     width: 100,
     sorter: true,
-    render: (row) => row.is_dir ? '—' : formatSize(row.size),
+    render: (row: any) => row.is_dir ? '—' : formatSize(row.size),
   },
   {
     title: t('fileview.col_modified'),
     key: 'last_modified',
     width: 160,
     sorter: true,
-    render: (row) => row.last_modified ? dayjs(row.last_modified).format('YYYY-MM-DD HH:mm') : '—',
+    render: (row: any) => row.last_modified ? dayjs(row.last_modified).format('YYYY-MM-DD HH:mm') : '—',
   },
 ])
 
 const rowTouchCache = new Map()
-function getRowTouch(row) {
+function getRowTouch(row: any) {
   if (!rowTouchCache.has(row.path)) {
     rowTouchCache.set(row.path, useTouchHandlers({
       onDoubleTap: () => {
@@ -191,27 +185,27 @@ function getRowTouch(row) {
         else if (fs.getViewerType(row.name)) fs.openViewer(row)
         else fs.downloadFile(row.path)
       },
-      onLongPress: (e) => {
+      onLongPress: (e: TouchEvent) => {
         const t = e.touches[0]
-        openContextMenu({ clientX: t.clientX, clientY: t.clientY, preventDefault() {} }, row)
+        openContextMenu({ clientX: t.clientX, clientY: t.clientY, preventDefault() {} } as any, row)
       },
     }))
   }
   return rowTouchCache.get(row.path)
 }
 
-const rowProps = (row) => {
+const rowProps = (row: any) => {
   const touch = getRowTouch(row)
   return {
     class: fs.selectedFiles.includes(row.path) ? 'row-selected' : '',
-    onClick: (e) => fs.selectFile(row.path, e),
+    onClick: (e: MouseEvent) => fs.selectFile(row.path, e),
     onDblclick: () => {
       if (fs.isTrash) return
       if (row.is_dir) fs.navigate(row.path)
       else if (fs.getViewerType(row.name)) fs.openViewer(row)
       else fs.downloadFile(row.path)
     },
-    onContextmenu: (e) => {
+    onContextmenu: (e: MouseEvent) => {
       e.stopPropagation()
       openContextMenu(e, row)
     },
@@ -221,7 +215,7 @@ const rowProps = (row) => {
   }
 }
 
-function handleDragOver(e) {
+function handleDragOver(e: DragEvent) {
   e.preventDefault()
   dragOver.value = true
 }
@@ -230,7 +224,7 @@ function handleDragLeave() {
   dragOver.value = false
 }
 
-function handleDrop(e) {
+function handleDrop(e: DragEvent) {
   e.preventDefault()
   dragOver.value = false
   if (fs.isTrash) return
@@ -240,8 +234,8 @@ function handleDrop(e) {
   }
 }
 
-function handleBackgroundClick(e) {
-  if (e.target.closest('.file-item')) return
+function handleBackgroundClick(e: MouseEvent) {
+  if ((e.target as HTMLElement).closest('.file-item')) return
   // Don't clear selection if rubber-band was just used
   if (rubberBandUsed) {
     rubberBandUsed = false
@@ -250,11 +244,11 @@ function handleBackgroundClick(e) {
   fs.clearSelection()
 }
 
-function handleContextMenu(e) {
+function handleContextMenu(e: MouseEvent) {
   openContextMenu(e, null)
 }
 
-function handleSearchResultClick(item) {
+function handleSearchResultClick(item: any) {
   // Navigate to parent directory
   if (item.is_dir) {
     fs.exitSearch()
@@ -265,7 +259,7 @@ function handleSearchResultClick(item) {
   }
 }
 
-function handleSearchResultDblClick(item) {
+function handleSearchResultDblClick(item: any) {
   fs.exitSearch()
   if (item.is_dir) {
     fs.navigate(item.path)
@@ -291,7 +285,7 @@ function handleSearchResultDblClick(item) {
   >
     <!-- Search results view -->
     <template v-if="fs.searchMode">
-      <BSpin :show="fs.searchLoading" class="file-view-spin">
+      <Spin :show="fs.searchLoading" class="file-view-spin">
         <div v-if="fs.searchResults.length === 0 && !fs.searchLoading" class="empty-state">
           <div class="empty-text">{{ t('search.no_results') }}</div>
         </div>
@@ -308,20 +302,20 @@ function handleSearchResultDblClick(item) {
               <div class="search-result-name">{{ item.name }}</div>
               <div class="search-result-path">{{ item.parent || '/' }}</div>
             </div>
-            <div class="search-result-rank">{{ Math.round(item.rank * 100) }}%</div>
+            <div class="search-result-rank">{{ Math.round((item.rank ?? 0) * 100) }}%</div>
           </div>
         </div>
-      </BSpin>
+      </Spin>
     </template>
 
     <!-- Normal directory view -->
-    <BSpin v-else :show="fs.loading" class="file-view-spin">
+    <Spin v-else :show="fs.loading" class="file-view-spin">
       <template v-if="fs.sortedFiles.length === 0 && !fs.loading">
         <div class="empty-state"><div class="empty-text">{{ t('fileview.empty') }}</div></div>
       </template>
 
       <template v-else-if="fs.viewMode === 'details'">
-        <BDataTable
+        <DataTable
           :columns="columns"
           :data="fs.sortedFiles"
           :row-key="(row) => row.path"
@@ -347,7 +341,7 @@ function handleSearchResultDblClick(item) {
           />
         </div>
       </template>
-    </BSpin>
+    </Spin>
 
     <!-- Rubber-band selection rectangle -->
     <div

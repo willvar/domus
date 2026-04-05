@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 const props = defineProps({
   type: { type: String, default: 'default' },
   size: { type: String, default: 'medium' },
@@ -6,12 +6,12 @@ const props = defineProps({
   disabled: { type: Boolean, default: false },
   block: { type: Boolean, default: false },
   quaternary: { type: Boolean, default: false },
-  attrType: { type: String, default: 'button' },
+  attrType: { type: String as () => 'button' | 'submit' | 'reset', default: 'button' },
 })
 
 const emit = defineEmits(['click'])
 
-function handleClick(e) {
+function handleClick(e: MouseEvent) {
   if (props.loading || props.disabled) return
   emit('click', e)
 }

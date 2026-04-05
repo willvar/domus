@@ -1,11 +1,22 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch, onMounted, onUnmounted, defineComponent, nextTick } from 'vue'
 
+interface TableColumn {
+  key: string
+  title?: string
+  width?: number
+  minWidth?: number
+  sorter?: boolean
+  resizable?: boolean
+  ellipsis?: boolean
+  render?: (row: any) => any
+}
+
 const props = defineProps({
-  columns: { type: Array, default: () => [] },
-  data: { type: Array, default: () => [] },
-  rowKey: { type: Function, default: undefined },
-  rowProps: { type: Function, default: undefined },
+  columns: { type: Array as () => TableColumn[], default: () => [] },
+  data: { type: Array as () => Record<string, any>[], default: () => [] },
+  rowKey: { type: Function as unknown as () => ((row: any) => string | number), default: undefined },
+  rowProps: { type: Function as unknown as () => ((row: any) => Record<string, any>), default: undefined },
   size: { type: String, default: 'medium' },
   bordered: { type: Boolean, default: true },
   striped: { type: Boolean, default: false },
@@ -15,10 +26,10 @@ const props = defineProps({
 })
 
 // --- Sorting ---
-const sortKey = ref(null)
-const sortOrder = ref(null) // 'asc' | 'desc' | null
+const sortKey = ref<string | null>(null)
+const sortOrder = ref<'asc' | 'desc' | null>(null)
 
-function toggleSort(col) {
+function toggleSort(col: any) {
   if (!col.sorter) return
   if (sortKey.value === col.key) {
     if (sortOrder.value === 'asc') sortOrder.value = 'desc'
@@ -34,7 +45,7 @@ const sortedData = computed(() => {
   if (!sortKey.value || !sortOrder.value) return props.data
   const key = sortKey.value
   const dir = sortOrder.value === 'asc' ? 1 : -1
-  return [...props.data].sort((a, b) => {
+  return [...props.data].sort((a: any, b: any) => {
     const va = a[key], vb = b[key]
     if (va == null && vb == null) return 0
     if (va == null) return 1
@@ -45,14 +56,14 @@ const sortedData = computed(() => {
 })
 
 // --- Column resizing ---
-const colWidths = ref({})
+const colWidths = ref<Record<string, number>>({})
 
-function onResizeStart(e, col) {
+function onResizeStart(e: MouseEvent, col: any) {
   e.preventDefault()
   const startX = e.clientX
   const startW = colWidths.value[col.key] || col.width || 120
 
-  function onMove(ev) {
+  function onMove(ev: MouseEvent) {
     const w = Math.max(50, startW + ev.clientX - startX)
     colWidths.value = { ...colWidths.value, [col.key]: w }
   }
@@ -64,10 +75,10 @@ function onResizeStart(e, col) {
   window.addEventListener('mouseup', onUp)
 }
 
-function colStyle(col) {
+function colStyle(col: any) {
   const w = colWidths.value[col.key] || col.width
   const mw = col.minWidth
-  const s = {}
+  const s: Record<string, string> = {}
   if (w) s.width = w + 'px'
   if (mw) s.minWidth = mw + 'px'
   return s
@@ -76,7 +87,7 @@ function colStyle(col) {
 // --- Virtual scroll ---
 const ROW_HEIGHT = computed(() => props.size === 'small' ? 36 : 40)
 const BUFFER = 8
-const scrollRef = ref(null)
+const scrollRef = ref<HTMLDivElement | null>(null)
 const scrollTop = ref(0)
 const containerHeight = ref(0)
 
@@ -92,8 +103,8 @@ const visibleRows = computed(() => sortedData.value.slice(visibleRange.value.sta
 const totalHeight = computed(() => sortedData.value.length * ROW_HEIGHT.value)
 const offsetTop = computed(() => visibleRange.value.start * ROW_HEIGHT.value)
 
-function onScroll(e) {
-  scrollTop.value = e.target.scrollTop
+function onScroll(e: Event) {
+  scrollTop.value = (e.target as HTMLElement).scrollTop
 }
 
 function updateContainerHeight() {
@@ -110,16 +121,19 @@ watch(() => props.data.length, () => nextTick(updateContainerHeight))
 
 // --- Render cell helper ---
 const RenderCell = defineComponent({
-  props: { render: Function, row: Object },
-  render() { return this.render(this.row) },
+  props: {
+    render: { type: Function, default: null },
+    record: { type: Object, default: null },
+  },
+  render() { return this.render?.(this.record) },
 })
 
-function getKey(row, i) {
+function getKey(row: any, i: number) {
   if (props.rowKey) return props.rowKey(row)
   return i
 }
 
-function getRowAttrs(row) {
+function getRowAttrs(row: any) {
   if (!props.rowProps) return {}
   return props.rowProps(row)
 }
@@ -181,7 +195,7 @@ function getRowAttrs(row) {
                 :class="{ 'breeze-table__ellipsis': col.ellipsis }"
                 :style="colStyle(col)"
               >
-                <RenderCell v-if="col.render" :render="col.render" :row="row" />
+                <RenderCell v-if="col.render" :render="col.render" :record="row" />
                 <template v-else>{{ row[col.key] }}</template>
               </td>
             </tr>
@@ -201,7 +215,7 @@ function getRowAttrs(row) {
                 :class="{ 'breeze-table__ellipsis': col.ellipsis }"
                 :style="colStyle(col)"
               >
-                <RenderCell v-if="col.render" :render="col.render" :row="row" />
+                <RenderCell v-if="col.render" :render="col.render" :record="row" />
                 <template v-else>{{ row[col.key] }}</template>
               </td>
             </tr>

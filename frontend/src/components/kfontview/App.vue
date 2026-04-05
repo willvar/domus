@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({
@@ -10,7 +10,7 @@ const sampleText = ref('')
 const defaultSample = 'The quick brown fox jumps over the lazy dog'
 const sizes = [12, 18, 24, 36, 48, 72]
 const fontFamily = ref('sans-serif')
-let loadedFace = null
+let loadedFace: FontFace | null = null
 
 onMounted(async () => {
   if (!props.state.blob) return

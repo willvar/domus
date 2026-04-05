@@ -1,9 +1,9 @@
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, nextTick } from 'vue'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useI18n } from '../../composables/useI18n'
 import { useMessage } from '../../composables/useMessage'
-import BInput from '../breeze/BInput.vue'
+import { Input } from '../../barrels/breeze'
 
 const props = defineProps({
   file: { type: Object, required: true },
@@ -12,7 +12,7 @@ const props = defineProps({
 const fs = useFileSystemStore()
 const message = useMessage()
 const { t, te } = useI18n()
-const inputRef = ref(null)
+const inputRef = ref<any>(null)
 
 // Strip trailing / for dirs and get just the name
 const newName = ref(props.file.name)
@@ -43,7 +43,7 @@ async function commit() {
 
   try {
     await fs.rename(props.file.path, name, props.file.is_dir)
-  } catch (e) {
+  } catch (e: any) {
     committed = false
     message.error(t('dialog.rename_failed') + ': ' + te(e))
   }
@@ -51,7 +51,7 @@ async function commit() {
 </script>
 
 <template>
-  <BInput
+  <Input
     ref="inputRef"
     :value="newName"
     size="tiny"

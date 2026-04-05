@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed, ref, watch, onUnmounted } from 'vue'
 import { useWindowManagerStore, FILES_ICON, PROFILE_ICON, KONSOLE_ICON } from '../../stores/windowManager'
 import { useTouchHandlers } from '../../composables/useTouch'
@@ -11,7 +11,7 @@ const wm = useWindowManagerStore()
 const { t } = useI18n()
 const { prefs } = usePreferences()
 
-function onDesktopContextMenu(e) {
+function onDesktopContextMenu(e: MouseEvent) {
   e.preventDefault()
   openContextMenu(e, null, 'desktop')
 }
@@ -95,8 +95,8 @@ const apps = computed(() => [
   },
 ])
 
-const appTouchMap = new Map()
-function appTouch(app) {
+const appTouchMap = new Map<string, ReturnType<typeof useTouchHandlers>>()
+function appTouch(app: { id: string; action: () => void }) {
   if (!appTouchMap.has(app.id)) {
     appTouchMap.set(app.id, useTouchHandlers({ onDoubleTap: () => app.action() }))
   }
@@ -105,7 +105,7 @@ function appTouch(app) {
 
 // Long-press on desktop background for mobile context menu
 const desktopTouch = useTouchHandlers({
-  onLongPress: (e) => openContextMenu(e, null, 'desktop'),
+  onLongPress: (e) => openContextMenu(e as unknown as MouseEvent, null, 'desktop'),
 })
 </script>
 
@@ -122,14 +122,14 @@ const desktopTouch = useTouchHandlers({
       <video
         v-if="isVideo"
         :src="customWallpaperUrl"
-        :style="{ objectFit: wallpaperFit }"
+        :style="{ objectFit: wallpaperFit } as any"
         class="wallpaper wallpaper-media"
         autoplay muted loop playsinline
       />
       <img
         v-else
         :src="customWallpaperUrl"
-        :style="{ objectFit: wallpaperFit }"
+        :style="{ objectFit: wallpaperFit } as any"
         class="wallpaper wallpaper-media"
       />
     </template>
@@ -168,9 +168,9 @@ const desktopTouch = useTouchHandlers({
         :key="app.id"
         class="desktop-icon"
         @dblclick="app.action()"
-        @touchstart="appTouch(app).onTouchStart"
-        @touchmove="appTouch(app).onTouchMove"
-        @touchend="appTouch(app).onTouchEnd"
+        @touchstart="appTouch(app)!.onTouchStart"
+        @touchmove="appTouch(app)!.onTouchMove"
+        @touchend="appTouch(app)!.onTouchEnd"
       >
         <div class="desktop-icon-img"><component :is="app.icon" width="40" height="40" /></div>
         <span class="desktop-icon-label">{{ app.label }}</span>

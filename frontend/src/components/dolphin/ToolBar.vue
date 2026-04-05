@@ -1,12 +1,7 @@
-<script setup>
+<script setup lang="ts">
 import { ref, watch, nextTick, onUnmounted } from 'vue'
-import IconChevronLeft from '~icons/mdi/chevron-left'
-import IconChevronRight from '~icons/mdi/chevron-right'
-import IconViewGrid from '~icons/mdi/view-grid-outline'
-import IconViewList from '~icons/mdi/view-list-outline'
-import IconUpload from '~icons/mdi/upload'
-import IconSearch from '~icons/mdi/magnify'
-import IconClose from '~icons/mdi/close'
+import { IconChevronLeft, IconChevronRight, IconViewGridOutline as IconViewGrid, IconViewListOutline as IconViewList, IconUpload, IconMagnify as IconSearch, IconClose, IconShareVariantOutline as IconShare } from '../../barrels/icons'
+import { inject } from 'vue'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useUploadStore } from '../../stores/upload'
 import { useAuthStore } from '../../stores/auth'
@@ -17,8 +12,22 @@ const upload = useUploadStore()
 const auth = useAuthStore()
 const { t } = useI18n()
 
-const searchRef = ref(null)
-const fileInputRef = ref(null)
+const openShareDialog = inject<((path: string) => void) | null>('openShareDialog', null)
+
+const searchRef = ref<HTMLInputElement | null>(null)
+const fileInputRef = ref<HTMLInputElement | null>(null)
+
+const canShare = () => {
+  if (fs.isTrash || fs.isShared) return false
+  if (fs.selectedFiles.length !== 1) return false
+  const file = fs.selectedFile
+  return file && !file.is_dir
+}
+
+function triggerShare() {
+  const file = fs.selectedFile
+  if (file && openShareDialog) openShareDialog(file.path)
+}
 
 watch(() => fs.focusSearch, (val) => {
   if (val) {
@@ -31,9 +40,9 @@ watch(() => fs.focusSearch, (val) => {
 
 // View mode dropdown
 const showViewMenu = ref(false)
-const viewBtnRef = ref(null)
-const viewMenuRef = ref(null)
-const viewMenuStyle = ref({})
+const viewBtnRef = ref<HTMLButtonElement | null>(null)
+const viewMenuRef = ref<HTMLDivElement | null>(null)
+const viewMenuStyle = ref<Record<string, string>>({})
 
 const viewOptions = [
   { key: 'icons', labelKey: 'toolbar.view_icons' },
@@ -62,14 +71,14 @@ function toggleViewMenu() {
   showViewMenu.value = true
 }
 
-function selectView(key) {
+function selectView(key: string) {
   fs.viewMode = key
   showViewMenu.value = false
 }
 
-function onViewClickOutside(e) {
-  if (viewMenuRef.value && !viewMenuRef.value.contains(e.target) &&
-      viewBtnRef.value && !viewBtnRef.value.contains(e.target)) {
+function onViewClickOutside(e: MouseEvent) {
+  if (viewMenuRef.value && !viewMenuRef.value.contains(e.target as Node) &&
+      viewBtnRef.value && !viewBtnRef.value.contains(e.target as Node)) {
     showViewMenu.value = false
   }
 }
@@ -89,10 +98,11 @@ function triggerUpload() {
   fileInputRef.value?.click()
 }
 
-function handleFileSelect(e) {
-  const files = Array.from(e.target.files)
-  e.target.value = ''
-  if (files.length > 0) {
+function handleFileSelect(e: Event) {
+  const input = e.target as HTMLInputElement
+  const files = input.files
+  input.value = ''
+  if (files && files.length > 0) {
     upload.uploadFiles(files, fs.currentPath)
   }
 }
@@ -102,7 +112,7 @@ function clearSearch() {
   searchRef.value?.focus()
 }
 
-function handleSearchKeydown(e) {
+function handleSearchKeydown(e: KeyboardEvent) {
   if (e.key === 'Enter' && fs.searchQuery.trim().length >= 2) {
     fs.performSearch(fs.searchQuery.trim())
   }
@@ -182,6 +192,14 @@ function handleSearchKeydown(e) {
           @click="triggerUpload"
         >
           <IconUpload width="16" height="16" />
+        </button>
+        <button
+          v-if="canShare()"
+          class="nav-btn"
+          :title="t('share.title')"
+          @click="triggerShare"
+        >
+          <IconShare width="16" height="16" />
         </button>
         <input
           ref="fileInputRef"

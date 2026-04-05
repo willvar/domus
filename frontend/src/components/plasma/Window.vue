@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useWindowManagerStore } from '../../stores/windowManager'
 import { historyClose } from '../../composables/useWindowHistory'
@@ -12,7 +12,7 @@ const props = defineProps({
 const emit = defineEmits(['close'])
 
 const wm = useWindowManagerStore()
-const windowEl = ref(null)
+const windowEl = ref<HTMLDivElement | null>(null)
 
 const win = computed(() => wm.findWindow(props.windowId))
 
@@ -35,14 +35,14 @@ let resizeStartWinX = 0
 let resizeStartWinY = 0
 
 // Snap/tile preview
-const snapPreview = ref(null) // 'left' | 'right' | 'maximize' | null
+const snapPreview = ref<'left' | 'right' | 'maximize' | null>(null)
 
 const SNAP_THRESHOLD = 10
 const EDGE_SNAP_THRESHOLD = 8
 const MIN_WIDTH = 300
 const MIN_HEIGHT = 200
 
-const windowStyle = computed(() => {
+const windowStyle = computed((): any => {
   const w = win.value
   if (!w) return { display: 'none' }
   if (w.minimized) return { display: 'none' }
@@ -104,7 +104,7 @@ let dragPending = false
 let dragStartClientX = 0
 let dragStartClientY = 0
 
-function startDrag(e) {
+function startDrag(e: MouseEvent) {
   const w = win.value
   if (!w || e.button !== 0) return
 
@@ -128,7 +128,7 @@ function startDrag(e) {
   e.preventDefault()
 }
 
-function unsnapWindow(e) {
+function unsnapWindow(e: MouseEvent | { clientX: number; clientY: number }) {
   const w = win.value
   const container = getContainer()
   if (!w || !container) return
@@ -154,7 +154,7 @@ function unsnapWindow(e) {
   dragPending = false
 }
 
-function onDrag(e) {
+function onDrag(e: MouseEvent | { clientX: number; clientY: number; preventDefault?: () => void }) {
   // If pending, check if moved enough to start actual drag
   if (dragPending) {
     const dx = Math.abs(e.clientX - dragStartClientX)
@@ -199,7 +199,7 @@ function onDrag(e) {
 }
 
 // --- Touch drag ---
-function startDragTouch(e) {
+function startDragTouch(e: TouchEvent) {
   const w = win.value
   if (!w || e.touches.length !== 1) return
   const t = e.touches[0]
@@ -222,7 +222,7 @@ function startDragTouch(e) {
   window.addEventListener('touchend', stopDragTouch)
 }
 
-function onDragTouch(e) {
+function onDragTouch(e: TouchEvent) {
   const t = e.touches[0]
   // Reuse onDrag logic with a fake mouse-like event
   onDrag({ clientX: t.clientX, clientY: t.clientY, preventDefault() {} })
@@ -268,8 +268,8 @@ function stopDrag() {
 }
 
 // --- Resize (all edges) ---
-function startResize(edge, e) {
-  if (win.value?.maximized) return
+function startResize(edge: string, e: MouseEvent) {
+  if (!win.value || win.value.maximized) return
   if (e.button !== 0) return
   resizing = true
   noTransition.value = true
@@ -290,12 +290,12 @@ function startResize(edge, e) {
   e.preventDefault()
 }
 
-function onResize(e) {
+function onResize(e: MouseEvent) {
   if (!resizing || !win.value) return
   const dx = e.clientX - resizeStartX
   const dy = e.clientY - resizeStartY
   const edge = resizeEdge
-  const updates = {}
+  const updates: Record<string, number> = {}
 
   if (edge.includes('e')) {
     updates.width = Math.max(MIN_WIDTH, resizeStartW + dx)

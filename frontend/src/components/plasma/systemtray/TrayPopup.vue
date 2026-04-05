@@ -1,9 +1,8 @@
-<script setup>
+<script setup lang="ts">
 import { toRef } from 'vue'
 import { usePanelResize } from '../../../composables/usePanelResize'
 import { useTrayPanel } from '../../../composables/useTrayPanel'
-import IconPin from '~icons/mdi/pin-outline'
-import IconPinOff from '~icons/mdi/pin-off-outline'
+import { IconPinOutline as IconPin, IconPinOffOutline as IconPinOff } from '../../../barrels/icons'
 
 const props = defineProps({
   show: { type: Boolean, required: true },
@@ -22,8 +21,8 @@ const { panelRef, pinned, togglePin } = useTrayPanel(
 <template>
   <Transition name="tray-popup">
     <div
-      ref="panelRef"
       v-if="show"
+      ref="panelRef"
       class="tray-popup"
       :style="{ width: panelSize.width + 'px', height: panelSize.height + 'px' }"
     >

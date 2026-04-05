@@ -1,7 +1,7 @@
-<script setup>
-import { provide, ref, useSlots, computed } from 'vue'
+<script setup lang="ts">
+import { useSlots, computed } from 'vue'
 
-const props = defineProps({
+defineProps({
   value: { type: String, default: '' },
   animated: { type: Boolean, default: false },
 })
@@ -15,13 +15,13 @@ const tabs = computed(() => {
   return children
     .filter(c => c.props)
     .map(c => ({
-      name: c.props.name,
-      tab: c.props.tab || c.props.name,
+      name: c.props!.name,
+      tab: c.props!.tab || c.props!.name,
       vnode: c,
     }))
 })
 
-function select(name) {
+function select(name: string) {
   emit('update:value', name)
 }
 </script>

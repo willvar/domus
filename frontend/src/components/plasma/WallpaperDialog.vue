@@ -1,14 +1,10 @@
-<script setup>
-import { ref, computed, watch, onUnmounted } from 'vue'
-import BModal from '../breeze/BModal.vue'
-import BButton from '../breeze/BButton.vue'
-import BSelect from '../breeze/BSelect.vue'
-import BFormItem from '../breeze/BFormItem.vue'
+<script setup lang="ts">
+import { ref, computed, onUnmounted } from 'vue'
+import { Modal, Button, Select, FormItem } from '../../barrels/breeze'
 import { usePreferences } from '../../composables/usePreferences'
 import { useI18n } from '../../composables/useI18n'
 import api from '../../composables/useApi'
-import IconPlus from '~icons/mdi/plus'
-import IconDelete from '~icons/mdi/delete-outline'
+import { IconPlus, IconDeleteOutline as IconDelete } from '../../barrels/icons'
 
 const { t } = useI18n()
 const { prefs, update } = usePreferences()
@@ -18,11 +14,11 @@ const selectedType = ref('builtin')   // 'builtin' | 'custom'
 const selectedBuiltinId = ref(0)
 const selectedCustomPath = ref('')
 const selectedFit = ref('cover')
-const fileInput = ref(null)
+const fileInput = ref<HTMLInputElement | null>(null)
 
 // Blob URL cache for custom wallpaper previews
-const blobCache = new Map() // path -> blobUrl
-const customThumbs = ref([]) // [{ path, blobUrl }]
+const blobCache = new Map<string, string>() // path -> blobUrl
+const customThumbs = ref<Array<{ path: string; name: string; blobUrl: string }>>([]) // [{ path, blobUrl }]
 
 const fitOptions = [
   { label: t('wallpaper.fit_cover'), value: 'cover' },
@@ -36,7 +32,7 @@ const builtins = [
   { id: 0, label: 'Deep Ocean', colors: ['#0d1117', '#151d28', '#0f1923', '#1a3a5c', '#1e4a6e', '#3daee9'] },
 ]
 
-function builtinSvg(b) {
+function builtinSvg(b: { id: number; label: string; colors: string[] }) {
   return `data:image/svg+xml,${encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080">
 <defs>
 <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
@@ -92,7 +88,7 @@ function open() {
 
 async function loadCustomThumbs() {
   const files = prefs.wallpaperFiles || []
-  const results = []
+  const results: Array<{ path: string; name: string; blobUrl: string }> = []
   for (const name of files) {
     const path = `desktop/${name}`
     if (!blobCache.has(path)) {
@@ -104,18 +100,18 @@ async function loadCustomThumbs() {
       } catch { /* skip missing files */ continue }
     }
     if (blobCache.has(path)) {
-      results.push({ path, name, blobUrl: blobCache.get(path) })
+      results.push({ path, name, blobUrl: blobCache.get(path)! })
     }
   }
   customThumbs.value = results
 }
 
-function selectBuiltin(id) {
+function selectBuiltin(id: number) {
   selectedType.value = 'builtin'
   selectedBuiltinId.value = id
 }
 
-function selectCustom(path) {
+function selectCustom(path: string) {
   selectedType.value = 'custom'
   selectedCustomPath.value = path
 }
@@ -124,10 +120,10 @@ function triggerUpload() {
   fileInput.value?.click()
 }
 
-async function onFileSelected(e) {
-  const file = e.target.files?.[0]
+async function onFileSelected(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
   if (!file) return
-  e.target.value = ''
+  ;(e.target as HTMLInputElement).value = ''
 
   const name = `${Date.now()}-${file.name}`
   const path = `desktop/${name}`
@@ -152,14 +148,14 @@ async function onFileSelected(e) {
   } catch { /* silent */ }
 }
 
-async function deleteCustom(thumb) {
+async function deleteCustom(thumb: { path: string; name: string; blobUrl: string }) {
   // Remove from files list
   const files = (prefs.wallpaperFiles || []).filter(f => f !== thumb.name)
   update({ wallpaperFiles: files })
 
   // Remove blob
   if (blobCache.has(thumb.path)) {
-    URL.revokeObjectURL(blobCache.get(thumb.path))
+    URL.revokeObjectURL(blobCache.get(thumb.path)!)
     blobCache.delete(thumb.path)
   }
 
@@ -194,7 +190,7 @@ defineExpose({ open })
 </script>
 
 <template>
-  <BModal :show="show" @close="cancel" @mask-click="cancel">
+  <Modal :show="show" @close="cancel" @mask-click="cancel">
     <div class="wp-dialog">
       <div class="wp-header">
         <span class="wp-title">{{ t('wallpaper.title') }}</span>
@@ -208,23 +204,23 @@ defineExpose({ open })
         <video
           v-if="previewIsVideo && previewUrl"
           :src="previewUrl"
-          :style="{ objectFit: selectedFit }"
+          :style="{ objectFit: selectedFit } as any"
           class="wp-preview-media"
           autoplay muted loop playsinline
         />
         <img
           v-else-if="previewUrl"
           :src="previewUrl"
-          :style="{ objectFit: selectedFit }"
+          :style="{ objectFit: selectedFit } as any"
           class="wp-preview-media"
         />
       </div>
 
       <!-- Fit mode -->
       <div class="wp-fit-row">
-        <BFormItem :label="t('wallpaper.fit')" style="flex:1;margin:0">
-          <BSelect :value="selectedFit" :options="fitOptions" @update:value="v => selectedFit = v" />
-        </BFormItem>
+        <FormItem :label="t('wallpaper.fit')" style="flex:1;margin:0">
+          <Select :value="selectedFit" :options="fitOptions" @update:value="v => selectedFit = v" />
+        </FormItem>
       </div>
 
       <!-- Wallpaper grid -->
@@ -255,7 +251,7 @@ defineExpose({ open })
         >
           <video v-if="thumb.name.match(/\.(mp4|webm|mov)$/i)" :src="thumb.blobUrl" class="wp-thumb-img" muted />
           <img v-else :src="thumb.blobUrl" class="wp-thumb-img" />
-          <button class="wp-thumb-delete" @click.stop="deleteCustom(thumb)" :title="t('wallpaper.delete')">
+          <button class="wp-thumb-delete" :title="t('wallpaper.delete')" @click.stop="deleteCustom(thumb)">
             <IconDelete width="14" height="14" />
           </button>
         </div>
@@ -265,11 +261,11 @@ defineExpose({ open })
 
       <!-- Footer -->
       <div class="wp-footer">
-        <BButton @click="cancel">{{ t('preview.cancel') }}</BButton>
-        <BButton type="primary" @click="apply">{{ t('wallpaper.apply') }}</BButton>
+        <Button @click="cancel">{{ t('preview.cancel') }}</Button>
+        <Button type="primary" @click="apply">{{ t('wallpaper.apply') }}</Button>
       </div>
     </div>
-  </BModal>
+  </Modal>
 </template>
 
 <style lang="scss" scoped>

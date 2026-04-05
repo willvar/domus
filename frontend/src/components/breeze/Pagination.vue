@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue'
 
 const props = defineProps({
@@ -17,7 +17,7 @@ const pages = computed(() => {
   const total = totalPages.value
   const current = props.page
   const slot = props.pageSlot
-  const result = []
+  const result: (number | string)[] = []
 
   if (total <= slot) {
     for (let i = 1; i <= total; i++) result.push(i)
@@ -36,7 +36,8 @@ const pages = computed(() => {
   return result
 })
 
-function go(p) {
+function go(p: number | string) {
+  if (typeof p !== 'number') return
   if (p < 1 || p > totalPages.value || p === props.page) return
   emit('update:page', p)
 }

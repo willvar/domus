@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed, ref, watch, nextTick, onUnmounted } from 'vue'
 import { useWindowManagerStore } from '../../stores/windowManager'
 import { useAuthStore } from '../../stores/auth'
@@ -7,10 +7,7 @@ import { useUploadStore } from '../../stores/upload'
 import { usePendingOpsStore } from '../../stores/pendingOps'
 import { useI18n } from '../../composables/useI18n'
 import { consumeContextMenuSuppress, suppressNextContextMenu } from '../../composables/useContextMenu'
-import IconGrid from '~icons/mdi/view-grid'
-import IconSync from '~icons/mdi/refresh'
-import IconAccount from '~icons/mdi/account'
-import IconCog from '~icons/mdi/cog-outline'
+import { IconViewGrid as IconGrid, IconRefresh as IconSync, IconAccount, IconCogOutline as IconCog } from '../../barrels/icons'
 
 const wm = useWindowManagerStore()
 const auth = useAuthStore()
@@ -26,7 +23,7 @@ const emit = defineEmits(['update:showPrefs'])
 
 // Tray panel size is provided by PlasmaShell
 
-function handleWheel(e) {
+function handleWheel(e: WheelEvent) {
   e.preventDefault()
   const wins = wm.windows
   if (wins.length === 0) return
@@ -46,7 +43,7 @@ function handleWheel(e) {
   }
 }
 
-function handleClick(win) {
+function handleClick(win: any) {
   if (win.minimized) {
     wm.restoreWindow(win.id)
   } else if (wm.activeWindowId === win.id) {
@@ -57,14 +54,14 @@ function handleClick(win) {
 }
 
 // --- Taskbar item context menu ---
-const ctxWinId = ref(null)
-const taskbarCtxRef = ref(null)
-const taskbarCtxStyle = ref({})
+const ctxWinId = ref<string | null>(null)
+const taskbarCtxRef = ref<HTMLDivElement | null>(null)
+const taskbarCtxStyle = ref<Record<string, string>>({})
 
-function handleTaskbarContext(e, win) {
+function handleTaskbarContext(e: MouseEvent, win: any) {
   if (consumeContextMenuSuppress()) return
   ctxWinId.value = win.id
-  const rect = e.currentTarget.getBoundingClientRect()
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
   taskbarCtxStyle.value = { left: `${rect.left}px`, top: `${rect.top}px` }
   nextTick(() => {
     const menuEl = taskbarCtxRef.value
@@ -95,7 +92,7 @@ const taskbarCtxItems = computed(() => {
   return items
 })
 
-function handleTaskbarCtx(key) {
+function handleTaskbarCtx(key: string) {
   const id = ctxWinId.value
   ctxWinId.value = null
   if (!id) return
@@ -107,8 +104,8 @@ function handleTaskbarCtx(key) {
   }
 }
 
-function onTaskbarCtxClickOutside(e) {
-  if (taskbarCtxRef.value && !taskbarCtxRef.value.contains(e.target)) {
+function onTaskbarCtxClickOutside(e: MouseEvent) {
+  if (taskbarCtxRef.value && !taskbarCtxRef.value.contains(e.target as Node)) {
     if (e.button === 2) suppressNextContextMenu()
     ctxWinId.value = null
   }
@@ -124,9 +121,9 @@ watch(ctxWinId, (val) => {
 
 // --- User menu dropdown ---
 const showUserMenu = ref(false)
-const userBtnRef = ref(null)
-const userMenuRef = ref(null)
-const userMenuStyle = ref({})
+const userBtnRef = ref<HTMLButtonElement | null>(null)
+const userMenuRef = ref<HTMLDivElement | null>(null)
+const userMenuStyle = ref<Record<string, string>>({})
 
 const userMenuItems = computed(() => [
   { label: auth.user?.display_name || auth.username, key: 'profile' },
@@ -159,16 +156,16 @@ function toggleUserMenu() {
   })
 }
 
-function handleUserMenu(key) {
+function handleUserMenu(key: string) {
   showUserMenu.value = false
   if (key === 'profile') wm.openProfileApp()
   if (key === 'logout') auth.logout()
   if (key === 'lang') setLocale(locale.value === 'zh' ? 'en' : 'zh')
 }
 
-function onUserMenuClickOutside(e) {
-  if (userMenuRef.value && !userMenuRef.value.contains(e.target) &&
-      userBtnRef.value && !userBtnRef.value.contains(e.target)) {
+function onUserMenuClickOutside(e: MouseEvent) {
+  if (userMenuRef.value && !userMenuRef.value.contains(e.target as Node) &&
+      userBtnRef.value && !userBtnRef.value.contains(e.target as Node)) {
     showUserMenu.value = false
   }
 }
@@ -288,7 +285,7 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
                 v-else
                 class="ctx-item"
                 :class="{ danger: item.danger }"
-                @click="handleTaskbarCtx(item.key)"
+                @click="handleTaskbarCtx(item.key!)"
               >
                 {{ item.label }}
               </button>
@@ -310,9 +307,9 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
               <button
                 v-else
                 class="ctx-item"
-                :class="{ danger: item.danger, disabled: item.disabled }"
-                :disabled="item.disabled"
-                @click="!item.disabled && handleUserMenu(item.key)"
+                :class="{ danger: (item as any).danger, disabled: (item as any).disabled }"
+                :disabled="(item as any).disabled"
+                @click="!(item as any).disabled && handleUserMenu(item.key!)"
               >
                 {{ item.label }}
               </button>

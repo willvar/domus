@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed, ref, onBeforeUnmount } from 'vue'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { getFileIcon } from '../../composables/useFileIcon'
@@ -6,12 +6,14 @@ import { openContextMenu } from '../../composables/useContextMenu'
 import { useTouchHandlers } from '../../composables/useTouch'
 import { useI18n } from '../../composables/useI18n'
 import InlineRename from '../dolphin/InlineRename.vue'
-import IconCheck from '~icons/mdi/check'
+import { IconCheck } from '../../barrels/icons'
 
 const { t } = useI18n()
 
+import type { FileListItem } from '../../types'
+
 const props = defineProps({
-  file: { type: Object, required: true },
+  file: { type: Object as () => FileListItem, required: true },
   compact: { type: Boolean, default: false },
 })
 
@@ -33,7 +35,7 @@ const badgeLabel = computed(() => {
 
 const iconName = computed(() => getFileIcon(props.file.name, props.file.is_dir))
 
-function formatSize(bytes) {
+function formatSize(bytes: number) {
   if (!bytes) return ''
   if (bytes < 1024) return `${bytes} B`
   const units = ['KiB', 'MiB', 'GiB', 'TiB']
@@ -43,10 +45,10 @@ function formatSize(bytes) {
   return `${size.toFixed(1)} ${units[i]}`
 }
 
-function formatDate(d) {
+function formatDate(d: string) {
   if (!d) return ''
   const date = new Date(d)
-  if (isNaN(date)) return ''
+  if (isNaN(date.getTime())) return ''
   const Y = date.getFullYear()
   const M = String(date.getMonth() + 1).padStart(2, '0')
   const D = String(date.getDate()).padStart(2, '0')
@@ -56,7 +58,7 @@ function formatDate(d) {
   return `${Y}.${M}.${D} ${h}:${m}:${s}`
 }
 
-function formatDuration(seconds) {
+function formatDuration(seconds: number) {
   if (!seconds) return ''
   const h = Math.floor(seconds / 3600)
   const m = Math.floor((seconds % 3600) / 60)
@@ -65,19 +67,20 @@ function formatDuration(seconds) {
   return `${m}:${String(s).padStart(2, '0')}`
 }
 
-function fileType(file) {
+function fileType(file: any) {
   if (file.is_dir) return t('info.directory')
   const ct = file.content_type
   if (!ct) return t('info.file')
   // Extract format label from MIME: "video/mp4" → "MP4", "image/jpeg" → "JPEG"
-  const sub = ct.split('/').pop().replace(/^x-/, '').toUpperCase()
+  const sub = ct.split('/').pop()?.replace(/^x-/, '').toUpperCase()
   const category = ct.split('/')[0]
-  const categoryKey = { video: 'info.cat_video', audio: 'info.cat_audio', image: 'info.cat_image' }[category]
+  const categoryMap: Record<string, string> = { video: 'info.cat_video', audio: 'info.cat_audio', image: 'info.cat_image' }
+  const categoryKey = categoryMap[category]
   if (categoryKey) return t(categoryKey, { fmt: sub })
   return sub || t('info.file')
 }
 
-function handleClick(e) {
+function handleClick(e: MouseEvent) {
   e.stopPropagation()
   if (fs.selectMode) {
     fs.toggleSelect(props.file.path)
@@ -101,11 +104,11 @@ function handleDblClick() {
 
 // Hover tooltip
 const showTooltip = ref(false)
-const tooltipStyle = ref({})
-let hoverTimer = null
+const tooltipStyle = ref<Record<string, string>>({})
+let hoverTimer: ReturnType<typeof setTimeout> | null = null
 
-function onMouseEnter(e) {
-  const rect = e.currentTarget.getBoundingClientRect()
+function onMouseEnter(e: MouseEvent) {
+  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
   hoverTimer = setTimeout(() => {
     tooltipStyle.value = {
       left: rect.right + 8 + 'px',
@@ -116,18 +119,18 @@ function onMouseEnter(e) {
 }
 
 function onMouseLeave() {
-  clearTimeout(hoverTimer)
+  clearTimeout(hoverTimer!)
   hoverTimer = setTimeout(() => {
     showTooltip.value = false
   }, 200)
 }
 
 function cancelHideTimer() {
-  clearTimeout(hoverTimer)
+  clearTimeout(hoverTimer!)
 }
 
 onBeforeUnmount(() => {
-  clearTimeout(hoverTimer)
+  clearTimeout(hoverTimer!)
 })
 
 const touch = useTouchHandlers({
@@ -137,7 +140,7 @@ const touch = useTouchHandlers({
       fs.enterSelectMode(props.file.path)
     } else {
       const t = e.touches[0]
-      openContextMenu({ clientX: t.clientX, clientY: t.clientY, preventDefault() {} }, props.file)
+      openContextMenu({ clientX: t.clientX, clientY: t.clientY, preventDefault() {} } as any, props.file)
     }
   },
 })

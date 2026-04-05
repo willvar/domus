@@ -1,26 +1,19 @@
-<script setup>
+<script setup lang="ts">
 import { usePendingOpsStore } from '../../../stores/pendingOps'
 import { useI18n } from '../../../composables/useI18n'
 import { showConfirm } from '../../../composables/useNativeDialog'
 import dayjs from 'dayjs'
 import TrayPopup from './TrayPopup.vue'
-import IconPencil from '~icons/mdi/pencil-outline'
-import IconFolder from '~icons/mdi/folder-outline'
-import IconContentSave from '~icons/mdi/content-save-outline'
-import IconDelete from '~icons/mdi/delete-outline'
-import IconRestore from '~icons/mdi/restore'
-import IconContentCopy from '~icons/mdi/content-copy'
-import IconPackage from '~icons/mdi/package-variant-closed'
-import IconTimer from '~icons/mdi/timer-sand'
+import { IconPencilOutline as IconPencil, IconFolderOutline as IconFolder, IconContentSaveOutline as IconContentSave, IconDeleteOutline as IconDelete, IconRestore, IconContentCopy, IconPackageVariantClosed as IconPackage, IconTimerSand as IconTimer } from '../../../barrels/icons'
 
 const pendingOps = usePendingOpsStore()
 const { t } = useI18n()
 
-function formatTime(ts) {
+function formatTime(ts: string | number | Date) {
   return dayjs(ts).format('MM-DD HH:mm')
 }
 
-const typeIcons = {
+const typeIcons: Record<string, any> = {
   rename: IconPencil,
   mkdir: IconFolder,
   saveViewer: IconContentSave,
@@ -31,8 +24,8 @@ const typeIcons = {
   delete: IconDelete,
   emptyTrash: IconDelete,
 }
-function typeIcon(type) {
-  return typeIcons[type] || IconTimer
+function typeIcon(type: string | undefined) {
+  return (type && typeIcons[type]) || IconTimer
 }
 
 async function handleDiscardAll() {
@@ -64,7 +57,7 @@ async function handleDiscardAll() {
           <span v-if="op.lastError" class="pending-error truncate">{{ op.lastError }}</span>
         </div>
         <div class="pending-item-actions">
-          <button class="tray-btn tray-btn--accent" :disabled="op._retrying" @click="pendingOps.retry(op.id)">
+          <button class="tray-btn tray-btn--accent" :disabled="!!op._retrying" @click="pendingOps.retry(op.id)">
             {{ t('pending.retry') }}
           </button>
           <button class="tray-btn" @click="pendingOps.discard(op.id)">
