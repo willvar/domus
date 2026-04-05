@@ -200,6 +200,13 @@ watch(() => state.value?.type === 'video' && state.value?.url, (ready) => {
     _timeSyncTimer = null
   }
 }, { immediate: true })
+
+function onVideoError() {
+  const el = videoEl.value
+  if (!el) return
+  const err = el.error
+  console.error('[Viewer] video error:', err?.code, err?.message)
+}
 </script>
 
 <template>
@@ -263,7 +270,7 @@ watch(() => state.value?.type === 'video' && state.value?.url, (ready) => {
 
       <div class="viewer-body" :class="{ 'viewer-body-split': state.type === 'text' && isHtmlPreview && htmlPreviewMode === 'split' }">
         <img v-if="state.type === 'image' && state.url" :src="state.url" :alt="state.file.name" class="viewer-image" />
-        <video v-else-if="state.type === 'video' && state.url" ref="videoEl" :src="state.url" controls autoplay playsinline class="viewer-video" @play="onVideoPlay" @pause="onVideoPause" @seeked="onVideoSeeked" />
+        <video v-else-if="state.type === 'video' && state.url" ref="videoEl" :src="state.url" controls autoplay playsinline class="viewer-video" @play="onVideoPlay" @pause="onVideoPause" @seeked="onVideoSeeked" @error="onVideoError" />
         <iframe v-else-if="state.type === 'pdf' && state.url" :src="state.url" class="viewer-pdf" />
         <iframe v-else-if="state.type === 'office' && state.url" :src="state.url" class="viewer-pdf" allowfullscreen />
         <div v-else-if="state.type === 'text' && showCodePane" ref="cmContainer" class="viewer-cm-wrap" :class="{ 'viewer-pane': isHtmlPreview }" />
@@ -355,8 +362,8 @@ watch(() => state.value?.type === 'video' && state.value?.url, (ready) => {
 }
 
 .viewer-video {
-  max-width: 100%;
-  max-height: 100%;
+  width: 100%;
+  height: 100%;
   object-fit: contain;
 }
 
