@@ -410,12 +410,6 @@ func runServer(cfg *config.Config, configPath string) {
 	// Register all API routes
 	h.RegisterRoutes(app)
 
-	// Production: serve static files
-	app.Static("/", "./frontend/dist")
-	app.Get("/*", func(c *fiber.Ctx) error {
-		return c.SendFile("./frontend/dist/index.html")
-	})
-
 	// 优雅关闭
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
