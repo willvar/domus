@@ -58,6 +58,7 @@ export interface FileInfo {
   last_modified: string
   content_type?: string
   thumbnail_url?: string
+  thumbnail_dek?: string
   media_width?: number
   media_height?: number
   media_duration?: number

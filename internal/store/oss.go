@@ -63,6 +63,7 @@ type FileInfo struct {
 	LastModified  time.Time `json:"last_modified"`
 	ContentType   string    `json:"content_type,omitempty"`
 	ThumbnailURL  string    `json:"thumbnail_url,omitempty"`
+	ThumbnailDEK  string    `json:"thumbnail_dek,omitempty"`
 	MediaWidth    int       `json:"media_width,omitempty"`
 	MediaHeight   int       `json:"media_height,omitempty"`
 	MediaDuration float64   `json:"media_duration,omitempty"`
