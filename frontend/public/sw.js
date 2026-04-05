@@ -30,6 +30,7 @@ function resolveFileUrl(url) {
 let kek = null // CryptoKey (AES-GCM) — user's KEK for unwrapping DEKs
 const registry = new Map() // id → { url, size, chunkSize, contentType, filename, download, wrappedDek, dek?, contentHash? }
 const cleanupTimers = new Map() // contentHash → timer id
+const inflight = new Map() // contentHash → Promise<Uint8Array> — deduplicates concurrent decrypts
 
 // --- Lifecycle ---
 self.addEventListener('install', () => self.skipWaiting())
@@ -47,6 +48,7 @@ self.addEventListener('message', async (event) => {
     case 'clear-key':
       kek = null
       registry.clear()
+      inflight.clear()
       // Clear all cleanup timers and purge cache immediately
       for (const timer of cleanupTimers.values()) clearTimeout(timer)
       cleanupTimers.clear()
@@ -124,12 +126,14 @@ async function handleDecrypt(request, meta) {
 
   const rangeHeader = request.headers.get('Range')
 
-  // Try cache (only for full requests with a contentHash)
-  if (meta.contentHash && !rangeHeader) {
+  // Try cache first
+  if (meta.contentHash) {
     const cache = await caches.open(CACHE_NAME)
     const cached = await cache.match(cacheKey(meta.contentHash))
     if (cached) {
-      // Rebuild response with correct headers for this specific request
+      if (rangeHeader && meta.size > 0) {
+        return handleRangeFromCache(meta, rangeHeader, cached)
+      }
       const headers = { 'Accept-Ranges': 'bytes' }
       if (meta.contentType) headers['Content-Type'] = meta.contentType
       if (meta.size > 0) headers['Content-Length'] = String(meta.size)
@@ -140,193 +144,139 @@ async function handleDecrypt(request, meta) {
     }
   }
 
+  // Decrypt — deduplicate concurrent requests for the same contentHash
+  const fullData = await deduplicatedDecrypt(meta)
+  if (!fullData) return new Response('Decrypt failed', { status: 500 })
+
   if (rangeHeader && meta.size > 0) {
-    return handleRange(meta, rangeHeader)
-  }
-  return handleFull(meta)
-}
-
-// --- Full file response ---
-async function handleFull(meta) {
-  const response = await fetch(resolveFileUrl(meta.url))
-  if (!response.ok) {
-    return new Response('Upstream fetch failed', { status: 502 })
+    return serveRange(meta, rangeHeader, fullData)
   }
 
-  const reader = response.body.getReader()
-
-  // Read and parse header
-  const headerBuf = await readExact(reader, HEADER_SIZE)
-  if (!headerBuf || headerBuf[0] !== 0x01) {
-    return new Response('Invalid encrypted file', { status: 500 })
-  }
-  const chunkSize = new DataView(headerBuf.buffer, headerBuf.byteOffset).getUint32(1)
-  const encChunkSize = NONCE_SIZE + chunkSize + TAG_SIZE
-
-  let chunkIdx = 0
-  let residual = new Uint8Array(0)
-
-  // Collect decrypted chunks for caching
-  const shouldCache = !!meta.contentHash
-  const cachedParts = shouldCache ? [] : null
-
-  const decryptedStream = new ReadableStream({
-    async pull(controller) {
-      while (true) {
-        while (residual.length < encChunkSize) {
-          const { value, done } = await reader.read()
-          if (done) break
-          residual = concat(residual, value)
-        }
-
-        if (residual.length === 0) {
-          controller.close()
-          // Cache the complete decrypted file
-          if (shouldCache && cachedParts.length > 0) {
-            const blob = new Blob(cachedParts, { type: meta.contentType || 'application/octet-stream' })
-            const cacheResp = new Response(blob, {
-              headers: { 'Content-Type': meta.contentType || 'application/octet-stream' }
-            })
-            caches.open(CACHE_NAME).then(c => c.put(cacheKey(meta.contentHash), cacheResp))
-          }
-          return
-        }
-
-        const chunkLen = Math.min(residual.length, encChunkSize)
-        const encChunk = residual.slice(0, chunkLen)
-        residual = residual.slice(chunkLen)
-
-        const nonce = encChunk.slice(0, NONCE_SIZE)
-        const ciphertext = encChunk.slice(NONCE_SIZE)
-        const aad = uint64BE(chunkIdx)
-
-        try {
-          const plaintext = await crypto.subtle.decrypt(
-            { name: 'AES-GCM', iv: nonce, additionalData: aad },
-            meta.dek, ciphertext
-          )
-          const bytes = new Uint8Array(plaintext)
-          controller.enqueue(bytes)
-          if (shouldCache) cachedParts.push(bytes.slice()) // clone for cache
-          chunkIdx++
-        } catch (e) {
-          controller.error(new Error(`Decrypt chunk ${chunkIdx} failed: ${e.message}`))
-          return
-        }
-
-        if (chunkLen < encChunkSize && residual.length === 0) {
-          controller.close()
-          if (shouldCache && cachedParts.length > 0) {
-            const blob = new Blob(cachedParts, { type: meta.contentType || 'application/octet-stream' })
-            const cacheResp = new Response(blob, {
-              headers: { 'Content-Type': meta.contentType || 'application/octet-stream' }
-            })
-            caches.open(CACHE_NAME).then(c => c.put(cacheKey(meta.contentHash), cacheResp))
-          }
-          return
-        }
-      }
-    }
-  })
-
+  // Full response
   const headers = { 'Accept-Ranges': 'bytes' }
   if (meta.contentType) headers['Content-Type'] = meta.contentType
-  if (meta.size > 0) headers['Content-Length'] = String(meta.size)
+  if (meta.size > 0) headers['Content-Length'] = String(fullData.byteLength)
   if (meta.download && meta.filename) {
     headers['Content-Disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(meta.filename)}`
   }
-
-  return new Response(decryptedStream, { status: 200, headers })
+  return new Response(fullData, { status: 200, headers })
 }
 
-// --- Range request response ---
-async function handleRange(meta, rangeHeader) {
-  // For range requests, try serving from cache if available
-  if (meta.contentHash) {
-    const cache = await caches.open(CACHE_NAME)
-    const cached = await cache.match(cacheKey(meta.contentHash))
-    if (cached) {
-      const fullData = new Uint8Array(await cached.arrayBuffer())
-      const { start, end } = parseRange(rangeHeader, meta.size)
-      if (start === null) {
-        return new Response('Invalid range', {
-          status: 416, headers: { 'Content-Range': `bytes */${meta.size}` }
-        })
-      }
-      const contentLength = end - start + 1
-      return new Response(fullData.slice(start, start + contentLength), {
-        status: 206,
-        headers: {
-          'Content-Range': `bytes ${start}-${end}/${meta.size}`,
-          'Content-Length': String(contentLength),
-          'Content-Type': meta.contentType || 'application/octet-stream',
-          'Accept-Ranges': 'bytes',
-        }
-      })
-    }
+// --- Deduplicated decrypt: prevents double download when <video> sends rapid GET + Range ---
+async function deduplicatedDecrypt(meta) {
+  const hash = meta.contentHash
+  if (hash && inflight.has(hash)) {
+    return inflight.get(hash)
   }
 
-  const { start, end } = parseRange(rangeHeader, meta.size)
+  const promise = decryptFull(meta).then(data => {
+    // Write to Cache API before resolving so subsequent requests hit cache
+    if (data && hash) {
+      const blob = new Blob([data], { type: meta.contentType || 'application/octet-stream' })
+      const cacheResp = new Response(blob, {
+        headers: { 'Content-Type': meta.contentType || 'application/octet-stream' }
+      })
+      return caches.open(CACHE_NAME)
+        .then(c => c.put(cacheKey(hash), cacheResp))
+        .then(() => data)
+    }
+    return data
+  }).finally(() => {
+    if (hash) inflight.delete(hash)
+  })
+
+  if (hash) inflight.set(hash, promise)
+  return promise
+}
+
+// --- Decrypt full file into a Uint8Array ---
+async function decryptFull(meta) {
+  const response = await fetch(resolveFileUrl(meta.url))
+  if (!response.ok) return null
+
+  const reader = response.body.getReader()
+
+  // Read header into residual so no bytes from the first network chunk are lost
+  let residual = new Uint8Array(0)
+  while (residual.length < HEADER_SIZE) {
+    const { value, done } = await reader.read()
+    if (done) break
+    residual = concat(residual, value)
+  }
+  if (residual.length < HEADER_SIZE || residual[0] !== 0x01) return null
+
+  const chunkSize = new DataView(residual.buffer, residual.byteOffset).getUint32(1)
+  const encChunkSize = NONCE_SIZE + chunkSize + TAG_SIZE
+  residual = residual.slice(HEADER_SIZE)
+
+  const parts = []
+  let chunkIdx = 0
+
+  while (true) {
+    while (residual.length < encChunkSize) {
+      const { value, done } = await reader.read()
+      if (done) break
+      residual = concat(residual, value)
+    }
+    if (residual.length === 0) break
+
+    const chunkLen = Math.min(residual.length, encChunkSize)
+    const encChunk = residual.slice(0, chunkLen)
+    residual = residual.slice(chunkLen)
+
+    const nonce = encChunk.slice(0, NONCE_SIZE)
+    const ciphertext = encChunk.slice(NONCE_SIZE)
+    const aad = uint64BE(chunkIdx)
+
+    try {
+      const plaintext = await crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: nonce, additionalData: aad },
+        meta.dek, ciphertext
+      )
+      parts.push(new Uint8Array(plaintext))
+      chunkIdx++
+    } catch {
+      return null
+    }
+
+    if (chunkLen < encChunkSize && residual.length === 0) break
+  }
+
+  return concatAll(parts)
+}
+
+// --- Serve a Range slice from cached/decrypted data ---
+function handleRangeFromCache(meta, rangeHeader, cached) {
+  return cached.arrayBuffer().then(buf => serveRange(meta, rangeHeader, new Uint8Array(buf)))
+}
+
+function serveRange(meta, rangeHeader, fullData) {
+  const total = fullData.byteLength
+  const { start, end } = parseRange(rangeHeader, total)
   if (start === null) {
     return new Response('Invalid range', {
-      status: 416,
-      headers: { 'Content-Range': `bytes */${meta.size}` }
+      status: 416, headers: { 'Content-Range': `bytes */${total}` }
+    })
+  }
+  const contentLength = end - start + 1
+
+  // If the range covers the entire file, return 200 instead of 206.
+  // This ensures <video> elements properly initialise their media source.
+  if (start === 0 && contentLength >= total) {
+    return new Response(fullData, {
+      status: 200,
+      headers: {
+        'Content-Type': meta.contentType || 'application/octet-stream',
+        'Content-Length': String(total),
+        'Accept-Ranges': 'bytes',
+      }
     })
   }
 
-  const chunkSize = meta.chunkSize || 65536
-  const encChunkSize = NONCE_SIZE + chunkSize + TAG_SIZE
-
-  const startChunk = Math.floor(start / chunkSize)
-  const endChunk = Math.floor(end / chunkSize)
-
-  let cipherStart = HEADER_SIZE + startChunk * encChunkSize
-  let cipherEnd = HEADER_SIZE + (endChunk + 1) * encChunkSize - 1
-
-  const totalChunks = Math.ceil(meta.size / chunkSize)
-  const lastChunkPlain = meta.size % chunkSize || (meta.size > 0 ? chunkSize : 0)
-  const cipherTotal = HEADER_SIZE + (totalChunks - 1) * encChunkSize + NONCE_SIZE + lastChunkPlain + TAG_SIZE
-  if (cipherEnd >= cipherTotal) cipherEnd = cipherTotal - 1
-
-  const response = await fetch(resolveFileUrl(meta.url), {
-    headers: { 'Range': `bytes=${cipherStart}-${cipherEnd}` }
-  })
-  if (!response.ok && response.status !== 206) {
-    return new Response('Upstream range fetch failed', { status: 502 })
-  }
-
-  const encData = new Uint8Array(await response.arrayBuffer())
-  const plaintextParts = []
-  let offset = 0
-  let chunkIdx = startChunk
-
-  while (offset < encData.length) {
-    const remaining = encData.length - offset
-    const thisChunkEnc = Math.min(remaining, encChunkSize)
-    const chunk = encData.slice(offset, offset + thisChunkEnc)
-    offset += thisChunkEnc
-
-    const nonce = chunk.slice(0, NONCE_SIZE)
-    const ciphertext = chunk.slice(NONCE_SIZE)
-    const aad = uint64BE(chunkIdx)
-
-    const plaintext = await crypto.subtle.decrypt(
-      { name: 'AES-GCM', iv: nonce, additionalData: aad },
-      meta.dek, ciphertext
-    )
-    plaintextParts.push(new Uint8Array(plaintext))
-    chunkIdx++
-  }
-
-  const fullPlaintext = concatAll(plaintextParts)
-  const trimStart = start - startChunk * chunkSize
-  const contentLength = end - start + 1
-  const trimmed = fullPlaintext.slice(trimStart, trimStart + contentLength)
-
-  return new Response(trimmed, {
+  return new Response(fullData.slice(start, start + contentLength), {
     status: 206,
     headers: {
-      'Content-Range': `bytes ${start}-${end}/${meta.size}`,
+      'Content-Range': `bytes ${start}-${end}/${total}`,
       'Content-Length': String(contentLength),
       'Content-Type': meta.contentType || 'application/octet-stream',
       'Accept-Ranges': 'bytes',
@@ -408,17 +358,4 @@ function concatAll(parts) {
     offset += p.length
   }
   return result
-}
-
-async function readExact(reader, n) {
-  const buf = new Uint8Array(n)
-  let filled = 0
-  while (filled < n) {
-    const { value, done } = await reader.read()
-    if (done) return filled > 0 ? buf.slice(0, filled) : null
-    const take = Math.min(value.length, n - filled)
-    buf.set(value.slice(0, take), filled)
-    filled += take
-  }
-  return buf
 }
