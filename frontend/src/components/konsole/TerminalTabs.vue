@@ -1,10 +1,9 @@
-<script setup>
+<script setup lang="ts">
 import { ref, nextTick } from 'vue'
-import IconClose from '~icons/mdi/close'
-import IconConsole from '~icons/mdi/console'
+import { IconClose, IconConsole } from '../../barrels/icons'
 import Terminal from './Terminal.vue'
 
-const props = defineProps({
+defineProps({
   initialCwd: { type: String, default: '' },
 })
 
@@ -18,9 +17,9 @@ function makeTab() {
 
 const tabs = ref([makeTab()])
 const activeTabId = ref(tabs.value[0].id)
-const terminalRefs = ref({})
+const terminalRefs = ref<Record<number, any>>({})
 
-function setTerminalRef(id, el) {
+function setTerminalRef(id: number, el: any) {
   if (el) terminalRefs.value[id] = el
   else delete terminalRefs.value[id]
 }
@@ -31,7 +30,7 @@ function addTab() {
   activeTabId.value = tab.id
 }
 
-function closeTab(id, fromExit = false) {
+function closeTab(id: number) {
   const idx = tabs.value.findIndex(t => t.id === id)
   if (idx < 0) return
 
@@ -51,7 +50,7 @@ function closeTab(id, fromExit = false) {
   delete terminalRefs.value[id]
 }
 
-function switchTab(id) {
+function switchTab(id: number) {
   activeTabId.value = id
   nextTick(() => {
     const term = terminalRefs.value[id]
@@ -59,11 +58,11 @@ function switchTab(id) {
   })
 }
 
-function handleTabExit(tabId) {
-  closeTab(tabId, true)
+function handleTabExit(tabId: number) {
+  closeTab(tabId)
 }
 
-function handleWheel(e) {
+function handleWheel(e: WheelEvent) {
   e.preventDefault()
   const idx = tabs.value.findIndex(t => t.id === activeTabId.value)
   if (e.deltaY > 0 && idx < tabs.value.length - 1) {
@@ -73,7 +72,7 @@ function handleWheel(e) {
   }
 }
 
-function handleMiddleClick(e, tab) {
+function handleMiddleClick(e: MouseEvent, tab: any) {
   if (e.button === 1) {
     e.preventDefault()
     closeTab(tab.id)

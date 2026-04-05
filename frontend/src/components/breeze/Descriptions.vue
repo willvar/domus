@@ -1,6 +1,4 @@
-<script setup>
-import { useSlots } from 'vue'
-
+<script setup lang="ts">
 defineProps({
   column: { type: Number, default: 1 },
   size: { type: String, default: 'medium' },

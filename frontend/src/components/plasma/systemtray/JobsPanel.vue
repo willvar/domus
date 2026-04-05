@@ -1,17 +1,12 @@
-<script setup>
-import { computed, onMounted, toRef } from 'vue'
+<script setup lang="ts">
+import { computed, onMounted } from 'vue'
 import { useMessage } from '../../../composables/useMessage'
 import dayjs from 'dayjs'
 import { useJobsStore } from '../../../stores/jobs'
 import { useUploadStore } from '../../../stores/upload'
 import { useI18n } from '../../../composables/useI18n'
 import TrayPopup from './TrayPopup.vue'
-import IconSync from '~icons/mdi/sync'
-import IconUpload from '~icons/mdi/upload'
-import IconContentCopy from '~icons/mdi/content-copy'
-import IconFolder from '~icons/mdi/folder-move-outline'
-import IconDelete from '~icons/mdi/delete-outline'
-import IconCog from '~icons/mdi/cog-outline'
+import { IconSync, IconUpload, IconContentCopy, IconFolderMoveOutline as IconFolder, IconDeleteOutline as IconDelete, IconCogOutline as IconCog } from '../../../barrels/icons'
 
 const { t, te } = useI18n()
 const message = useMessage()
@@ -24,7 +19,7 @@ const activeTasks = computed(() => jobsStore.activeTasks.filter(t => !localTaskI
 const completedTasks = computed(() => jobsStore.completedTasks)
 const hasTasks = computed(() => jobsStore.tasks.length > 0 || uploadStore.uploads.length > 0)
 
-const typeIcons = {
+const typeIcons: Record<string, any> = {
   transcode: IconSync,
   upload: IconUpload,
   copy: IconContentCopy,
@@ -32,19 +27,19 @@ const typeIcons = {
   delete: IconDelete,
   clear_trash: IconDelete,
 }
-function typeIcon(type_) {
+function typeIcon(type_: string) {
   return typeIcons[type_] || IconCog
 }
 
-function typeLabel(type_) {
+function typeLabel(type_: string) {
   return t(`jobs.type_${type_}`) || type_
 }
 
-function statusLabel(status) {
+function statusLabel(status: string) {
   return t(`jobs.status_${status}`) || status
 }
 
-function statusType(status) {
+function statusType(status: string) {
   switch (status) {
     case 'completed': return 'success'
     case 'failed': return 'error'
@@ -56,16 +51,16 @@ function statusType(status) {
   }
 }
 
-function phaseLabel(job) {
+function phaseLabel(job: any) {
   if (!job.phase) return ''
   return t(`jobs.phase_${job.phase}`) || job.phase
 }
 
-function taskName(task) {
+function taskName(task: any) {
   return task.name || ''
 }
 
-function formatSize(bytes) {
+function formatSize(bytes: number) {
   if (!bytes) return ''
   const units = ['B', 'KB', 'MB', 'GB']
   let i = 0; let size = bytes
@@ -73,12 +68,12 @@ function formatSize(bytes) {
   return `${size.toFixed(1)} ${units[i]}`
 }
 
-function formatSpeed(bytesPerSec) {
+function formatSpeed(bytesPerSec: number) {
   if (!bytesPerSec) return ''
   return formatSize(bytesPerSec) + '/s'
 }
 
-function timeAgo(ts) {
+function timeAgo(ts: string | undefined) {
   if (!ts) return ''
   const d = dayjs(ts)
   const now = dayjs()
@@ -93,15 +88,15 @@ function timeAgo(ts) {
 async function loadTasks() {
   try {
     await jobsStore.fetchTasks()
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'jobs.load_failed'))
   }
 }
 
-async function cancelTask(taskId) {
+async function cancelTask(taskId: string) {
   try {
     await jobsStore.cancelTask(taskId)
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'jobs.cancel_failed'))
   }
 }
@@ -109,7 +104,7 @@ async function cancelTask(taskId) {
 async function clearCompleted() {
   try {
     await jobsStore.clearCompleted()
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'jobs.clear_failed'))
   }
 }

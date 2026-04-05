@@ -1,18 +1,23 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick } from 'vue'
+
+interface SelectOption {
+  label: string
+  value: string | number
+}
 
 const props = defineProps({
   value: { type: [String, Number], default: null },
-  options: { type: Array, default: () => [] },
+  options: { type: Array as () => SelectOption[], default: () => [] },
   placeholder: { type: String, default: '' },
 })
 
 const emit = defineEmits(['update:value'])
 
 const open = ref(false)
-const triggerRef = ref(null)
-const dropdownRef = ref(null)
-const dropdownStyle = ref({})
+const triggerRef = ref<HTMLButtonElement | null>(null)
+const dropdownRef = ref<HTMLDivElement | null>(null)
+const dropdownStyle = ref<Record<string, any>>({})
 
 const selectedLabel = computed(() => {
   const opt = props.options.find(o => o.value === props.value)
@@ -28,7 +33,7 @@ function toggle() {
   }
 }
 
-function select(val) {
+function select(val: any) {
   emit('update:value', val)
   open.value = false
 }
@@ -45,8 +50,8 @@ function positionDropdown() {
   }
 }
 
-function onClickOutside(e) {
-  if (!triggerRef.value?.contains(e.target) && !dropdownRef.value?.contains(e.target)) {
+function onClickOutside(e: MouseEvent) {
+  if (!triggerRef.value?.contains(e.target as Node) && !dropdownRef.value?.contains(e.target as Node)) {
     open.value = false
   }
 }

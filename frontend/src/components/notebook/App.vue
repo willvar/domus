@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import MarkdownIt from 'markdown-it'
 import DOMPurify from 'dompurify'
@@ -10,8 +10,8 @@ const props = defineProps({
 })
 
 const md = new MarkdownIt({ html: false, linkify: true })
-const notebook = ref(null)
-const codeContainers = ref({})
+const notebook = ref<any>(null)
+const codeContainers = ref<Record<number, HTMLElement | null>>({})
 
 const cells = computed(() => notebook.value?.cells || [])
 const cellCount = computed(() => cells.value.length)
@@ -28,10 +28,10 @@ watch(() => props.state.content, (content) => {
 }, { immediate: true })
 
 // CodeMirror instances for code cells
-const cmInstances = []
+const cmInstances: ReturnType<typeof useCodeMirror>[] = []
 
-function setCodeRef(i, el) {
-  codeContainers.value[i] = el
+function setCodeRef(i: string | number, el: any) {
+  codeContainers.value[Number(i)] = el
 }
 
 watch(cells, async () => {
@@ -41,7 +41,7 @@ watch(cells, async () => {
 
   await nextTick()
 
-  cells.value.forEach((cell, i) => {
+  cells.value.forEach((cell: any, i: number) => {
     if (cell.cell_type !== 'code') return
     const container = codeContainers.value[i]
     if (!container) return
@@ -58,7 +58,7 @@ watch(() => notebook.value, async () => {
   await nextTick()
   cmInstances.forEach(cm => cm.destroy())
   cmInstances.length = 0
-  cells.value.forEach((cell, i) => {
+  cells.value.forEach((cell: any, i: number) => {
     if (cell.cell_type !== 'code') return
     const container = codeContainers.value[i]
     if (!container) return
@@ -69,12 +69,12 @@ watch(() => notebook.value, async () => {
   })
 })
 
-function renderMarkdown(source) {
+function renderMarkdown(source: string | string[]) {
   const text = Array.isArray(source) ? source.join('') : (source || '')
   return DOMPurify.sanitize(md.render(text))
 }
 
-function getOutputHtml(output) {
+function getOutputHtml(output: any) {
   if (output.output_type === 'stream') {
     const text = Array.isArray(output.text) ? output.text.join('') : (output.text || '')
     return `<pre class="nb-stream">${escapeHtml(text)}</pre>`
@@ -101,7 +101,7 @@ function getOutputHtml(output) {
   return ''
 }
 
-function escapeHtml(str) {
+function escapeHtml(str: string) {
   return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 

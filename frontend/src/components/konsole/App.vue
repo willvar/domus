@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue'
 import { useWindowManagerStore, KONSOLE_ICON } from '../../stores/windowManager'
 import { useI18n } from '../../composables/useI18n'

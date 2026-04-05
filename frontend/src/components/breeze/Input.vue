@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted } from 'vue'
 
 const props = defineProps({
@@ -15,7 +15,7 @@ const props = defineProps({
 
 const emit = defineEmits(['update:value', 'keydown', 'keyup', 'blur', 'focus'])
 
-const inputEl = ref(null)
+const inputEl = ref<HTMLInputElement | null>(null)
 const showPwd = ref(false)
 
 const inputType = computed(() => {
@@ -25,8 +25,8 @@ const inputType = computed(() => {
 
 import { computed } from 'vue'
 
-function onInput(e) {
-  emit('update:value', e.target.value)
+function onInput(e: Event) {
+  emit('update:value', (e.target as HTMLInputElement).value)
 }
 
 onMounted(() => {
@@ -35,7 +35,7 @@ onMounted(() => {
 
 defineExpose({
   focus: () => inputEl.value?.focus(),
-  select: (start, end) => {
+  select: (start?: number, end?: number) => {
     inputEl.value?.focus()
     if (start !== undefined && end !== undefined) {
       inputEl.value?.setSelectionRange(start, end)

@@ -1,15 +1,15 @@
-<script setup>
+<script setup lang="ts">
 import { ref } from 'vue'
 import { useUploadStore } from '../../../stores/upload'
 import { useI18n } from '../../../composables/useI18n'
-import IconClose from '~icons/mdi/close'
+import { IconClose } from '../../../barrels/icons'
 
 const upload = useUploadStore()
 const { t, te } = useI18n()
-const fileInputRef = ref(null)
-let resumeTargetId = null
+const fileInputRef = ref<HTMLInputElement | null>(null)
+let resumeTargetId: string | null = null
 
-function triggerResume(id) {
+function triggerResume(id: string) {
   const entry = upload.uploads.find(u => u.id === id)
   if (entry?._file) {
     // Same session: File object still in memory, no need to re-select
@@ -20,16 +20,16 @@ function triggerResume(id) {
   fileInputRef.value?.click()
 }
 
-function onFileSelected(e) {
-  const file = e.target.files?.[0]
+function onFileSelected(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
   if (file && resumeTargetId) {
     upload.resumeInterrupted(resumeTargetId, file)
   }
   resumeTargetId = null
-  e.target.value = ''
+  ;(e.target as HTMLInputElement).value = ''
 }
 
-function formatSize(bytes) {
+function formatSize(bytes: number) {
   if (!bytes) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
   let i = 0
@@ -38,12 +38,12 @@ function formatSize(bytes) {
   return `${size.toFixed(1)} ${units[i]}`
 }
 
-function formatSpeed(bytesPerSec) {
+function formatSpeed(bytesPerSec: number) {
   if (!bytesPerSec) return ''
   return formatSize(bytesPerSec) + '/s'
 }
 
-function formatEta(u) {
+function formatEta(u: any) {
   if (!u.progress || u.progress <= 0 || u.progress >= 100) return ''
   const elapsed = (Date.now() - u.startTime) / 1000
   if (elapsed < 1) return ''
@@ -58,7 +58,7 @@ function formatEta(u) {
   return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`
 }
 
-function progressClass(status) {
+function progressClass(status: string) {
   switch (status) {
     case 'completed': return 'progress-success'
     case 'failed': return 'progress-error'
@@ -68,11 +68,11 @@ function progressClass(status) {
   }
 }
 
-function statusText(status) {
+function statusText(status: string) {
   return t(`upload.status_${status}`)
 }
 
-function processingText(u) {
+function processingText(u: any) {
   const phase = u.serverPhase ? (t(`jobs.phase_${u.serverPhase}`) || u.serverPhase) : t('upload.status_processing')
   const pct = u.serverProgress ? Math.round(u.serverProgress * 100) + '%' : ''
   return pct ? `${phase} ${pct}` : phase
@@ -141,7 +141,7 @@ function processingText(u) {
               </template>
             </div>
           </div>
-          <div v-if="u.error" class="upload-error">{{ te({ response: { data: { error: u.error } } }) }}</div>
+          <div v-if="u.error" class="upload-error">{{ te({ response: { data: { error: u.error } } } as any) }}</div>
         </div>
       </div>
     </div>

@@ -1,7 +1,6 @@
-<script setup>
+<script setup lang="ts">
 import { computed } from 'vue'
-import IconHome from '~icons/mdi/home-outline'
-import IconTrash from '~icons/mdi/delete-outline'
+import { IconHomeOutline as IconHome, IconDeleteOutline as IconTrash, IconAccountArrowLeftOutline as IconShare } from '../../barrels/icons'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useAuthStore } from '../../stores/auth'
 import { useI18n } from '../../composables/useI18n'
@@ -12,16 +11,19 @@ const { t } = useI18n()
 
 const activeKey = computed(() => {
   if (fs.isTrash) return 'trash'
+  if (fs.isShared) return 'shared'
   const homePath = `/home/${auth.username}/`
   if (fs.currentPath === homePath || fs.currentPath === `home/${auth.username}/`) return 'home'
   return null
 })
 
-function handleSelect(key) {
+function handleSelect(key: string) {
   if (key === 'home') {
     fs.navigate(`/home/${auth.username}/`)
   } else if (key === 'trash') {
     fs.navigate('__trash__')
+  } else if (key === 'shared') {
+    fs.navigate('__shared__')
   }
 }
 </script>
@@ -37,6 +39,14 @@ function handleSelect(key) {
       >
         <IconHome class="place-icon" width="16" height="16" />
         <span class="place-label">{{ t('places.home') }}</span>
+      </button>
+      <button
+        class="place-item"
+        :class="{ active: activeKey === 'shared' }"
+        @click="handleSelect('shared')"
+      >
+        <IconShare class="place-icon" width="16" height="16" />
+        <span class="place-label">{{ t('places.shared') }}</span>
       </button>
       <button
         class="place-item"

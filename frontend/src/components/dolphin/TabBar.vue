@@ -1,26 +1,25 @@
-<script setup>
+<script setup lang="ts">
 import { ref, watch, nextTick } from 'vue'
 import { useFileSystemStore } from '../../stores/fileSystem'
-import IconFolder from '~icons/mdi/folder'
-import IconClose from '~icons/mdi/close'
+import { IconFolder, IconClose } from '../../barrels/icons'
 
 const fs = useFileSystemStore()
-const tabListRef = ref(null)
+const tabListRef = ref<HTMLDivElement | null>(null)
 
-function tabLabel(tab) {
+function tabLabel(tab: any) {
   if (!tab.path) return 'Home'
   const parts = tab.path.replace(/\/$/, '').split('/')
   return parts[parts.length - 1] || 'Home'
 }
 
-function handleMouseDown(e, tab) {
+function handleMouseDown(e: MouseEvent, tab: any) {
   if (e.button === 1) {
     e.preventDefault()
     fs.closeTab(tab.id)
   }
 }
 
-function handleWheel(e) {
+function handleWheel(e: WheelEvent) {
   e.preventDefault()
   if (e.deltaY > 0) {
     fs.nextTab()
@@ -40,17 +39,17 @@ watch(() => fs.activeTabId, scrollActiveTabIntoView)
 watch(() => fs.tabs.length, scrollActiveTabIntoView)
 
 // --- Drag to reorder ---
-const draggingId = ref(null)
+const draggingId = ref<string | null>(null)
 const targetSlot = ref(-1)  // visual slot index the dragged tab should occupy
 let dragIndex = -1           // original index of dragged tab
 let dragStartX = 0
 let dragStarted = false
-let tabWidths = []           // widths captured at drag start
-let tabLefts = []            // left positions captured at drag start
+let tabWidths: number[] = []  // widths captured at drag start
+let tabLefts: number[] = []   // left positions captured at drag start
 const dragTranslateX = ref(0)
 const DRAG_THRESHOLD = 5
 
-function onTabDragStart(e, tab) {
+function onTabDragStart(e: MouseEvent, tab: any) {
   if (e.button !== 0) return
   dragIndex = fs.tabs.findIndex(t => t.id === tab.id)
   dragStartX = e.clientX
@@ -58,15 +57,15 @@ function onTabDragStart(e, tab) {
 
   const tabEls = tabListRef.value?.querySelectorAll('.tab')
   if (tabEls) {
-    tabWidths = Array.from(tabEls).map(el => el.getBoundingClientRect().width)
-    tabLefts = Array.from(tabEls).map(el => el.getBoundingClientRect().left)
+    tabWidths = Array.from(tabEls).map((el) => (el as HTMLElement).getBoundingClientRect().width)
+    tabLefts = Array.from(tabEls).map((el) => (el as HTMLElement).getBoundingClientRect().left)
   }
 
   window.addEventListener('mousemove', onTabDragMove)
   window.addEventListener('mouseup', onTabDragEnd)
 }
 
-function onTabDragMove(e) {
+function onTabDragMove(e: MouseEvent) {
   if (dragIndex < 0) return
   const dx = e.clientX - dragStartX
 
@@ -112,7 +111,7 @@ function onTabDragEnd() {
   tabLefts = []
 }
 
-function tabStyle(tab) {
+function tabStyle(tab: any): Record<string, any> {
   if (!draggingId.value) return {}
 
   const i = fs.tabs.findIndex(t => t.id === tab.id)

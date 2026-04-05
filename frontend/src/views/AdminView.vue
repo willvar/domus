@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed, onMounted, h } from 'vue'
 import { useRouter } from 'vue-router'
 import { useWebSocket } from '../composables/useWebSocket'
@@ -6,24 +6,18 @@ import { useI18n } from '../composables/useI18n'
 import { useMessage } from '../composables/useMessage'
 import { showPrompt, showConfirm } from '../composables/useNativeDialog'
 import dayjs from 'dayjs'
-import BButton from '../components/breeze/BButton.vue'
-import BModal from '../components/breeze/BModal.vue'
-import BForm from '../components/breeze/BForm.vue'
-import BFormItem from '../components/breeze/BFormItem.vue'
-import BInput from '../components/breeze/BInput.vue'
-import BSelect from '../components/breeze/BSelect.vue'
-import BDataTable from '../components/breeze/BDataTable.vue'
+import { Button, Modal, Form, FormItem, Input, Select, DataTable } from '../barrels/breeze'
 
 const router = useRouter()
 const ws = useWebSocket()
-const { t, te } = useI18n()
+const { t } = useI18n()
 const message = useMessage()
 
-const users = ref([])
+const users = ref<any[]>([])
 const loading = ref(false)
 const showCreate = ref(false)
 const showEdit = ref(false)
-const editingUser = ref(null)
+const editingUser = ref<{ id: string; username: string; role: string } | null>(null)
 
 const newUser = ref({ username: '', password: '', role: 'user' })
 
@@ -39,42 +33,42 @@ const columns = computed(() => [
     title: t('admin.email'),
     key: 'email',
     width: 160,
-    render: (row) => row.email || '---',
+    render: (row: any) => row.email || '---',
   },
   {
     title: t('admin.otp'),
     key: 'totp_enabled',
     width: 80,
-    render: (row) => row.totp_enabled ? t('admin.otp_enabled') : '---',
+    render: (row: any) => row.totp_enabled ? t('admin.otp_enabled') : '---',
   },
   {
     title: t('admin.created'),
     key: 'created_at',
     width: 150,
-    render: (row) => row.created_at ? dayjs(row.created_at).format('YYYY-MM-DD HH:mm') : '---',
+    render: (row: any) => row.created_at ? dayjs(row.created_at).format('YYYY-MM-DD HH:mm') : '---',
   },
   {
     title: t('admin.actions'),
     key: 'actions',
     width: 280,
-    render(row) {
+    render(row: any) {
       const buttons = [
-        h(BButton, { size: 'tiny', onClick: () => openEdit(row) }, () => t('admin.edit')),
-        h(BButton, { size: 'tiny', onClick: () => resetPassword(row) }, () => t('admin.reset_pwd')),
-        h(BButton, { size: 'tiny', type: 'error', onClick: () => deleteUser(row) }, () => t('admin.delete')),
+        h(Button, { size: 'tiny', onClick: () => openEdit(row) }, () => t('admin.edit')),
+        h(Button, { size: 'tiny', onClick: () => resetPassword(row) }, () => t('admin.reset_pwd')),
+        h(Button, { size: 'tiny', type: 'error', onClick: () => deleteUser(row) }, () => t('admin.delete')),
       ]
       if (row.totp_enabled) {
-        buttons.push(h(BButton, { size: 'tiny', type: 'warning', onClick: () => resetOTP(row) }, () => t('admin.reset_otp')))
+        buttons.push(h(Button, { size: 'tiny', type: 'warning', onClick: () => resetOTP(row) }, () => t('admin.reset_otp')))
       }
       if (row.email) {
-        buttons.push(h(BButton, { size: 'tiny', type: 'warning', onClick: () => resetEmail(row) }, () => t('admin.reset_email')))
+        buttons.push(h(Button, { size: 'tiny', type: 'warning', onClick: () => resetEmail(row) }, () => t('admin.reset_email')))
       }
       return h('div', { class: 'action-buttons' }, buttons)
     },
   },
 ])
 
-function openEdit(user) {
+function openEdit(user: any) {
   editingUser.value = {
     id: user.id,
     username: user.username,
@@ -102,7 +96,7 @@ async function createUser() {
     showCreate.value = false
     newUser.value = { username: '', password: '', role: 'user' }
     await loadUsers()
-  } catch (e) {
+  } catch (e: any) {
     message.error(e.error || 'Failed')
   }
 }
@@ -118,12 +112,12 @@ async function saveEdit() {
     showEdit.value = false
     editingUser.value = null
     await loadUsers()
-  } catch (e) {
+  } catch (e: any) {
     message.error(e.error || 'Failed')
   }
 }
 
-async function resetPassword(user) {
+async function resetPassword(user: any) {
   const password = await showPrompt(t('admin.new_password', { name: user.username }))
   if (!password) return
   try {
@@ -134,18 +128,18 @@ async function resetPassword(user) {
   }
 }
 
-async function deleteUser(user) {
+async function deleteUser(user: any) {
   if (!await showConfirm(t('admin.confirm_delete', { name: user.username }))) return
   try {
     await ws.request('admin.deleteUser', { id: user.id })
     message.success(t('admin.user_deleted'))
     await loadUsers()
-  } catch (e) {
+  } catch (e: any) {
     message.error(e.error || 'Failed')
   }
 }
 
-async function resetOTP(user) {
+async function resetOTP(user: any) {
   if (!await showConfirm(t('admin.confirm_reset_otp', { name: user.username }))) return
   try {
     await ws.request('admin.resetUserOTP', { id: user.id })
@@ -156,7 +150,7 @@ async function resetOTP(user) {
   }
 }
 
-async function resetEmail(user) {
+async function resetEmail(user: any) {
   if (!await showConfirm(t('admin.confirm_reset_email', { name: user.username }))) return
   try {
     await ws.request('admin.resetUserEmail', { id: user.id })
@@ -175,16 +169,16 @@ onMounted(loadUsers)
     <div class="admin-header">
       <h1>{{ t('admin.title') }}</h1>
       <div style="display:flex;gap:8px">
-        <BButton type="primary" size="small" @click="showCreate = true">
+        <Button type="primary" size="small" @click="showCreate = true">
           {{ t('admin.add_user') }}
-        </BButton>
-        <BButton size="small" @click="router.push('/')">
+        </Button>
+        <Button size="small" @click="router.push('/')">
           {{ t('admin.back_to_files') }}
-        </BButton>
+        </Button>
       </div>
     </div>
 
-    <BDataTable
+    <DataTable
       :columns="columns"
       :data="users"
       :loading="loading"
@@ -193,33 +187,33 @@ onMounted(loadUsers)
     />
 
     <!-- Create User Dialog -->
-    <BModal :show="showCreate" preset="dialog" :title="t('admin.create_user')" @close="showCreate = false" @mask-click="showCreate = false">
-      <BForm>
-        <BFormItem :label="t('admin.username')">
-          <BInput :value="newUser.username" placeholder="" @update:value="v => newUser.username = v" />
-        </BFormItem>
-        <BFormItem :label="t('admin.password')">
-          <BInput :value="newUser.password" type="password" placeholder="" @update:value="v => newUser.password = v" />
-        </BFormItem>
-        <BFormItem :label="t('admin.role')">
-          <BSelect v-model:value="newUser.role" :options="roleOptions" />
-        </BFormItem>
-        <BButton type="primary" block @click="createUser">{{ t('admin.create') }}</BButton>
-      </BForm>
-    </BModal>
+    <Modal :show="showCreate" preset="dialog" :title="t('admin.create_user')" @close="showCreate = false" @mask-click="showCreate = false">
+      <Form>
+        <FormItem :label="t('admin.username')">
+          <Input :value="newUser.username" placeholder="" @update:value="v => newUser.username = v" />
+        </FormItem>
+        <FormItem :label="t('admin.password')">
+          <Input :value="newUser.password" type="password" placeholder="" @update:value="v => newUser.password = v" />
+        </FormItem>
+        <FormItem :label="t('admin.role')">
+          <Select v-model:value="newUser.role" :options="roleOptions" />
+        </FormItem>
+        <Button type="primary" block @click="createUser">{{ t('admin.create') }}</Button>
+      </Form>
+    </Modal>
 
     <!-- Edit User Dialog -->
-    <BModal :show="showEdit" preset="dialog" :title="t('admin.edit_user')" @close="showEdit = false" @mask-click="showEdit = false">
-      <BForm v-if="editingUser">
-        <BFormItem :label="t('admin.username')">
-          <BInput :value="editingUser.username" disabled />
-        </BFormItem>
-        <BFormItem :label="t('admin.role')">
-          <BSelect v-model:value="editingUser.role" :options="roleOptions" />
-        </BFormItem>
-        <BButton type="primary" block @click="saveEdit">{{ t('admin.save') }}</BButton>
-      </BForm>
-    </BModal>
+    <Modal :show="showEdit" preset="dialog" :title="t('admin.edit_user')" @close="showEdit = false" @mask-click="showEdit = false">
+      <Form v-if="editingUser">
+        <FormItem :label="t('admin.username')">
+          <Input :value="editingUser.username" disabled />
+        </FormItem>
+        <FormItem :label="t('admin.role')">
+          <Select v-model:value="editingUser.role" :options="roleOptions" />
+        </FormItem>
+        <Button type="primary" block @click="saveEdit">{{ t('admin.save') }}</Button>
+      </Form>
+    </Modal>
   </div>
 </template>
 

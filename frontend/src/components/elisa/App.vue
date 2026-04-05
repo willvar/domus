@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
 import { useWorkspaceSync, registerViewerCallback, unregisterViewerCallback } from '../../composables/useWorkspaceSync'
 import { usePreferences } from '../../composables/usePreferences'
@@ -8,28 +8,29 @@ const props = defineProps({
   windowId: { type: String, required: true },
 })
 
-const audioEl = ref(null)
-const canvasEl = ref(null)
-let audioCtx = null
-let analyser = null
-let animFrameId = null
+const audioEl = ref<HTMLAudioElement | null>(null)
+const canvasEl = ref<HTMLCanvasElement | null>(null)
+let audioCtx: AudioContext | null = null
+let analyser: AnalyserNode | null = null
+let animFrameId: number | null = null
 let sourceConnected = false
 
 const sync = useWorkspaceSync()
 const { prefs } = usePreferences()
 let _isRemotePlayback = false
-let _timeSyncTimer = null
+let _timeSyncTimer: ReturnType<typeof setInterval> | null = null
 
 function draw() {
   if (!analyser || !canvasEl.value) return
   const canvas = canvasEl.value
-  const ctx = canvas.getContext('2d')
-  const bufferLength = analyser.frequencyBinCount
+  const ctx = canvas.getContext('2d')!
+  const ana = analyser
+  const bufferLength = ana.frequencyBinCount
   const data = new Uint8Array(bufferLength)
 
   function render() {
     animFrameId = requestAnimationFrame(render)
-    analyser.getByteFrequencyData(data)
+    ana.getByteFrequencyData(data)
 
     const w = canvas.width = canvas.clientWidth * (window.devicePixelRatio || 1)
     const h = canvas.height = canvas.clientHeight * (window.devicePixelRatio || 1)
@@ -54,7 +55,7 @@ function draw() {
 function initAudio() {
   if (sourceConnected || !audioEl.value) return
   try {
-    audioCtx = new (window.AudioContext || window.webkitAudioContext)()
+    audioCtx = new AudioContext()
     analyser = audioCtx.createAnalyser()
     analyser.fftSize = 256
     const source = audioCtx.createMediaElementSource(audioEl.value)
@@ -82,26 +83,27 @@ function onAudioSeeked() {
   sync.emitEvent({ action: 'viewer.seek', windowId: props.windowId, currentTime: audioEl.value?.currentTime || 0 })
 }
 
-registerViewerCallback(props.windowId, (action, currentTime) => {
+registerViewerCallback(props.windowId, (action: string, currentTime?: number) => {
   const el = audioEl.value
   if (!el) return
+  const t = currentTime ?? 0
   _isRemotePlayback = true
   try {
     switch (action) {
       case 'play':
-        el.currentTime = currentTime
+        el.currentTime = t
         el.play().catch(() => {})
         break
       case 'pause':
         el.pause()
-        el.currentTime = currentTime
+        el.currentTime = t
         break
       case 'seek':
-        el.currentTime = currentTime
+        el.currentTime = t
         break
       case 'timeSync':
-        if (Math.abs(el.currentTime - currentTime) > 2) {
-          el.currentTime = currentTime
+        if (Math.abs(el.currentTime - t) > 2) {
+          el.currentTime = t
         }
         break
     }
@@ -111,7 +113,7 @@ registerViewerCallback(props.windowId, (action, currentTime) => {
 })
 
 // TimeSync interval
-watch(() => props.state?.url, (url) => {
+watch(() => props.state?.url, (url: string | undefined) => {
   if (url) {
     _timeSyncTimer = setInterval(() => {
       const el = audioEl.value
@@ -119,7 +121,7 @@ watch(() => props.state?.url, (url) => {
       sync.emitEvent({ action: 'viewer.timeSync', windowId: props.windowId, currentTime: el.currentTime })
     }, 3000)
   } else if (_timeSyncTimer) {
-    clearInterval(_timeSyncTimer)
+    clearInterval(_timeSyncTimer!)
     _timeSyncTimer = null
   }
 }, { immediate: true })
@@ -134,7 +136,7 @@ onUnmounted(() => {
   if (animFrameId) cancelAnimationFrame(animFrameId)
   if (audioCtx) audioCtx.close().catch(() => {})
   unregisterViewerCallback(props.windowId)
-  if (_timeSyncTimer) clearInterval(_timeSyncTimer)
+  if (_timeSyncTimer) clearInterval(_timeSyncTimer!)
 })
 </script>
 

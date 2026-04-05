@@ -1,11 +1,9 @@
-<script setup>
+<script setup lang="ts">
 import { onMounted, watchEffect } from 'vue'
 import { useAuthStore } from './stores/auth'
 import { useI18n } from './composables/useI18n'
 import LoginPage from './components/LoginPage.vue'
-import BSpin from './components/breeze/BSpin.vue'
-import MessageContainer from './components/breeze/MessageContainer.vue'
-import NotificationContainer from './components/breeze/NotificationContainer.vue'
+import { Spin, MessageList, NotificationList } from './barrels/breeze'
 
 const auth = useAuthStore()
 const { t } = useI18n()
@@ -22,15 +20,15 @@ onMounted(async () => {
 
 <template>
   <div v-if="auth.loading" class="loading-screen">
-    <BSpin size="large" />
+    <Spin size="large" />
   </div>
 
   <LoginPage v-else-if="!auth.isLoggedIn" />
 
   <router-view v-else />
 
-  <MessageContainer />
-  <NotificationContainer />
+  <MessageList />
+  <NotificationList />
 </template>
 
 <style lang="scss" scoped>

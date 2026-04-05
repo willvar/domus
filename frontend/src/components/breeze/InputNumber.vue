@@ -1,6 +1,4 @@
-<script setup>
-import { ref, computed } from 'vue'
-
+<script setup lang="ts">
 const props = defineProps({
   value: { type: Number, default: 0 },
   min: { type: Number, default: -Infinity },
@@ -10,12 +8,12 @@ const props = defineProps({
 
 const emit = defineEmits(['update:value'])
 
-function clamp(v) {
+function clamp(v: number) {
   return Math.min(props.max, Math.max(props.min, v))
 }
 
-function onInput(e) {
-  const v = parseFloat(e.target.value)
+function onInput(e: Event) {
+  const v = parseFloat((e.target as HTMLInputElement).value)
   if (!isNaN(v)) emit('update:value', clamp(v))
 }
 

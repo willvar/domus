@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch, nextTick, computed, defineAsyncComponent } from 'vue'
 import { useFileSystemStore } from '../stores/fileSystem'
 import { useWindowManagerStore } from '../stores/windowManager'
@@ -7,21 +7,17 @@ import { useCodeMirror } from '../composables/useCodeMirror'
 import { useWorkspaceSync, registerViewerCallback, unregisterViewerCallback } from '../composables/useWorkspaceSync'
 import { usePreferences } from '../composables/usePreferences'
 import PlasmaWindow from './plasma/Window.vue'
-import IconEye from '~icons/mdi/eye-outline'
-import IconSave from '~icons/mdi/content-save'
-import IconClose from '~icons/mdi/close'
-import IconEdit from '~icons/mdi/pencil'
-import IconPrev from '~icons/mdi/chevron-left'
-import IconNext from '~icons/mdi/chevron-right'
+import { IconEyeOutline as IconEye, IconContentSave as IconSave, IconClose, IconPencil as IconEdit, IconChevronLeft as IconPrev, IconChevronRight as IconNext } from '../barrels/icons'
 
 // Lazy-loaded viewer sub-components
-const viewerMap = {
-  audio: defineAsyncComponent(() => import('./elisa/App.vue')),
-  markdown: defineAsyncComponent(() => import('./kate/Markdown.vue')),
-  csv: defineAsyncComponent(() => import('./kate/Csv.vue')),
-  font: defineAsyncComponent(() => import('./kfontview/App.vue')),
-  archive: defineAsyncComponent(() => import('./ark/App.vue')),
-  notebook: defineAsyncComponent(() => import('./notebook/App.vue')),
+const viewers = () => import('../barrels/viewers')
+const viewerMap: Record<string, ReturnType<typeof defineAsyncComponent>> = {
+  audio: defineAsyncComponent(() => viewers().then(m => m.AudioViewer)),
+  markdown: defineAsyncComponent(() => viewers().then(m => m.MarkdownViewer)),
+  csv: defineAsyncComponent(() => viewers().then(m => m.CsvViewer)),
+  font: defineAsyncComponent(() => viewers().then(m => m.FontViewer)),
+  archive: defineAsyncComponent(() => viewers().then(m => m.ArchiveViewer)),
+  notebook: defineAsyncComponent(() => viewers().then(m => m.NotebookViewer)),
 }
 
 const props = defineProps({
@@ -36,12 +32,18 @@ const state = computed(() => fs.findApp(props.windowId))
 const delegatedViewer = computed(() => state.value ? viewerMap[state.value.type] : null)
 
 const editBuffer = ref('')
-const cmContainer = ref(null)
+const cmContainer = ref<HTMLDivElement | null>(null)
 const cm = useCodeMirror()
 const htmlPreviewMode = ref('split')
 
 const windowOpen = computed(() => !!wm.findWindow(props.windowId))
-const canEdit = computed(() => state.value && (!state.value.chunked || state.value.isFullyLoaded))
+const canEdit = computed(() => {
+  if (!state.value) return false
+  if (state.value.chunked && !state.value.isFullyLoaded) return false
+  // Shared files: only editable with write permission
+  if (state.value.file?._shareId && state.value.file?._permission !== 'write') return false
+  return true
+})
 const isHtmlPreview = computed(() => {
   if (!state.value || state.value.type !== 'text') return false
   const name = state.value.file?.name?.toLowerCase() || ''
@@ -53,11 +55,11 @@ const showRenderedPane = computed(() => isHtmlPreview.value && htmlPreviewMode.v
 
 // ─── CodeMirror ───
 
-function createEditor(readOnly) {
+function createEditor(readOnly: boolean) {
   if (!cmContainer.value || !state.value) return
   const callbacks = readOnly ? {} : {
     onSave: () => { if (state.value?.dirty) fs.saveViewer(props.windowId) },
-    onChange: (content) => { if (state.value) { state.value.content = content; state.value.dirty = true } },
+    onChange: (content: string) => { if (state.value) { state.value.content = content; state.value.dirty = true } },
   }
   cm.create(cmContainer.value, state.value.content || '', state.value.language, readOnly, callbacks)
 }
@@ -104,7 +106,7 @@ watch(() => state.value?.page, () => {
 
 function startEdit() {
   if (!state.value) return
-  editBuffer.value = state.value.content
+  editBuffer.value = state.value.content || ''
   state.value.editing = true
   state.value.dirty = false
 }
@@ -129,15 +131,15 @@ onMounted(() => {
 onUnmounted(() => {
   cm.destroy()
   unregisterViewerCallback(props.windowId)
-  if (_timeSyncTimer) clearInterval(_timeSyncTimer)
+  if (_timeSyncTimer) clearInterval(_timeSyncTimer!)
 })
 
 // ─── Video playback sync ───
-const videoEl = ref(null)
+const videoEl = ref<HTMLVideoElement | null>(null)
 const sync = useWorkspaceSync()
 const { prefs } = usePreferences()
 let _isRemotePlayback = false
-let _timeSyncTimer = null
+let _timeSyncTimer: ReturnType<typeof setInterval> | null = null
 
 function onVideoPlay() {
   if (_isRemotePlayback || prefs.sessionIsolation) return
@@ -155,26 +157,27 @@ function onVideoSeeked() {
 }
 
 // Register callback for receiving remote playback events
-registerViewerCallback(props.windowId, (action, currentTime) => {
+registerViewerCallback(props.windowId, (action: string, currentTime?: number) => {
   const el = videoEl.value
   if (!el) return
+  const t = currentTime ?? 0
   _isRemotePlayback = true
   try {
     switch (action) {
       case 'play':
-        el.currentTime = currentTime
+        el.currentTime = t
         el.play().catch(() => {})
         break
       case 'pause':
         el.pause()
-        el.currentTime = currentTime
+        el.currentTime = t
         break
       case 'seek':
-        el.currentTime = currentTime
+        el.currentTime = t
         break
       case 'timeSync':
-        if (Math.abs(el.currentTime - currentTime) > 2) {
-          el.currentTime = currentTime
+        if (Math.abs(el.currentTime - t) > 2) {
+          el.currentTime = t
         }
         break
     }
@@ -193,7 +196,7 @@ watch(() => state.value?.type === 'video' && state.value?.url, (ready) => {
       sync.emitEvent({ action: 'viewer.timeSync', windowId: props.windowId, currentTime: el.currentTime })
     }, 3000)
   } else if (_timeSyncTimer) {
-    clearInterval(_timeSyncTimer)
+    clearInterval(_timeSyncTimer!)
     _timeSyncTimer = null
   }
 }, { immediate: true })
@@ -247,11 +250,11 @@ watch(() => state.value?.type === 'video' && state.value?.url, (ready) => {
           </template>
           <template v-if="state.chunked && !state.isFullyLoaded && !state.editing">
             <span class="toolbar-sep" />
-            <button class="viewer-btn" :disabled="state.page <= 0" @click="fs.viewerPrevPage(windowId)">
+            <button class="viewer-btn" :disabled="(state.page ?? 0) <= 0" @click="fs.viewerPrevPage(windowId)">
               <IconPrev width="14" height="14" />
             </button>
-            <span class="page-indicator">{{ state.page + 1 }} / ~{{ state.totalPages }}</span>
-            <button class="viewer-btn" :disabled="state.page >= state.totalPages - 1" @click="fs.viewerNextPage(windowId)">
+            <span class="page-indicator">{{ (state.page ?? 0) + 1 }} / ~{{ state.totalPages }}</span>
+            <button class="viewer-btn" :disabled="(state.page ?? 0) >= (state.totalPages ?? 1) - 1" @click="fs.viewerNextPage(windowId)">
               <IconNext width="14" height="14" />
             </button>
           </template>

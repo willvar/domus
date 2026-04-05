@@ -1,5 +1,5 @@
-<script setup>
-const props = defineProps({
+<script setup lang="ts">
+defineProps({
   show: { type: Boolean, default: false },
   placement: { type: String, default: 'bottom' },
   height: { type: String, default: 'auto' },

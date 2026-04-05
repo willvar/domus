@@ -1,10 +1,10 @@
-<script setup>
+<script setup lang="ts">
 defineProps({
   show: { type: Boolean, default: true },
-  size: { type: String, default: 'medium' },
+  size: { type: String as () => 'small' | 'medium' | 'large', default: 'medium' },
 })
 
-const sizes = { small: 16, medium: 24, large: 40 }
+const sizes: Record<string, number> = { small: 16, medium: 24, large: 40 }
 </script>
 
 <template>

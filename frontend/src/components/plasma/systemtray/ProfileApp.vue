@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { useWebSocket } from '../../../composables/useWebSocket'
 import { useI18n } from '../../../composables/useI18n'
@@ -9,14 +9,7 @@ import { useAuthStore } from '../../../stores/auth'
 import api from '../../../composables/useApi'
 import QRCode from 'qrcode'
 import PlasmaWindow from '../Window.vue'
-import BTabs from '../../breeze/BTabs.vue'
-import BTabPane from '../../breeze/BTabPane.vue'
-import BCard from '../../breeze/BCard.vue'
-import BForm from '../../breeze/BForm.vue'
-import BFormItem from '../../breeze/BFormItem.vue'
-import BInput from '../../breeze/BInput.vue'
-import BButton from '../../breeze/BButton.vue'
-import BTag from '../../breeze/BTag.vue'
+import { Tabs, TabPane, Card, Form, FormItem, Input, Button, Tag } from '../../../barrels/breeze'
 
 const WINDOW_ID = 'profile'
 
@@ -76,7 +69,7 @@ async function saveDisplayName() {
     await ws.request('user.updateDisplayName', { display_name: displayName.value.trim() })
     message.success(t('profile.name_updated'))
     editingName.value = false
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'profile.name_failed'))
   } finally {
     nameLoading.value = false
@@ -88,18 +81,18 @@ function cancelEditName() {
   loadProfile()
 }
 
-const fileInputRef = ref(null)
+const fileInputRef = ref<HTMLInputElement | null>(null)
 
 function triggerAvatarUpload() {
   fileInputRef.value?.click()
 }
 
-async function handleAvatarFile(e) {
-  const file = e.target.files?.[0]
+async function handleAvatarFile(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
   if (!file) return
   if (file.size > 10 * 1024 * 1024) {
     message.warning(t('profile.avatar_too_large'))
-    e.target.value = ''
+    ;(e.target as HTMLInputElement).value = ''
     return
   }
   try {
@@ -108,13 +101,13 @@ async function handleAvatarFile(e) {
     const res = await api.post('/user/avatar', form)
     avatarUrl.value = res.data.avatar_url
     message.success(t('profile.avatar_updated'))
-  } catch (err) {
+  } catch (err: any) {
     message.error(te(err, 'profile.avatar_failed'))
   }
-  e.target.value = ''
+  ;(e.target as HTMLInputElement).value = ''
 }
 
-function formatSize(bytes) {
+function formatSize(bytes: number) {
   if (!bytes) return '0 B'
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
   let i = 0, size = bytes
@@ -140,7 +133,7 @@ const otpLoading = ref(false)
 async function loadStatus() {
   try {
     status.value = await ws.request('user.security')
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'account.load_failed'))
   }
 }
@@ -148,7 +141,7 @@ async function loadStatus() {
 // Load data when window opens
 watch(windowOpen, (v) => {
   if (v) {
-    if (win.value?.data?.tab) activeTab.value = win.value.data.tab
+    if (win.value?.data?.tab) activeTab.value = win.value.data.tab as string
     loadProfile()
     loadStorage()
     loadStatus()
@@ -163,7 +156,7 @@ async function changePassword() {
     message.success(t('account.password_changed'))
     oldPwd.value = ''
     newPwd.value = ''
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'account.password_wrong'))
   } finally {
     pwdLoading.value = false
@@ -177,7 +170,7 @@ async function sendBindCode() {
     await ws.request('user.bindEmail', { email: bindEmail.value })
     emailStep.value = 'code_sent'
     message.success(t('login.code_sent'))
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'login.failed'))
   } finally {
     emailLoading.value = false
@@ -194,7 +187,7 @@ async function verifyBindCode() {
     bindEmail.value = ''
     bindCode.value = ''
     await loadStatus()
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'login.verify_failed'))
   } finally {
     emailLoading.value = false
@@ -207,7 +200,7 @@ async function unbindEmail() {
     await ws.request('user.unbindEmail')
     message.success(t('account.email_unbound'))
     await loadStatus()
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'account.unbind_failed'))
   }
 }
@@ -220,7 +213,7 @@ async function setupOTP() {
     otpQR.value = await QRCode.toDataURL(data.uri, { width: 200, margin: 2 })
     otpStep.value = 'setup'
     otpCode.value = ''
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e))
   } finally {
     otpLoading.value = false
@@ -238,7 +231,7 @@ async function enableOTP() {
     otpQR.value = ''
     otpCode.value = ''
     await loadStatus()
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'login.verify_failed'))
   } finally {
     otpLoading.value = false
@@ -251,7 +244,7 @@ async function disableOTP() {
     await ws.request('user.otpDisable')
     message.success(t('account.otp_disabled'))
     await loadStatus()
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'account.disable_failed'))
   }
 }
@@ -266,8 +259,8 @@ async function disableOTP() {
     @close="handleClose"
   >
     <div class="profile-app">
-      <BTabs :value="activeTab" @update:value="v => activeTab = v">
-        <BTabPane name="profile" :tab="t('profile.tab_profile')">
+      <Tabs :value="activeTab" @update:value="v => activeTab = v">
+        <TabPane name="profile" :tab="t('profile.tab_profile')">
           <div class="profile-content">
             <!-- Avatar -->
             <div class="profile-avatar-section">
@@ -275,7 +268,7 @@ async function disableOTP() {
                 <img v-if="avatarUrl" :src="avatarUrl" class="profile-avatar-img" />
                 <span v-else class="profile-avatar-initial">{{ avatarInitial }}</span>
                 <div class="profile-avatar-overlay">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/><circle cx="12" cy="13" r="4"/></svg>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z" /><circle cx="12" cy="13" r="4" /></svg>
                 </div>
               </div>
               <input ref="fileInputRef" type="file" accept="image/*" style="display:none" @change="handleAvatarFile" />
@@ -291,14 +284,14 @@ async function disableOTP() {
             <div class="profile-field">
               <span class="profile-label">{{ t('profile.display_name') }}</span>
               <div v-if="editingName" class="profile-name-edit">
-                <BInput :value="displayName" size="small" @update:value="v => displayName = v" @keyup.enter="saveDisplayName" @keyup.escape="cancelEditName" />
-                <BButton size="small" type="primary" :loading="nameLoading" @click="saveDisplayName">{{ t('dialog.ok') }}</BButton>
-                <BButton size="small" @click="cancelEditName">{{ t('dialog.cancel') }}</BButton>
+                <Input :value="displayName" size="small" @update:value="v => displayName = v" @keyup.enter="saveDisplayName" @keyup.escape="cancelEditName" />
+                <Button size="small" type="primary" :loading="nameLoading" @click="saveDisplayName">{{ t('dialog.ok') }}</Button>
+                <Button size="small" @click="cancelEditName">{{ t('dialog.cancel') }}</Button>
               </div>
               <div v-else class="profile-name-display">
                 <span class="profile-value">{{ displayName || '—' }}</span>
                 <button class="profile-edit-btn" @click="editingName = true">
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
                 </button>
               </div>
             </div>
@@ -306,7 +299,7 @@ async function disableOTP() {
             <!-- Role -->
             <div class="profile-field">
               <span class="profile-label">{{ t('profile.role') }}</span>
-              <BTag :type="auth.isRoot ? 'warning' : 'default'">{{ auth.user?.role }}</BTag>
+              <Tag :type="auth.isRoot ? 'warning' : 'default'">{{ auth.user?.role }}</Tag>
             </div>
 
             <!-- Storage usage -->
@@ -316,62 +309,62 @@ async function disableOTP() {
               <span v-else class="profile-value">{{ formatSize(storageSize) }} · {{ storageCount }} {{ t('profile.files') }}</span>
             </div>
           </div>
-        </BTabPane>
+        </TabPane>
 
-        <BTabPane name="security" :tab="t('account.security')">
+        <TabPane name="security" :tab="t('account.security')">
           <div class="security-content">
             <!-- Password Change -->
-            <BCard :title="t('account.change_password')" size="small" style="margin-bottom: 16px">
-              <BForm @submit.prevent="changePassword">
-                <BFormItem :label="t('account.old_password')">
-                  <BInput :value="oldPwd" type="password" show-password-on="click" @update:value="v => oldPwd = v" />
-                </BFormItem>
-                <BFormItem :label="t('account.new_password')">
-                  <BInput :value="newPwd" type="password" show-password-on="click" @update:value="v => newPwd = v" />
-                </BFormItem>
-                <BButton type="primary" :loading="pwdLoading" attr-type="submit" block>
+            <Card :title="t('account.change_password')" size="small" style="margin-bottom: 16px">
+              <Form @submit.prevent="changePassword">
+                <FormItem :label="t('account.old_password')">
+                  <Input :value="oldPwd" type="password" show-password-on="click" @update:value="v => oldPwd = v" />
+                </FormItem>
+                <FormItem :label="t('account.new_password')">
+                  <Input :value="newPwd" type="password" show-password-on="click" @update:value="v => newPwd = v" />
+                </FormItem>
+                <Button type="primary" :loading="pwdLoading" attr-type="submit" block>
                   {{ t('account.change_password') }}
-                </BButton>
-              </BForm>
-            </BCard>
+                </Button>
+              </Form>
+            </Card>
 
             <!-- Email Binding -->
-            <BCard :title="t('account.email_title')" size="small" style="margin-bottom: 16px">
+            <Card :title="t('account.email_title')" size="small" style="margin-bottom: 16px">
               <template v-if="!status.smtp_enabled">
                 <p style="color: var(--breeze-text-secondary)">{{ t('account.email_unavailable') }}</p>
               </template>
               <template v-else-if="status.has_email">
                 <div style="display:flex;align-items:center;justify-content:space-between">
                   <span>{{ status.email }}</span>
-                  <BButton size="small" type="warning" @click="unbindEmail">{{ t('account.email_unbind') }}</BButton>
+                  <Button size="small" type="warning" @click="unbindEmail">{{ t('account.email_unbind') }}</Button>
                 </div>
               </template>
               <template v-else>
-                <BForm @submit.prevent="emailStep === 'code_sent' ? verifyBindCode() : sendBindCode()">
-                  <BFormItem :label="t('account.email_input')">
-                    <BInput :value="bindEmail" :disabled="emailStep === 'code_sent'" @update:value="v => bindEmail = v" />
-                  </BFormItem>
+                <Form @submit.prevent="emailStep === 'code_sent' ? verifyBindCode() : sendBindCode()">
+                  <FormItem :label="t('account.email_input')">
+                    <Input :value="bindEmail" :disabled="emailStep === 'code_sent'" @update:value="v => bindEmail = v" />
+                  </FormItem>
                   <template v-if="emailStep === 'code_sent'">
-                    <BFormItem :label="t('account.email_code')">
-                      <BInput :value="bindCode" maxlength="6" @update:value="v => bindCode = v" />
-                    </BFormItem>
-                    <BButton type="primary" :loading="emailLoading" attr-type="submit" block>
+                    <FormItem :label="t('account.email_code')">
+                      <Input :value="bindCode" maxlength="6" @update:value="v => bindCode = v" />
+                    </FormItem>
+                    <Button type="primary" :loading="emailLoading" attr-type="submit" block>
                       {{ t('login.verify') }}
-                    </BButton>
+                    </Button>
                   </template>
-                  <BButton v-else type="primary" :loading="emailLoading" attr-type="submit" block>
+                  <Button v-else type="primary" :loading="emailLoading" attr-type="submit" block>
                     {{ t('account.email_send_code') }}
-                  </BButton>
-                </BForm>
+                  </Button>
+                </Form>
               </template>
-            </BCard>
+            </Card>
 
             <!-- OTP Setup -->
-            <BCard :title="t('account.otp_title')" size="small">
+            <Card :title="t('account.otp_title')" size="small">
               <template v-if="status.totp_enabled">
                 <div style="display:flex;align-items:center;justify-content:space-between">
-                  <BTag type="success">{{ t('account.otp_enabled') }}</BTag>
-                  <BButton size="small" type="warning" @click="disableOTP">{{ t('account.otp_disable') }}</BButton>
+                  <Tag type="success">{{ t('account.otp_enabled') }}</Tag>
+                  <Button size="small" type="warning" @click="disableOTP">{{ t('account.otp_disable') }}</Button>
                 </div>
               </template>
               <template v-else-if="otpStep === 'setup'">
@@ -379,27 +372,27 @@ async function disableOTP() {
                 <div style="text-align: center; margin-bottom: 12px">
                   <img v-if="otpQR" :src="otpQR" alt="QR Code" style="border-radius: 4px" />
                 </div>
-                <BFormItem :label="t('account.otp_manual_key')">
-                  <BInput :value="otpSecret" readonly />
-                </BFormItem>
-                <BForm @submit.prevent="enableOTP">
-                  <BFormItem :label="t('account.otp_verify_hint')">
-                    <BInput :value="otpCode" maxlength="6" @update:value="v => otpCode = v" />
-                  </BFormItem>
-                  <BButton type="primary" :loading="otpLoading" attr-type="submit" block>
+                <FormItem :label="t('account.otp_manual_key')">
+                  <Input :value="otpSecret" readonly />
+                </FormItem>
+                <Form @submit.prevent="enableOTP">
+                  <FormItem :label="t('account.otp_verify_hint')">
+                    <Input :value="otpCode" maxlength="6" @update:value="v => otpCode = v" />
+                  </FormItem>
+                  <Button type="primary" :loading="otpLoading" attr-type="submit" block>
                     {{ t('login.verify') }}
-                  </BButton>
-                </BForm>
+                  </Button>
+                </Form>
               </template>
               <template v-else>
-                <BButton type="primary" :loading="otpLoading" block @click="setupOTP">
+                <Button type="primary" :loading="otpLoading" block @click="setupOTP">
                   {{ t('account.otp_enable') }}
-                </BButton>
+                </Button>
               </template>
-            </BCard>
+            </Card>
           </div>
-        </BTabPane>
-      </BTabs>
+        </TabPane>
+      </Tabs>
     </div>
   </PlasmaWindow>
 </template>

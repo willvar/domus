@@ -1,17 +1,11 @@
-<script setup>
+<script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
 import { useMessage } from '../composables/useMessage'
 import api from '../composables/useApi'
-import IconSailBoat from '~icons/mdi/sail-boat'
-import BCard from './breeze/BCard.vue'
-import BForm from './breeze/BForm.vue'
-import BFormItem from './breeze/BFormItem.vue'
-import BInput from './breeze/BInput.vue'
-import BButton from './breeze/BButton.vue'
-import BTabs from './breeze/BTabs.vue'
-import BTabPane from './breeze/BTabPane.vue'
+import { IconSailBoat } from '../barrels/icons'
+import { Card, Form, FormItem, Input, Button, Tabs, TabPane } from '../barrels/breeze'
 
 const auth = useAuthStore()
 const message = useMessage()
@@ -21,7 +15,7 @@ const { t, te } = useI18n()
 const tab = ref('password')       // 'password' | 'email' | 'otp'
 const step = ref('input')         // 'input' | '2fa'
 const token = ref('')
-const availableMethods = ref([])
+const availableMethods = ref<string[]>([])
 const selectedMethod = ref('')
 const smtpEnabled = ref(false)
 
@@ -77,7 +71,7 @@ async function handlePasswordLogin() {
       await auth.login({ token: data.token })
       message.success(t('login.success', { name: auth.user?.display_name || auth.username }))
     }
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'login.failed'))
   } finally {
     loading.value = false
@@ -97,7 +91,7 @@ async function requestEmailCode() {
     emailCodeSent.value = true
     verifyCode.value = ''
     message.success(t('login.code_sent'))
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'login.failed'))
   } finally {
     loading.value = false
@@ -111,7 +105,7 @@ async function handleEmailLogin() {
   try {
     await auth.login({ token: token.value, code: verifyCode.value, method: 'email' })
     message.success(t('login.success', { name: auth.user?.display_name || auth.username }))
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'login.verify_failed'))
   } finally {
     loading.value = false
@@ -129,7 +123,7 @@ async function handleOTPLogin() {
     const data = await auth.verify({ username: username.value, otp: otpCode.value })
     await auth.login({ token: data.token })
     message.success(t('login.success', { name: auth.user?.display_name || auth.username }))
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'login.failed'))
   } finally {
     loading.value = false
@@ -143,14 +137,14 @@ async function handle2FA() {
   try {
     await auth.login({ token: token.value, code: verifyCode.value, method: selectedMethod.value })
     message.success(t('login.success', { name: auth.user?.display_name || auth.username }))
-  } catch (e) {
+  } catch (e: any) {
     message.error(te(e, 'login.verify_failed'))
   } finally {
     loading.value = false
   }
 }
 
-function resetTo(newTab) {
+function resetTo(newTab: string) {
   step.value = 'input'
   token.value = ''
   emailCodeSent.value = false
@@ -162,7 +156,7 @@ function resetTo(newTab) {
 
 <template>
   <div class="login-page">
-    <BCard class="login-card" :bordered="true">
+    <Card class="login-card" :bordered="true">
       <div class="login-header">
         <div class="login-icon">
           <img v-if="loginAvatarUrl" :src="loginAvatarUrl" class="login-avatar" />
@@ -173,57 +167,57 @@ function resetTo(newTab) {
 
       <!-- Step 1: Login tabs -->
       <template v-if="step === 'input'">
-        <BTabs :value="tab" @update:value="resetTo">
+        <Tabs :value="tab" @update:value="resetTo">
           <!-- Password -->
-          <BTabPane name="password" :tab="t('login.password_tab')">
-            <BForm class="tab-form" @submit.prevent="handlePasswordLogin">
-              <BFormItem :label="t('login.username')">
-                <BInput :value="username" :placeholder="t('login.username_placeholder')" autofocus @update:value="v => username = v" @blur="fetchAvatar" />
-              </BFormItem>
-              <BFormItem :label="t('login.password')">
-                <BInput :value="password" type="password" :placeholder="t('login.password_placeholder')" show-password-on="click" @update:value="v => password = v" />
-              </BFormItem>
-              <BButton type="primary" block :loading="loading" attr-type="submit">
+          <TabPane name="password" :tab="t('login.password_tab')">
+            <Form class="tab-form" @submit.prevent="handlePasswordLogin">
+              <FormItem :label="t('login.username')">
+                <Input :value="username" :placeholder="t('login.username_placeholder')" autofocus @update:value="v => username = v" @blur="fetchAvatar" />
+              </FormItem>
+              <FormItem :label="t('login.password')">
+                <Input :value="password" type="password" :placeholder="t('login.password_placeholder')" show-password-on="click" @update:value="v => password = v" />
+              </FormItem>
+              <Button type="primary" block :loading="loading" attr-type="submit">
                 {{ t('login.submit') }}
-              </BButton>
-            </BForm>
-          </BTabPane>
+              </Button>
+            </Form>
+          </TabPane>
 
           <!-- Email -->
-          <BTabPane v-if="smtpEnabled" name="email" :tab="t('login.email_tab')">
-            <BForm class="tab-form" @submit.prevent="emailCodeSent ? handleEmailLogin() : requestEmailCode()">
-              <BFormItem :label="t('login.username')">
-                <BInput :value="username" :placeholder="t('login.username_placeholder')" :disabled="emailCodeSent" @update:value="v => username = v" @blur="fetchAvatar" />
-              </BFormItem>
+          <TabPane v-if="smtpEnabled" name="email" :tab="t('login.email_tab')">
+            <Form class="tab-form" @submit.prevent="emailCodeSent ? handleEmailLogin() : requestEmailCode()">
+              <FormItem :label="t('login.username')">
+                <Input :value="username" :placeholder="t('login.username_placeholder')" :disabled="emailCodeSent" @update:value="v => username = v" @blur="fetchAvatar" />
+              </FormItem>
               <template v-if="emailCodeSent">
-                <BFormItem :label="t('login.email_code')">
-                  <BInput :value="verifyCode" :placeholder="t('login.email_code')" maxlength="6" autofocus @update:value="v => verifyCode = v" />
-                </BFormItem>
-                <BButton type="primary" block :loading="loading" attr-type="submit">
+                <FormItem :label="t('login.email_code')">
+                  <Input :value="verifyCode" :placeholder="t('login.email_code')" maxlength="6" autofocus @update:value="v => verifyCode = v" />
+                </FormItem>
+                <Button type="primary" block :loading="loading" attr-type="submit">
                   {{ t('login.verify') }}
-                </BButton>
+                </Button>
               </template>
-              <BButton v-else type="primary" block :loading="loading" attr-type="submit">
+              <Button v-else type="primary" block :loading="loading" attr-type="submit">
                 {{ t('login.send_code') }}
-              </BButton>
-            </BForm>
-          </BTabPane>
+              </Button>
+            </Form>
+          </TabPane>
 
           <!-- OTP -->
-          <BTabPane name="otp" :tab="t('login.otp_tab')">
-            <BForm class="tab-form" @submit.prevent="handleOTPLogin">
-              <BFormItem :label="t('login.username')">
-                <BInput :value="username" :placeholder="t('login.username_placeholder')" @update:value="v => username = v" @blur="fetchAvatar" />
-              </BFormItem>
-              <BFormItem :label="t('login.otp_code')">
-                <BInput :value="otpCode" :placeholder="t('login.otp_code')" maxlength="6" @update:value="v => otpCode = v" />
-              </BFormItem>
-              <BButton type="primary" block :loading="loading" attr-type="submit">
+          <TabPane name="otp" :tab="t('login.otp_tab')">
+            <Form class="tab-form" @submit.prevent="handleOTPLogin">
+              <FormItem :label="t('login.username')">
+                <Input :value="username" :placeholder="t('login.username_placeholder')" @update:value="v => username = v" @blur="fetchAvatar" />
+              </FormItem>
+              <FormItem :label="t('login.otp_code')">
+                <Input :value="otpCode" :placeholder="t('login.otp_code')" maxlength="6" @update:value="v => otpCode = v" />
+              </FormItem>
+              <Button type="primary" block :loading="loading" attr-type="submit">
                 {{ t('login.submit') }}
-              </BButton>
-            </BForm>
-          </BTabPane>
-        </BTabs>
+              </Button>
+            </Form>
+          </TabPane>
+        </Tabs>
       </template>
 
       <!-- Step 2: 2FA after password -->
@@ -232,27 +226,27 @@ function resetTo(newTab) {
           <p class="verify-hint">{{ t('login.2fa_hint') }}</p>
 
           <div v-if="availableMethods.length > 1" style="display:flex;justify-content:center;gap:8px;margin-bottom:16px">
-            <BButton
+            <Button
               v-for="m in availableMethods" :key="m"
               :type="selectedMethod === m ? 'primary' : 'default'"
               size="small"
               @click="selectedMethod = m; verifyCode = ''"
             >
               {{ m === 'email' ? t('login.2fa_use_email') : t('login.2fa_use_otp') }}
-            </BButton>
+            </Button>
           </div>
 
-          <BForm @submit.prevent="handle2FA">
-            <BFormItem :label="selectedMethod === 'email' ? t('login.email_code') : t('login.otp_code')">
-              <BInput :value="verifyCode" maxlength="6" autofocus @update:value="v => verifyCode = v" />
-            </BFormItem>
-            <BButton type="primary" block :loading="loading" attr-type="submit">
+          <Form @submit.prevent="handle2FA">
+            <FormItem :label="selectedMethod === 'email' ? t('login.email_code') : t('login.otp_code')">
+              <Input :value="verifyCode" maxlength="6" autofocus @update:value="v => verifyCode = v" />
+            </FormItem>
+            <Button type="primary" block :loading="loading" attr-type="submit">
               {{ t('login.verify') }}
-            </BButton>
-          </BForm>
+            </Button>
+          </Form>
         </div>
       </template>
-    </BCard>
+    </Card>
   </div>
 </template>
 

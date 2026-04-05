@@ -1,10 +1,9 @@
-<script setup>
+<script setup lang="ts">
 import { ref, computed, watch, nextTick, onUnmounted } from 'vue'
 import Papa from 'papaparse'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useCodeMirror } from '../../composables/useCodeMirror'
-import IconPrev from '~icons/mdi/chevron-left'
-import IconNext from '~icons/mdi/chevron-right'
+import { IconChevronLeft as IconPrev, IconChevronRight as IconNext } from '../../barrels/icons'
 import { useI18n } from '../../composables/useI18n'
 
 const props = defineProps({
@@ -15,13 +14,13 @@ const props = defineProps({
 const fs = useFileSystemStore()
 const { t } = useI18n()
 const cm = useCodeMirror()
-const cmContainer = ref(null)
-const csvTableWrap = ref(null)
+const cmContainer = ref<HTMLDivElement | null>(null)
+const csvTableWrap = ref<HTMLDivElement | null>(null)
 const editBuffer = ref('')
 const mode = ref('table')
-const sortKey = ref(null)
+const sortKey = ref<string | null>(null)
 const sortAsc = ref(true)
-const csvHeader = ref(null)
+const csvHeader = ref<string[] | null>(null)
 const canEdit = computed(() => !props.state.chunked || props.state.isFullyLoaded)
 
 // Cache header row from first page
@@ -31,7 +30,7 @@ watch(() => props.state.content, (content) => {
     const firstLine = content.split('\n')[0]
     if (firstLine) {
       const result = Papa.parse(firstLine, { header: false })
-      csvHeader.value = result.data[0] || []
+      csvHeader.value = (result.data[0] as string[]) || []
     }
   }
 }, { immediate: true })
@@ -44,7 +43,7 @@ const parsed = computed(() => {
     text = csvHeader.value.join(',') + '\n' + text
   }
   const result = Papa.parse(text, { header: true, skipEmptyLines: true })
-  return { headers: result.meta.fields || [], rows: result.data }
+  return { headers: result.meta.fields || [], rows: result.data as Record<string, string>[] }
 })
 
 const sortedRows = computed(() => {
@@ -60,16 +59,16 @@ const sortedRows = computed(() => {
   })
 })
 
-function toggleSort(key) {
+function toggleSort(key: string) {
   if (sortKey.value === key) { sortAsc.value = !sortAsc.value }
   else { sortKey.value = key; sortAsc.value = true }
 }
 
-function createEditor(readOnly) {
+function createEditor(readOnly: boolean) {
   if (!cmContainer.value || !props.state) return
   const callbacks = readOnly ? {} : {
     onSave: () => { if (props.state.dirty) fs.saveViewer(props.windowId) },
-    onChange: (content) => { props.state.content = content; props.state.dirty = true },
+    onChange: (content: string) => { props.state.content = content; props.state.dirty = true },
   }
   cm.create(cmContainer.value, props.state.content || '', null, readOnly, callbacks)
 }

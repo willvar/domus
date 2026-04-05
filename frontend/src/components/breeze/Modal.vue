@@ -1,6 +1,6 @@
-<script setup>
-import { watch, nextTick } from 'vue'
-import BButton from './BButton.vue'
+<script setup lang="ts">
+import { watch } from 'vue'
+import Button from './Button.vue'
 
 const props = defineProps({
   show: { type: Boolean, default: false },
@@ -55,8 +55,8 @@ watch(() => props.show, (v) => {
           <div v-if="$slots.action || positiveText || negativeText" class="breeze-modal-dialog__footer">
             <slot name="action">
               <div style="display:flex;justify-content:flex-end;gap:8px">
-                <BButton v-if="negativeText" @click="onNegative">{{ negativeText }}</BButton>
-                <BButton v-if="positiveText" :type="positiveType" @click="onPositive">{{ positiveText }}</BButton>
+                <Button v-if="negativeText" @click="onNegative">{{ negativeText }}</Button>
+                <Button v-if="positiveText" :type="positiveType" @click="onPositive">{{ positiveText }}</Button>
               </div>
             </slot>
           </div>

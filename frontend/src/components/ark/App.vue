@@ -1,4 +1,4 @@
-<script setup>
+<script setup lang="ts">
 import { ref, watch, computed } from 'vue'
 import JSZip from 'jszip'
 
@@ -7,27 +7,36 @@ const props = defineProps({
   windowId: { type: String, required: true },
 })
 
-const entries = ref([])
+interface ArchiveEntry {
+  path: string
+  name: string
+  isDir: boolean
+  size: number
+  date: Date | null
+  depth: number
+}
+
+const entries = ref<ArchiveEntry[]>([])
 const error = ref('')
 
-function formatSize(bytes) {
+function formatSize(bytes: number) {
   if (bytes === 0) return '-'
   const units = ['B', 'KB', 'MB', 'GB']
   const i = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
   return (bytes / Math.pow(1024, i)).toFixed(i > 0 ? 1 : 0) + ' ' + units[i]
 }
 
-function formatDate(d) {
+function formatDate(d: Date | null) {
   if (!d) return '-'
   return d.toLocaleDateString() + ' ' + d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 }
 
-watch(() => props.state.blob, async (blob) => {
+watch(() => props.state.blob, async (blob: Blob | undefined) => {
   if (!blob) return
   try {
     const zip = await JSZip.loadAsync(blob)
-    const list = []
-    zip.forEach((path, file) => {
+    const list: ArchiveEntry[] = []
+    zip.forEach((path: string, file: any) => {
       const depth = path.split('/').filter(Boolean).length - 1
       list.push({
         path,
