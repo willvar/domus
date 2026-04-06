@@ -512,6 +512,7 @@ func (h *Handler) wsFileCopy(conn *ws.Conn, _ string, data json.RawMessage) (any
 
 	var srcSize int64
 	var srcContentHash string
+	var srcWrappedDEK string
 	if !p.IsDir {
 		srcRecord, err := model.GetFile(conn.Session.UserID, srcResolved)
 		if err != nil {
@@ -522,6 +523,7 @@ func (h *Handler) wsFileCopy(conn *ws.Conn, _ string, data json.RawMessage) (any
 		}
 		srcSize = srcRecord.Size
 		srcContentHash = srcRecord.ContentHash
+		srcWrappedDEK = srcRecord.WrappedDEK
 	}
 
 	srcName := filepath.Base(strings.TrimSuffix(p.SrcPath, "/"))
@@ -547,11 +549,15 @@ func (h *Handler) wsFileCopy(conn *ws.Conn, _ string, data json.RawMessage) (any
 			return
 		}
 		if p.IsDir {
-			h.syncDirFiles(userID, dstResolved)
+			h.cloneDirFiles(userID, srcResolved, dstResolved)
 		} else {
 			dstName := filepath.Base(dstResolved)
 			ct := mime.TypeByExtension(filepath.Ext(dstResolved))
-			_ = model.UpsertFile(userID, dstResolved, dstName, false, srcSize, ct, srcContentHash)
+			var copyOpts []model.UpsertFileOpts
+			if srcWrappedDEK != "" {
+				copyOpts = append(copyOpts, model.UpsertFileOpts{WrappedDEK: srcWrappedDEK})
+			}
+			_ = model.UpsertFile(userID, dstResolved, dstName, false, srcSize, ct, srcContentHash, copyOpts...)
 		}
 		h.finishTaskOp(userID, taskID, "copy", srcName, "completed")
 		h.notifyParentDir(conn.Session.Username, dstResolved)
@@ -710,10 +716,10 @@ func (h *Handler) wsFileDelete(conn *ws.Conn, _ string, data json.RawMessage) (a
 		}
 		_ = model.CreateTrashRecord(userID, p.Path, trashKey, totalSize, isDir)
 		if isDir {
-			_ = model.DeleteFilesByPrefix(userID, resolvedPath)
+			_ = model.MoveFilesByPrefix(userID, resolvedPath, trashKey)
 			_ = model.DeleteSharesByPrefix(userID, resolvedPath)
 		} else {
-			_ = model.DeleteFile(userID, resolvedPath)
+			_ = model.MoveFile(userID, resolvedPath, trashKey, filepath.Base(trashKey))
 			_ = model.DeleteSharesByPath(userID, resolvedPath)
 		}
 		h.finishTaskOp(userID, taskID, "delete", deleteName, "completed")
@@ -1071,14 +1077,12 @@ func (h *Handler) wsTrashRestore(conn *ws.Conn, _ string, data json.RawMessage) 
 		if err := h.Store.RecursiveMove(item.TrashKey, originalResolved, nil); err != nil {
 			return nil, &wsError{Code: "restore_failed"}
 		}
-		h.syncDirFiles(conn.Session.UserID, originalResolved)
+		_ = model.MoveFilesByPrefix(conn.Session.UserID, item.TrashKey, originalResolved)
 	} else {
 		if err := h.Store.MoveObject(item.TrashKey, originalResolved); err != nil {
 			return nil, &wsError{Code: "restore_failed"}
 		}
-		fileName := filepath.Base(originalResolved)
-		ct := mime.TypeByExtension(filepath.Ext(originalResolved))
-		_ = model.UpsertFile(conn.Session.UserID, originalResolved, fileName, false, item.Size, ct, "")
+		_ = model.MoveFile(conn.Session.UserID, item.TrashKey, originalResolved, filepath.Base(originalResolved))
 	}
 
 	_ = model.DeleteTrashRecord(item.ID)
@@ -1104,10 +1108,12 @@ func (h *Handler) wsTrashDelete(conn *ws.Conn, _ string, data json.RawMessage) (
 		if err := h.Store.RecursiveDelete(item.TrashKey, nil); err != nil {
 			return nil, &wsError{Code: "delete_from_storage_failed"}
 		}
+		_ = model.DeleteFilesByPrefix(conn.Session.UserID, item.TrashKey)
 	} else {
 		if err := h.Store.DeleteObject(item.TrashKey); err != nil {
 			return nil, &wsError{Code: "delete_from_storage_failed"}
 		}
+		_ = model.DeleteFile(conn.Session.UserID, item.TrashKey)
 	}
 
 	if err := model.DeleteTrashRecord(item.ID); err != nil {
@@ -1133,8 +1139,14 @@ func (h *Handler) wsTrashClear(conn *ws.Conn, _ string, _ json.RawMessage) (any,
 			var clearErr error
 			if item.IsDir {
 				clearErr = h.Store.RecursiveDelete(item.TrashKey, nil)
+				if clearErr == nil {
+					_ = model.DeleteFilesByPrefix(userID, item.TrashKey)
+				}
 			} else {
 				clearErr = h.Store.DeleteObject(item.TrashKey)
+				if clearErr == nil {
+					_ = model.DeleteFile(userID, item.TrashKey)
+				}
 			}
 			if clearErr != nil {
 				h.finishTaskOp(userID, taskID, "clear_trash", "", "failed")

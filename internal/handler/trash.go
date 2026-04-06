@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"mime"
 	"path/filepath"
 
 	"github.com/gofiber/fiber/v2"
@@ -49,15 +48,12 @@ func (h *Handler) handleRestoreTrash(c *fiber.Ctx) error {
 		if err := h.Store.RecursiveMove(item.TrashKey, originalResolved, nil); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "restore_failed"})
 		}
-		// Rebuild file records from OSS
-		h.syncDirFiles(session.UserID, originalResolved)
+		_ = model.MoveFilesByPrefix(session.UserID, item.TrashKey, originalResolved)
 	} else {
 		if err := h.Store.MoveObject(item.TrashKey, originalResolved); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "restore_failed"})
 		}
-		fileName := filepath.Base(originalResolved)
-		ct := mime.TypeByExtension(filepath.Ext(originalResolved))
-		_ = model.UpsertFile(session.UserID, originalResolved, fileName, false, item.Size, ct, "")
+		_ = model.MoveFile(session.UserID, item.TrashKey, originalResolved, filepath.Base(originalResolved))
 	}
 
 	_ = model.DeleteTrashRecord(item.ID)
@@ -88,10 +84,12 @@ func (h *Handler) handleDeleteTrashItem(c *fiber.Ctx) error {
 		if err := h.Store.RecursiveDelete(item.TrashKey, nil); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "delete_from_storage_failed"})
 		}
+		_ = model.DeleteFilesByPrefix(session.UserID, item.TrashKey)
 	} else {
 		if err := h.Store.DeleteObject(item.TrashKey); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "delete_from_storage_failed"})
 		}
+		_ = model.DeleteFile(session.UserID, item.TrashKey)
 	}
 
 	if err := model.DeleteTrashRecord(item.ID); err != nil {
@@ -113,10 +111,12 @@ func (h *Handler) handleClearTrash(c *fiber.Ctx) error {
 			if err := h.Store.RecursiveDelete(item.TrashKey, nil); err != nil {
 				return err
 			}
+			_ = model.DeleteFilesByPrefix(session.UserID, item.TrashKey)
 		} else {
 			if err := h.Store.DeleteObject(item.TrashKey); err != nil {
 				return err
 			}
+			_ = model.DeleteFile(session.UserID, item.TrashKey)
 		}
 		return model.DeleteTrashRecord(item.ID)
 	}

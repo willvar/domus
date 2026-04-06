@@ -262,7 +262,7 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			} else {
 				if body.IsDir {
-					h.syncDirFiles(session.UserID, dstResolved)
+					h.cloneDirFiles(session.UserID, srcResolved, dstResolved)
 				} else {
 					dstName := filepath.Base(dstResolved)
 					ct := mime.TypeByExtension(filepath.Ext(dstResolved))
@@ -285,7 +285,7 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 		if err := h.Store.RecursiveCopy(srcResolved, dstResolved, nil); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "copy_failed"})
 		}
-		h.syncDirFiles(session.UserID, dstResolved)
+		h.cloneDirFiles(session.UserID, srcResolved, dstResolved)
 	} else {
 		if err := h.Store.CopyObject(srcResolved, dstResolved); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "copy_failed"})
@@ -490,7 +490,7 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 				} else {
 					_ = model.CreateTrashRecord(session.UserID, path, trashKey, totalSize, true)
-					_ = model.DeleteFilesByPrefix(session.UserID, resolvedPath)
+					_ = model.MoveFilesByPrefix(session.UserID, resolvedPath, trashKey)
 					_ = model.DeleteSharesByPrefix(session.UserID, resolvedPath)
 					data, _ := json.Marshal(fiber.Map{"done": true})
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
@@ -520,7 +520,7 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 				} else {
 					_ = model.CreateTrashRecord(session.UserID, path, trashKey, totalSize, false)
-					_ = model.DeleteFile(session.UserID, resolvedPath)
+					_ = model.MoveFile(session.UserID, resolvedPath, trashKey, filepath.Base(trashKey))
 					_ = model.DeleteSharesByPath(session.UserID, resolvedPath)
 					data, _ = json.Marshal(fiber.Map{"done": 1, "total": 1, "current": resolvedPath})
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
@@ -540,12 +540,12 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 	// Record in trash table
 	_ = model.CreateTrashRecord(session.UserID, path, trashKey, totalSize, isDir)
 
-	// Remove file records
+	// Move file records to trash paths (preserves WrappedDEK and metadata)
 	if isDir {
-		_ = model.DeleteFilesByPrefix(session.UserID, resolvedPath)
+		_ = model.MoveFilesByPrefix(session.UserID, resolvedPath, trashKey)
 		_ = model.DeleteSharesByPrefix(session.UserID, resolvedPath)
 	} else {
-		_ = model.DeleteFile(session.UserID, resolvedPath)
+		_ = model.MoveFile(session.UserID, resolvedPath, trashKey, filepath.Base(trashKey))
 		_ = model.DeleteSharesByPath(session.UserID, resolvedPath)
 	}
 
