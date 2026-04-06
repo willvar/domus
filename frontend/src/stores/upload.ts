@@ -34,7 +34,7 @@ function saveInterruptedState(uploads: Upload[]): void {
     taskId: u.taskId || null,
     progress: u.progress,
     targetPath: u.targetPath,
-    etags: u.etags,
+    parts: u.completedParts,
   }))
   localStorage.setItem(INTERRUPTED_KEY, JSON.stringify(data))
 }
@@ -78,8 +78,7 @@ export const useUploadStore = defineStore('upload', () => {
         uploadId: item.uploadId,
         taskId: item.taskId || null,
         targetPath: item.targetPath,
-        parts: [],
-        etags: item.etags || [],
+        completedParts: item.parts || [],
         startTime: 0,
         startProgress: 0,
         bytesUploaded: 0,
@@ -165,8 +164,7 @@ export const useUploadStore = defineStore('upload', () => {
       uploadId: null,
       taskId: null,
       targetPath,
-      parts: [],
-      etags: [],
+      completedParts: [],
       startTime: Date.now(),
       startProgress: 0,
       bytesUploaded: 0,
@@ -227,26 +225,26 @@ export const useUploadStore = defineStore('upload', () => {
     }
   }
 
-  async function runUploadLoop(upload: Upload, file: File, uploadId: string | null, chunkSize: number, totalParts: number, existingEtags: UploadPart[] = []): Promise<string> {
+  async function runUploadLoop(upload: Upload, file: File, uploadId: string | null, chunkSize: number, totalParts: number, existing: UploadPart[] = []): Promise<string> {
     const storageKey = `upload_${file.name}_${file.size}_${uploadId}`
 
     const partQueue: number[] = []
     for (let i = 1; i <= totalParts; i++) {
-      if (existingEtags.find(p => p.partNumber === i)) continue
+      if (existing.find(p => p.partNumber === i)) continue
       partQueue.push(i)
     }
 
-    upload.etags = [...existingEtags]
+    upload.completedParts = [...existing]
 
     // Accurate bytesUploaded: account for last chunk being smaller
     let bytesUploaded: number = 0
-    for (const etag of existingEtags) {
-      const start = (etag.partNumber - 1) * chunkSize
+    for (const part of existing) {
+      const start = (part.partNumber - 1) * chunkSize
       const end = Math.min(start + chunkSize, file.size)
       bytesUploaded += (end - start)
     }
     upload.bytesUploaded = bytesUploaded
-    upload.progress = totalParts > 0 ? Math.floor((upload.etags.length / totalParts) * 100) : 0
+    upload.progress = totalParts > 0 ? Math.floor((upload.completedParts.length / totalParts) * 100) : 0
     // Anchor for ETA: only measure rate from progress gained in this session
     upload.startProgress = upload.progress
     upload.startTime = Date.now()
@@ -278,25 +276,24 @@ export const useUploadStore = defineStore('upload', () => {
       const elapsed: number = (Date.now() - partStart) / 1000
       const chunkLen: number = end - start
 
-      const partResult: UploadPart = { partNumber: res.data.part_number, etag: res.data.etag }
-      upload.etags.push(partResult)
+      upload.completedParts.push({ partNumber: res.data.part_number })
 
       // Skip UI updates if user paused while this chunk was in-flight
       if (upload.status !== 'paused') {
         upload.speed = Math.floor(chunkLen / elapsed)
         upload.bytesUploaded += chunkLen
-        upload.progress = Math.floor((upload.etags.length / totalParts) * 100)
+        upload.progress = Math.floor((upload.completedParts.length / totalParts) * 100)
 
         // Report progress to server via WS
         if (upload.taskId) {
           ws.request('upload.progress', {
             task_id: upload.taskId,
-            progress: upload.etags.length / totalParts,
+            progress: upload.completedParts.length / totalParts,
           }).catch(() => {})
         }
       }
 
-      localStorage.setItem(storageKey, JSON.stringify(upload.etags))
+      localStorage.setItem(storageKey, JSON.stringify(upload.completedParts))
       saveInterruptedState(uploads.value)
     }
 
@@ -304,11 +301,9 @@ export const useUploadStore = defineStore('upload', () => {
   }
 
   async function completeUpload(upload: Upload, storageKey: string): Promise<void> {
-    upload.etags.sort((a, b) => a.partNumber - b.partNumber)
     await api.post('/file/upload', {
       upload_id: upload.uploadId,
       task_id: upload.taskId || '',
-      parts: upload.etags.map(p => ({ part_number: p.partNumber, etag: p.etag })),
     })
 
     // Chunks delivered — server will continue processing via the same job
@@ -394,7 +389,7 @@ export const useUploadStore = defineStore('upload', () => {
       }
 
       const totalParts: number = Math.ceil(resumeFile.size / chunk_size)
-      const existingEtags: UploadPart[] = (parts || []).map(p => ({ partNumber: p.part_number, etag: p.etag }))
+      const existing: UploadPart[] = (parts || []).map(p => ({ partNumber: p.part_number }))
 
       u.status = 'uploading'
       u.startTime = Date.now()
@@ -402,7 +397,7 @@ export const useUploadStore = defineStore('upload', () => {
       u._resume = null
       u.error = undefined
 
-      const storageKey = await runUploadLoop(u, resumeFile, u.uploadId, chunk_size, totalParts, existingEtags)
+      const storageKey = await runUploadLoop(u, resumeFile, u.uploadId, chunk_size, totalParts, existing)
 
       if ((u.status as string) === 'cancelled') return
 

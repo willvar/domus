@@ -343,10 +343,9 @@ export interface RemoteFlag {
 /** Upload status values. */
 export type UploadStatus = 'uploading' | 'paused' | 'processing' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
 
-/** A completed upload part with its ETag. */
+/** A completed upload part. */
 export interface UploadPart {
   partNumber: number
-  etag: string
 }
 
 /** Upload entry tracked in the upload store. */
@@ -360,8 +359,7 @@ export interface Upload {
   uploadId: string | null
   taskId: string | null
   targetPath: string
-  parts: UploadPart[]
-  etags: UploadPart[]
+  completedParts: UploadPart[]
   startTime: number
   startProgress: number
   bytesUploaded: number
@@ -378,7 +376,7 @@ export interface InterruptedUpload {
   taskId: string | null
   progress: number
   targetPath: string
-  etags: UploadPart[]
+  parts: UploadPart[]
 }
 
 /** Response from POST /file/upload (init phase). */
@@ -393,14 +391,14 @@ export interface UploadInitResponse {
 /** Response from PUT /file/upload/part. */
 export interface UploadPartResponse {
   part_number: number
-  etag: string
+  size: number
 }
 
 /** Response from GET /file/upload (resume status query). */
 export interface UploadStatusResponse {
   chunk_size: number
   status: string
-  parts: Array<{ part_number: number; etag: string }>
+  parts: Array<{ part_number: number }>
 }
 
 /** Conflict info returned during upload pre-check. */
