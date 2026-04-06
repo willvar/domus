@@ -133,6 +133,13 @@ func DeleteFilesByPrefix(userID string, prefix string) error {
 	return db.Where("user_id = ? AND path LIKE ?", userID, prefix+"%").Delete(&FileRecord{}).Error
 }
 
+// ListFilesByPrefix returns all file records under a prefix (recursive).
+func ListFilesByPrefix(userID, prefix string) ([]FileRecord, error) {
+	var records []FileRecord
+	err := db.Where("user_id = ? AND path LIKE ?", userID, prefix+"%").Find(&records).Error
+	return records, err
+}
+
 // UpdateFileSearchVector updates the full-text search index for a file.
 // text is the combined content to index (file name, optionally + file content).
 // No-op when pg_jieba is not available (ILIKE fallback doesn't need a search vector).

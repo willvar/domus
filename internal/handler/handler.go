@@ -3,7 +3,6 @@ package handler
 import (
 	"encoding/hex"
 	"fmt"
-	"mime"
 	"path/filepath"
 	"strings"
 
@@ -177,19 +176,23 @@ func (h *Handler) generateWrappedKEK() (string, error) {
 	return hex.EncodeToString(wrapped), nil
 }
 
-// syncDirFiles scans OSS objects under a prefix and upserts them all into the files table.
-func (h *Handler) syncDirFiles(userID string, prefix string) {
-	objects, err := h.Store.ListAllObjects(prefix)
+// cloneDirFiles copies file records from srcPrefix to dstPrefix,
+// preserving WrappedDEK, plaintext size, and other metadata.
+func (h *Handler) cloneDirFiles(userID, srcPrefix, dstPrefix string) {
+	records, err := model.ListFilesByPrefix(userID, srcPrefix)
 	if err != nil {
 		return
 	}
-	for _, obj := range objects {
-		name := filepath.Base(strings.TrimSuffix(obj.Key, "/"))
-		isDir := strings.HasSuffix(obj.Key, "/")
-		ct := ""
-		if !isDir {
-			ct = mime.TypeByExtension(filepath.Ext(obj.Key))
+	for _, r := range records {
+		newPath := dstPrefix + strings.TrimPrefix(r.Path, srcPrefix)
+		newName := filepath.Base(strings.TrimSuffix(newPath, "/"))
+		var opts []model.UpsertFileOpts
+		if r.WrappedDEK != "" {
+			opts = append(opts, model.UpsertFileOpts{WrappedDEK: r.WrappedDEK})
 		}
-		_ = model.UpsertFile(userID, obj.Key, name, isDir, obj.Size, ct, "")
+		_ = model.UpsertFile(userID, newPath, newName, r.IsDir, r.Size, r.ContentType, r.ContentHash, opts...)
+		if r.ThumbnailKey != "" {
+			_ = model.UpdateFileThumbnail(userID, newPath, r.ThumbnailKey, r.ThumbnailWrappedDEK, r.MediaWidth, r.MediaHeight, r.MediaDuration)
+		}
 	}
 }
