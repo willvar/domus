@@ -101,10 +101,10 @@ function triggerUpload() {
 function handleFileSelect(e: Event) {
   const input = e.target as HTMLInputElement
   const files = input.files
-  input.value = ''
   if (files && files.length > 0) {
     upload.uploadFiles(files, fs.currentPath)
   }
+  input.value = ''
 }
 
 function clearSearch() {

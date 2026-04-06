@@ -93,6 +93,7 @@ function handleSelect(key: string) {
 .places-list {
   display: flex;
   flex-direction: column;
+  gap: 5px;
   padding: 0 6px;
 }
 
@@ -100,8 +101,7 @@ function handleSelect(key: string) {
   display: flex;
   align-items: center;
   gap: 8px;
-  height: 30px;
-  padding: 0 8px;
+  padding: 8px;
   border: none;
   border-radius: 3px;
   background: none;
