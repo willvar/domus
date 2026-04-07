@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
@@ -514,7 +515,23 @@ func (h *Handler) RunOSSUploadJob(ctx context.Context, job *model.Job) error {
 
 	// Transferring to OSS
 	_ = model.UpdateJobProgress(job.JobID, 0.5, "transferring")
-	if err := h.Store.UploadFromFileCtx(ctx, params.OSSKey, encFile); err != nil {
+	var lastReport time.Time
+	var lastPct float64
+	onProgress := func(done, total int64) {
+		if total <= 0 {
+			return
+		}
+		pct := float64(done) / float64(total)
+		now := time.Now()
+		if pct < 1 && now.Sub(lastReport) < 500*time.Millisecond && pct-lastPct < 0.01 {
+			return
+		}
+		lastReport = now
+		lastPct = pct
+		// Map byte ratio 0~1 to job progress 0.5~1.0
+		_ = model.UpdateJobProgress(job.JobID, 0.5+pct*0.5, "transferring")
+	}
+	if err := h.Store.UploadFromFileCtxProgress(ctx, params.OSSKey, encFile, onProgress); err != nil {
 		if ctx.Err() != nil {
 			_ = h.Store.DeleteObject(params.OSSKey)
 			_ = os.RemoveAll(params.TempDir)
