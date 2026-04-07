@@ -120,27 +120,28 @@ func setupTestApp(t *testing.T) (*fiber.App, func(username, password string) str
 
 // MockFileStore implements store.FileStore for testing
 type MockFileStore struct {
-	ListObjectsFn           func(prefix, marker string, limit int) (*store.ListResult, error)
-	GetObjectInfoFn         func(key string) (*store.FileInfo, error)
-	CreateDirectoryFn       func(key string) error
-	DeleteObjectFn          func(key string) error
-	DeleteObjectsFn         func(keys []string) error
-	CopyObjectFn            func(srcKey, dstKey string) error
-	MoveObjectFn            func(srcKey, dstKey string) error
-	ListAllObjectsFn        func(prefix string) ([]store.ObjectInfo, error)
-	RecursiveCopyFn         func(srcPrefix, dstPrefix string, progress func(done, total int, current string)) error
-	RecursiveMoveFn         func(srcPrefix, dstPrefix string, progress func(done, total int, current string)) error
-	RecursiveDeleteFn       func(prefix string, progress func(done, total int, current string)) error
-	GetTotalSizeFn          func(prefix string) (int64, int, error)
-	GeneratePresignedURLFn  func(key string, expires time.Duration) (string, error)
-	GetObjectContentFn      func(key string) (io.ReadCloser, error)
-	PutObjectContentFn      func(key, content string) error
-	RenameObjectFn          func(oldKey, newKey string, isDir bool) error
-	DownloadToFileFn        func(key, localPath string) error
-	UploadFromFileFn        func(key, localPath string) error
-	UploadFromFileCtxFn     func(ctx context.Context, key, localPath string) error
-	PutObjectBytesFn        func(key string, data []byte) error
-	GetObjectContentRangeFn func(key string, start, end int64) (io.ReadCloser, error)
+	ListObjectsFn               func(prefix, marker string, limit int) (*store.ListResult, error)
+	GetObjectInfoFn             func(key string) (*store.FileInfo, error)
+	CreateDirectoryFn           func(key string) error
+	DeleteObjectFn              func(key string) error
+	DeleteObjectsFn             func(keys []string) error
+	CopyObjectFn                func(srcKey, dstKey string) error
+	MoveObjectFn                func(srcKey, dstKey string) error
+	ListAllObjectsFn            func(prefix string) ([]store.ObjectInfo, error)
+	RecursiveCopyFn             func(srcPrefix, dstPrefix string, progress func(done, total int, current string)) error
+	RecursiveMoveFn             func(srcPrefix, dstPrefix string, progress func(done, total int, current string)) error
+	RecursiveDeleteFn           func(prefix string, progress func(done, total int, current string)) error
+	GetTotalSizeFn              func(prefix string) (int64, int, error)
+	GeneratePresignedURLFn      func(key string, expires time.Duration) (string, error)
+	GetObjectContentFn          func(key string) (io.ReadCloser, error)
+	PutObjectContentFn          func(key, content string) error
+	RenameObjectFn              func(oldKey, newKey string, isDir bool) error
+	DownloadToFileFn            func(key, localPath string) error
+	UploadFromFileFn            func(key, localPath string) error
+	UploadFromFileCtxFn         func(ctx context.Context, key, localPath string) error
+	UploadFromFileCtxProgressFn func(ctx context.Context, key, localPath string, fn store.ProgressFn) error
+	PutObjectBytesFn            func(key string, data []byte) error
+	GetObjectContentRangeFn     func(key string, start, end int64) (io.ReadCloser, error)
 }
 
 func (m *MockFileStore) ListObjects(prefix, marker string, limit int) (*store.ListResult, error) {
@@ -256,6 +257,12 @@ func (m *MockFileStore) UploadFromFileCtx(ctx context.Context, key, localPath st
 		return m.UploadFromFileCtxFn(ctx, key, localPath)
 	}
 	return m.UploadFromFile(key, localPath)
+}
+func (m *MockFileStore) UploadFromFileCtxProgress(ctx context.Context, key, localPath string, fn store.ProgressFn) error {
+	if m.UploadFromFileCtxProgressFn != nil {
+		return m.UploadFromFileCtxProgressFn(ctx, key, localPath, fn)
+	}
+	return m.UploadFromFileCtx(ctx, key, localPath)
 }
 func (m *MockFileStore) PutObjectBytes(key string, data []byte) error {
 	if m.PutObjectBytesFn != nil {

@@ -51,6 +51,27 @@ type FileStore interface {
 	DownloadToFile(key, localPath string) error
 	UploadFromFile(key, localPath string) error
 	UploadFromFileCtx(ctx context.Context, key, localPath string) error
+	UploadFromFileCtxProgress(ctx context.Context, key, localPath string, fn ProgressFn) error
+}
+
+// ProgressFn reports upload progress: done bytes out of total bytes.
+type ProgressFn func(done, total int64)
+
+// progressReader wraps an io.Reader to report read progress.
+type progressReader struct {
+	r     io.Reader
+	done  int64
+	total int64
+	fn    ProgressFn
+}
+
+func (pr *progressReader) Read(p []byte) (int, error) {
+	n, err := pr.r.Read(p)
+	pr.done += int64(n)
+	if pr.fn != nil {
+		pr.fn(pr.done, pr.total)
+	}
+	return n, err
 }
 
 // FileInfo holds metadata for a file or directory
@@ -137,7 +158,7 @@ func (c *OSSClient) ensureTempLifecycle() {
 	}
 
 	_, err = c.client.PutBucketLifecycle(c.ctx(), &oss.PutBucketLifecycleRequest{
-		Bucket: oss.Ptr(c.bucketName),
+		Bucket:                 oss.Ptr(c.bucketName),
 		LifecycleConfiguration: &oss.LifecycleConfiguration{Rules: rules},
 	})
 	if err != nil {
@@ -519,15 +540,29 @@ func (c *OSSClient) UploadFromFile(key, localPath string) error {
 }
 
 func (c *OSSClient) UploadFromFileCtx(ctx context.Context, key, localPath string) error {
+	return c.UploadFromFileCtxProgress(ctx, key, localPath, nil)
+}
+
+func (c *OSSClient) UploadFromFileCtxProgress(ctx context.Context, key, localPath string, fn ProgressFn) error {
 	f, err := os.Open(localPath)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = f.Close() }()
+
+	var body io.Reader = f
+	if fn != nil {
+		info, err := f.Stat()
+		if err != nil {
+			return err
+		}
+		body = &progressReader{r: f, total: info.Size(), fn: fn}
+	}
+
 	_, err = c.client.PutObject(ctx, &oss.PutObjectRequest{
 		Bucket: oss.Ptr(c.bucketName),
 		Key:    oss.Ptr(key),
-		Body:   f,
+		Body:   body,
 	})
 	return err
 }
