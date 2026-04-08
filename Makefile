@@ -1,4 +1,4 @@
-.PHONY: help build build-win build-prod dev clean tidy lint
+.PHONY: help build build-win build-prod dev clean tidy lint test
 
 BUILD_DIR := dist
 VERSION := $(shell cat VERSION 2>/dev/null || echo "dev")
@@ -11,7 +11,8 @@ help:
 	@echo "  make build-prod   Build with UPX compression"
 	@echo "  make dev          Run in dev mode"
 	@echo "  make tidy         Run go mod tidy"
-	@echo "  make lint         Run golangci-lint + eslint"
+	@echo "  make test         Run all tests"
+	@echo "  make lint         Run golangci-lint + vue-tsc"
 	@echo "  make clean        Remove build artifacts"
 
 build:
@@ -31,12 +32,15 @@ build-prod: build
 dev:
 	go run . start
 
+test:
+	go test ./... -count=1 -timeout 120s
+
 tidy:
 	go mod tidy
 
 lint:
 	golangci-lint run
-	cd frontend && npx eslint .
+	cd frontend && npm run check
 
 clean:
 	rm -rf $(BUILD_DIR)
