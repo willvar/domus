@@ -1,10 +1,15 @@
 oss:
-  endpoint: "oss-cn-hangzhou.aliyuncs.com"  # OSS endpoint or custom domain
+  # S3-compatible endpoint. Examples:
+  #   Aliyun OSS:  s3.oss-cn-hangzhou.aliyuncs.com
+  #   AWS S3:      s3.us-east-1.amazonaws.com
+  #   MinIO:       minio.example.com
+  #   CNAME:       cdn.example.com  (set cname: true)
+  endpoint: "s3.oss-cn-hangzhou.aliyuncs.com"
   access_key_id: ""
   access_key_secret: ""
   bucket: ""
   region: "cn-hangzhou"
-  cname: false  # set to true if endpoint is a custom domain
+  cdn_domain: ""  # optional: CDN domain; requires private bucket origin-pull in CDN console
 
 server:
   port: 8080

@@ -31,7 +31,7 @@ type OSSConfig struct {
 	AccessKeySecret string `yaml:"access_key_secret"`
 	Bucket          string `yaml:"bucket"`
 	Region          string `yaml:"region"`
-	CNAME           bool   `yaml:"cname"` // true when endpoint is a custom domain
+	CDNDomain       string `yaml:"cdn_domain"` // optional: CDN domain with private bucket origin-pull enabled
 }
 
 type ServerConfig struct {
