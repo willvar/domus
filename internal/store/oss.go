@@ -5,15 +5,16 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"net/url"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"zephyr/config"
 
-	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss"
-	"github.com/aliyun/alibabacloud-oss-go-sdk-v2/oss/credentials"
+	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 // Custom types to decouple from SDK
@@ -57,19 +58,33 @@ type FileStore interface {
 // ProgressFn reports upload progress: done bytes out of total bytes.
 type ProgressFn func(done, total int64)
 
-// progressReader wraps an io.Reader to report read progress.
-type progressReader struct {
-	r     io.Reader
-	done  int64
+// progressReaderAt wraps an *os.File to report read progress while preserving
+// io.ReaderAt so the MinIO SDK can use parallel multipart uploads.
+type progressReaderAt struct {
+	f     *os.File
 	total int64
+	done  atomic.Int64
 	fn    ProgressFn
 }
 
-func (pr *progressReader) Read(p []byte) (int, error) {
-	n, err := pr.r.Read(p)
-	pr.done += int64(n)
-	if pr.fn != nil {
-		pr.fn(pr.done, pr.total)
+func (pr *progressReaderAt) Read(p []byte) (int, error) {
+	n, err := pr.f.Read(p)
+	if n > 0 {
+		d := pr.done.Add(int64(n))
+		if pr.fn != nil {
+			pr.fn(d, pr.total)
+		}
+	}
+	return n, err
+}
+
+func (pr *progressReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	n, err := pr.f.ReadAt(p, off)
+	if n > 0 {
+		d := pr.done.Add(int64(n))
+		if pr.fn != nil {
+			pr.fn(d, pr.total)
+		}
 	}
 	return n, err
 }
@@ -101,69 +116,33 @@ type ListResult struct {
 	IsTruncated bool       `json:"is_truncated"`
 }
 
-// OSSClient implements FileStore using Aliyun OSS SDK V2
+// OSSClient implements FileStore using MinIO S3-compatible SDK
 type OSSClient struct {
-	client     *oss.Client
+	client     *minio.Client
+	core       minio.Core
 	bucketName string
+	cdnDomain  string
 }
 
 func NewOSSClient(cfg config.OSSConfig) (FileStore, error) {
-	provider := credentials.NewStaticCredentialsProvider(cfg.AccessKeyID, cfg.AccessKeySecret)
-	ossCfg := oss.LoadDefaultConfig().
-		WithCredentialsProvider(provider).
-		WithRegion(cfg.Region).
-		WithEndpoint(cfg.Endpoint)
-
-	if cfg.CNAME {
-		ossCfg = ossCfg.WithUseCName(true)
+	opts := &minio.Options{
+		Creds:  credentials.NewStaticV4(cfg.AccessKeyID, cfg.AccessKeySecret, ""),
+		Secure: true,
+		Region: cfg.Region,
 	}
 
-	client := oss.NewClient(ossCfg)
-	c := &OSSClient{client: client, bucketName: cfg.Bucket}
-	c.ensureTempLifecycle()
-	return c, nil
-}
-
-func (c *OSSClient) ctx() context.Context {
-	return context.Background()
-}
-
-// ensureTempLifecycle configures an OSS lifecycle rule to auto-delete objects
-// under _tmp/preview/ after 1 day, preventing plaintext residue if the
-// application crashes before its in-process cleanup goroutine fires.
-func (c *OSSClient) ensureTempLifecycle() {
-	const ruleID = "zephyr-tmp-preview-cleanup"
-	result, err := c.client.GetBucketLifecycle(c.ctx(), &oss.GetBucketLifecycleRequest{
-		Bucket: oss.Ptr(c.bucketName),
-	})
-	if err == nil && result.LifecycleConfiguration != nil {
-		for _, r := range result.LifecycleConfiguration.Rules {
-			if oss.ToString(r.ID) == ruleID {
-				return // already configured
-			}
-		}
-	}
-
-	rules := []oss.LifecycleRule{{
-		ID:     oss.Ptr(ruleID),
-		Prefix: oss.Ptr("_tmp/preview/"),
-		Status: oss.Ptr("Enabled"),
-		Expiration: &oss.LifecycleRuleExpiration{
-			Days: oss.Ptr(int32(1)),
-		},
-	}}
-	// Preserve existing rules
-	if err == nil && result.LifecycleConfiguration != nil {
-		rules = append(result.LifecycleConfiguration.Rules, rules...)
-	}
-
-	_, err = c.client.PutBucketLifecycle(c.ctx(), &oss.PutBucketLifecycleRequest{
-		Bucket:                 oss.Ptr(c.bucketName),
-		LifecycleConfiguration: &oss.LifecycleConfiguration{Rules: rules},
-	})
+	client, err := minio.New(cfg.Endpoint, opts)
 	if err != nil {
-		log.Printf("[WARN] failed to set _tmp/preview/ lifecycle rule: %v", err)
+		return nil, err
 	}
+
+	c := &OSSClient{
+		client:     client,
+		core:       minio.Core{Client: client},
+		bucketName: cfg.Bucket,
+		cdnDomain:  cfg.CDNDomain,
+	}
+	return c, nil
 }
 
 // ListObjects lists objects under a prefix (simulating directory listing)
@@ -177,17 +156,7 @@ func (c *OSSClient) ListObjects(prefix, marker string, limit int) (*ListResult, 
 		prefix += "/"
 	}
 
-	req := &oss.ListObjectsV2Request{
-		Bucket:    oss.Ptr(c.bucketName),
-		Prefix:    oss.Ptr(prefix),
-		Delimiter: oss.Ptr("/"),
-		MaxKeys:   int32(limit),
-	}
-	if marker != "" {
-		req.ContinuationToken = oss.Ptr(marker)
-	}
-
-	result, err := c.client.ListObjectsV2(c.ctx(), req)
+	result, err := c.core.ListObjectsV2(c.bucketName, prefix, "", marker, "/", limit)
 	if err != nil {
 		return nil, err
 	}
@@ -196,7 +165,7 @@ func (c *OSSClient) ListObjects(prefix, marker string, limit int) (*ListResult, 
 
 	// Directories (common prefixes)
 	for _, dir := range result.CommonPrefixes {
-		dirPrefix := oss.ToString(dir.Prefix)
+		dirPrefix := dir.Prefix
 		name := strings.TrimPrefix(dirPrefix, prefix)
 		name = strings.TrimSuffix(name, "/")
 		if name == "" || name == ".trash" {
@@ -211,22 +180,19 @@ func (c *OSSClient) ListObjects(prefix, marker string, limit int) (*ListResult, 
 
 	// Files
 	for _, obj := range result.Contents {
-		objKey := oss.ToString(obj.Key)
-		name := strings.TrimPrefix(objKey, prefix)
+		name := strings.TrimPrefix(obj.Key, prefix)
 		if name == "" || strings.HasSuffix(name, "/") {
 			continue
 		}
 		fi := FileInfo{
-			Name:  name,
-			Path:  objKey,
-			IsDir: false,
-			Size:  obj.Size,
+			Name:         name,
+			Path:         obj.Key,
+			IsDir:        false,
+			Size:         obj.Size,
+			LastModified: obj.LastModified,
 		}
-		if obj.LastModified != nil {
-			fi.LastModified = *obj.LastModified
-		}
-		if obj.Type != nil {
-			fi.ContentType = *obj.Type
+		if obj.ContentType != "" {
+			fi.ContentType = obj.ContentType
 		}
 		files = append(files, fi)
 	}
@@ -235,24 +201,16 @@ func (c *OSSClient) ListObjects(prefix, marker string, limit int) (*ListResult, 
 		files = []FileInfo{}
 	}
 
-	nextMarker := ""
-	if result.NextContinuationToken != nil {
-		nextMarker = *result.NextContinuationToken
-	}
-
 	return &ListResult{
 		Files:       files,
-		NextMarker:  nextMarker,
+		NextMarker:  result.NextContinuationToken,
 		IsTruncated: result.IsTruncated,
 	}, nil
 }
 
 // GetObjectInfo gets metadata for a single object
 func (c *OSSClient) GetObjectInfo(key string) (*FileInfo, error) {
-	result, err := c.client.HeadObject(c.ctx(), &oss.HeadObjectRequest{
-		Bucket: oss.Ptr(c.bucketName),
-		Key:    oss.Ptr(key),
-	})
+	info, err := c.client.StatObject(context.Background(), c.bucketName, key, minio.StatObjectOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -263,16 +221,12 @@ func (c *OSSClient) GetObjectInfo(key string) (*FileInfo, error) {
 	}
 
 	fi := &FileInfo{
-		Name:  name,
-		Path:  key,
-		IsDir: strings.HasSuffix(key, "/"),
-		Size:  result.ContentLength,
-	}
-	if result.LastModified != nil {
-		fi.LastModified = *result.LastModified
-	}
-	if result.ContentType != nil {
-		fi.ContentType = *result.ContentType
+		Name:         name,
+		Path:         key,
+		IsDir:        strings.HasSuffix(key, "/"),
+		Size:         info.Size,
+		LastModified: info.LastModified,
+		ContentType:  info.ContentType,
 	}
 
 	return fi, nil
@@ -283,21 +237,13 @@ func (c *OSSClient) CreateDirectory(key string) error {
 	if !strings.HasSuffix(key, "/") {
 		key += "/"
 	}
-	_, err := c.client.PutObject(c.ctx(), &oss.PutObjectRequest{
-		Bucket: oss.Ptr(c.bucketName),
-		Key:    oss.Ptr(key),
-		Body:   strings.NewReader(""),
-	})
+	_, err := c.client.PutObject(context.Background(), c.bucketName, key, strings.NewReader(""), 0, minio.PutObjectOptions{})
 	return err
 }
 
 // DeleteObject deletes a single object
 func (c *OSSClient) DeleteObject(key string) error {
-	_, err := c.client.DeleteObject(c.ctx(), &oss.DeleteObjectRequest{
-		Bucket: oss.Ptr(c.bucketName),
-		Key:    oss.Ptr(key),
-	})
-	return err
+	return c.client.RemoveObject(context.Background(), c.bucketName, key, minio.RemoveObjectOptions{})
 }
 
 // DeleteObjects deletes multiple objects
@@ -305,25 +251,25 @@ func (c *OSSClient) DeleteObjects(keys []string) error {
 	if len(keys) == 0 {
 		return nil
 	}
-	objects := make([]oss.DeleteObject, len(keys))
-	for i, k := range keys {
-		objects[i] = oss.DeleteObject{Key: oss.Ptr(k)}
+	objectsCh := make(chan minio.ObjectInfo, len(keys))
+	for _, k := range keys {
+		objectsCh <- minio.ObjectInfo{Key: k}
 	}
-	_, err := c.client.DeleteMultipleObjects(c.ctx(), &oss.DeleteMultipleObjectsRequest{
-		Bucket:  oss.Ptr(c.bucketName),
-		Objects: objects,
-		Quiet:   true,
-	})
-	return err
+	close(objectsCh)
+
+	for err := range c.client.RemoveObjects(context.Background(), c.bucketName, objectsCh, minio.RemoveObjectsOptions{}) {
+		if err.Err != nil {
+			return err.Err
+		}
+	}
+	return nil
 }
 
 // CopyObject copies a single object
 func (c *OSSClient) CopyObject(srcKey, dstKey string) error {
-	_, err := c.client.CopyObject(c.ctx(), &oss.CopyObjectRequest{
-		Bucket:    oss.Ptr(c.bucketName),
-		Key:       oss.Ptr(dstKey),
-		SourceKey: oss.Ptr(srcKey),
-	})
+	src := minio.CopySrcOptions{Bucket: c.bucketName, Object: srcKey}
+	dst := minio.CopyDestOptions{Bucket: c.bucketName, Object: dstKey}
+	_, err := c.client.CopyObject(context.Background(), dst, src)
 	return err
 }
 
@@ -338,36 +284,18 @@ func (c *OSSClient) MoveObject(srcKey, dstKey string) error {
 // ListAllObjects lists all objects under a prefix recursively (no delimiter)
 func (c *OSSClient) ListAllObjects(prefix string) ([]ObjectInfo, error) {
 	var allObjects []ObjectInfo
-	var token *string
-
-	for {
-		req := &oss.ListObjectsV2Request{
-			Bucket:  oss.Ptr(c.bucketName),
-			Prefix:  oss.Ptr(prefix),
-			MaxKeys: 1000,
+	for obj := range c.client.ListObjects(context.Background(), c.bucketName, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+	}) {
+		if obj.Err != nil {
+			return nil, obj.Err
 		}
-		if token != nil {
-			req.ContinuationToken = token
-		}
-
-		result, err := c.client.ListObjectsV2(c.ctx(), req)
-		if err != nil {
-			return nil, err
-		}
-
-		for _, obj := range result.Contents {
-			allObjects = append(allObjects, ObjectInfo{
-				Key:  oss.ToString(obj.Key),
-				Size: obj.Size,
-			})
-		}
-
-		if !result.IsTruncated {
-			break
-		}
-		token = result.NextContinuationToken
+		allObjects = append(allObjects, ObjectInfo{
+			Key:  obj.Key,
+			Size: obj.Size,
+		})
 	}
-
 	return allObjects, nil
 }
 
@@ -454,60 +382,53 @@ func (c *OSSClient) GetTotalSize(prefix string) (int64, int, error) {
 	return total, len(objects), nil
 }
 
-// GeneratePresignedURL generates a presigned download URL
+// GeneratePresignedURL generates a presigned download URL.
+// When CDN is configured, returns a plain CDN URL (requires private bucket
+// origin-pull enabled in the CDN console). Otherwise falls back to S3 presigned URL.
 func (c *OSSClient) GeneratePresignedURL(key string, expires time.Duration) (string, error) {
-	result, err := c.client.Presign(c.ctx(), &oss.GetObjectRequest{
-		Bucket: oss.Ptr(c.bucketName),
-		Key:    oss.Ptr(key),
-	}, oss.PresignExpires(expires))
+	if c.cdnDomain != "" {
+		return "https://" + c.cdnDomain + "/" + key, nil
+	}
+	u, err := c.client.PresignedGetObject(context.Background(), c.bucketName, key, expires, url.Values{})
 	if err != nil {
 		return "", err
 	}
-	return result.URL, nil
+	return u.String(), nil
 }
 
 // GetObjectContent reads an object's content and returns it as a ReadCloser
 func (c *OSSClient) GetObjectContent(key string) (io.ReadCloser, error) {
-	result, err := c.client.GetObject(c.ctx(), &oss.GetObjectRequest{
-		Bucket: oss.Ptr(c.bucketName),
-		Key:    oss.Ptr(key),
-	})
+	obj, err := c.client.GetObject(context.Background(), c.bucketName, key, minio.GetObjectOptions{})
 	if err != nil {
 		return nil, err
 	}
-	return result.Body, nil
+	return obj, nil
 }
 
 // GetObjectContentRange reads a byte range of an object's content
 func (c *OSSClient) GetObjectContentRange(key string, start, end int64) (io.ReadCloser, error) {
-	result, err := c.client.GetObject(c.ctx(), &oss.GetObjectRequest{
-		Bucket: oss.Ptr(c.bucketName),
-		Key:    oss.Ptr(key),
-		Range:  oss.Ptr(fmt.Sprintf("bytes=%d-%d", start, end)),
-	})
+	opts := minio.GetObjectOptions{}
+	if err := opts.SetRange(start, end); err != nil {
+		return nil, err
+	}
+	obj, err := c.client.GetObject(context.Background(), c.bucketName, key, opts)
 	if err != nil {
 		return nil, err
 	}
-	return result.Body, nil
+	return obj, nil
 }
 
 // PutObjectContent writes string content to an object
 func (c *OSSClient) PutObjectContent(key, content string) error {
-	_, err := c.client.PutObject(c.ctx(), &oss.PutObjectRequest{
-		Bucket: oss.Ptr(c.bucketName),
-		Key:    oss.Ptr(key),
-		Body:   strings.NewReader(content),
-	})
+	r := strings.NewReader(content)
+	_, err := c.client.PutObject(context.Background(), c.bucketName, key, r, int64(len(content)), minio.PutObjectOptions{})
 	return err
 }
 
 // PutObjectBytes writes binary data to an object
 func (c *OSSClient) PutObjectBytes(key string, data []byte) error {
-	_, err := c.client.PutObject(c.ctx(), &oss.PutObjectRequest{
-		Bucket: oss.Ptr(c.bucketName),
-		Key:    oss.Ptr(key),
-		Body:   bytes.NewReader(data),
-	})
+	r := bytes.NewReader(data)
+	_, err := c.client.PutObject(context.Background(), c.bucketName, key, r, int64(len(data)), minio.PutObjectOptions{})
 	return err
 }
 
@@ -525,18 +446,14 @@ func (c *OSSClient) RenameObject(oldKey, newKey string, isDir bool) error {
 	return c.MoveObject(oldKey, newKey)
 }
 
-// DownloadToFile downloads an object from OSS to a local file.
+// DownloadToFile downloads an object to a local file.
 func (c *OSSClient) DownloadToFile(key, localPath string) error {
-	_, err := c.client.GetObjectToFile(c.ctx(), &oss.GetObjectRequest{
-		Bucket: oss.Ptr(c.bucketName),
-		Key:    oss.Ptr(key),
-	}, localPath)
-	return err
+	return c.client.FGetObject(context.Background(), c.bucketName, key, localPath, minio.GetObjectOptions{})
 }
 
-// UploadFromFile uploads a local file to OSS.
+// UploadFromFile uploads a local file.
 func (c *OSSClient) UploadFromFile(key, localPath string) error {
-	return c.UploadFromFileCtx(c.ctx(), key, localPath)
+	return c.UploadFromFileCtx(context.Background(), key, localPath)
 }
 
 func (c *OSSClient) UploadFromFileCtx(ctx context.Context, key, localPath string) error {
@@ -550,19 +467,21 @@ func (c *OSSClient) UploadFromFileCtxProgress(ctx context.Context, key, localPat
 	}
 	defer func() { _ = f.Close() }()
 
-	var body io.Reader = f
-	if fn != nil {
-		info, err := f.Stat()
-		if err != nil {
-			return err
-		}
-		body = &progressReader{r: f, total: info.Size(), fn: fn}
+	info, err := f.Stat()
+	if err != nil {
+		return err
 	}
 
-	_, err = c.client.PutObject(ctx, &oss.PutObjectRequest{
-		Bucket: oss.Ptr(c.bucketName),
-		Key:    oss.Ptr(key),
-		Body:   body,
-	})
+	opts := minio.PutObjectOptions{
+		PartSize:   uint64(config.UploadChunkSize),
+		NumThreads: 4,
+	}
+
+	var body io.Reader = f
+	if fn != nil {
+		body = &progressReaderAt{f: f, total: info.Size(), fn: fn}
+	}
+
+	_, err = c.client.PutObject(ctx, c.bucketName, key, body, info.Size(), opts)
 	return err
 }
