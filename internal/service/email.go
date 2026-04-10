@@ -11,33 +11,46 @@ import (
 	"zephyr/config"
 )
 
-// SmtpConfigured returns true if SMTP settings are present in the config.
-func SmtpConfigured(cfg config.SMTPConfig) bool {
-	return cfg.Host != "" && cfg.From != ""
+// EmailSender abstracts email delivery so implementations can be swapped
+// (SMTP, SendGrid, Mailgun, etc.) and mocked in tests.
+type EmailSender interface {
+	SendVerification(to, code string) error
+	Configured() bool
+}
+
+// smtpEmailSender implements EmailSender over SMTP/STARTTLS.
+type smtpEmailSender struct {
+	cfg config.SMTPConfig
+}
+
+// NewSMTPEmailSender creates an EmailSender backed by SMTP.
+func NewSMTPEmailSender(cfg config.SMTPConfig) EmailSender {
+	return &smtpEmailSender{cfg: cfg}
+}
+
+func (s *smtpEmailSender) Configured() bool {
+	return s.cfg.Host != "" && s.cfg.From != ""
+}
+
+func (s *smtpEmailSender) SendVerification(to, code string) error {
+	subject := "Zephyr Verification Code"
+	body := fmt.Sprintf("Your verification code is: %s\nValid for 5 minutes.", code)
+	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
+		s.cfg.From, to, subject, body)
+
+	addr := fmt.Sprintf("%s:%d", s.cfg.Host, s.cfg.Port)
+	auth := smtp.PlainAuth("", s.cfg.Username, s.cfg.Password, s.cfg.Host)
+
+	if s.cfg.Port == 465 {
+		return sendMailTLS(addr, auth, s.cfg.From, to, []byte(msg))
+	}
+	return smtp.SendMail(addr, auth, s.cfg.From, []string{to}, []byte(msg))
 }
 
 // GenerateEmailCode generates a 6-digit verification code using crypto/rand.
 func GenerateEmailCode() string {
 	n, _ := rand.Int(rand.Reader, big.NewInt(1000000))
 	return fmt.Sprintf("%06d", n.Int64())
-}
-
-// SendVerificationEmail sends a verification code to the given email address.
-// Supports port 465 (implicit TLS) and port 587 (STARTTLS).
-func SendVerificationEmail(cfg config.SMTPConfig, to, code string) error {
-	subject := "Zephyr Verification Code"
-	body := fmt.Sprintf("Your verification code is: %s\nValid for 5 minutes.", code)
-	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
-		cfg.From, to, subject, body)
-
-	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)
-	auth := smtp.PlainAuth("", cfg.Username, cfg.Password, cfg.Host)
-
-	if cfg.Port == 465 {
-		return sendMailTLS(addr, auth, cfg.From, to, []byte(msg))
-	}
-	// Port 587 or others: use STARTTLS via smtp.SendMail
-	return smtp.SendMail(addr, auth, cfg.From, []string{to}, []byte(msg))
 }
 
 // sendMailTLS sends an email over implicit TLS (port 465).
@@ -75,4 +88,24 @@ func sendMailTLS(addr string, auth smtp.Auth, from, to string, msg []byte) error
 		return fmt.Errorf("smtp close data: %w", err)
 	}
 	return client.Quit()
+}
+
+// MockEmailSender is a test double for EmailSender.
+type MockEmailSender struct {
+	SendVerificationFn func(to, code string) error
+	ConfiguredFn       func() bool
+}
+
+func (m *MockEmailSender) SendVerification(to, code string) error {
+	if m.SendVerificationFn != nil {
+		return m.SendVerificationFn(to, code)
+	}
+	return nil
+}
+
+func (m *MockEmailSender) Configured() bool {
+	if m.ConfiguredFn != nil {
+		return m.ConfiguredFn()
+	}
+	return false
 }
