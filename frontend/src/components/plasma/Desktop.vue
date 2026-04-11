@@ -48,10 +48,11 @@ watch(() => prefs.wallpaperPath, async (path) => {
   }
   if (path === currentLoadedPath) return
   try {
-    const res = await api.get(`/user/store/${path}`, { responseType: 'blob' })
-    if (res.data?.size > 0) {
+    const { readEncryptedFile } = await import('../../composables/useCryptoUpload')
+    const buf = await readEncryptedFile(`/.user/${path}`, true)
+    if (buf.byteLength > 0) {
       if (customWallpaperUrl.value) URL.revokeObjectURL(customWallpaperUrl.value)
-      customWallpaperUrl.value = URL.createObjectURL(res.data)
+      customWallpaperUrl.value = URL.createObjectURL(new Blob([buf]))
       currentLoadedPath = path
     }
   } catch {

@@ -491,8 +491,7 @@ func (s *Session) ReadFileDecrypted(ossKey string) ([]byte, error) {
 // Returns the hex-encoded wrapped DEK (for storing in the file record) and any error.
 func (s *Session) WriteFileEncrypted(ossKey string, plaintext []byte) (string, error) {
 	if len(s.EncKey) == 0 {
-		// No encryption key — write raw
-		return "", s.store.PutObjectBytes(ossKey, plaintext)
+		return "", fmt.Errorf("encryption key not available")
 	}
 
 	// Generate a new per-file DEK

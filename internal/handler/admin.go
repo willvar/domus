@@ -226,3 +226,22 @@ func (h *Handler) handleAuditPreview(c *fiber.Ctx) error {
 	h.Audit.LogFromCtx(c, "file_preview", body.Path, body.Type, "success", body.DurationMs)
 	return c.SendStatus(204)
 }
+
+// handleCORSCheck returns presigned PUT and DELETE URLs for a temporary probe object.
+// The frontend uses these to verify that the OSS bucket's CORS is correctly configured
+// for browser-direct uploads.
+func (h *Handler) handleCORSCheck(c *fiber.Ctx) error {
+	probeKey := ".cors-probe"
+	putURL, err := h.Store.PresignedPutObject(probeKey, 5*time.Minute)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "presign_put_failed"})
+	}
+	deleteURL, err := h.Store.PresignedDeleteObject(probeKey, 5*time.Minute)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "presign_delete_failed"})
+	}
+	return c.JSON(fiber.Map{
+		"put_url":    putURL,
+		"delete_url": deleteURL,
+	})
+}

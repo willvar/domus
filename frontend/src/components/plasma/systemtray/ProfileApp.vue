@@ -96,10 +96,27 @@ async function handleAvatarFile(e: Event) {
     return
   }
   try {
-    const form = new FormData()
-    form.append('file', file)
-    const res = await api.post('/user/avatar', form)
-    avatarUrl.value = res.data.avatar_url
+    // Resize to 512px via canvas, convert to webp
+    const img = new Image()
+    const url = URL.createObjectURL(file)
+    img.src = url
+    await img.decode()
+    const scale = Math.min(1, 512 / Math.max(img.naturalWidth, img.naturalHeight))
+    const w = Math.round(img.naturalWidth * scale)
+    const h = Math.round(img.naturalHeight * scale)
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
+    URL.revokeObjectURL(url)
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(b => b ? resolve(b) : reject(new Error('toBlob failed')), 'image/webp', 0.8)
+    })
+    // Upload via encrypted pipeline
+    const { writeEncryptedFile } = await import('../../../composables/useCryptoUpload')
+    await writeEncryptedFile('/.user/avatar.webp', await blob.arrayBuffer(), 'image/webp')
+    // Refresh avatar display (backend cache already invalidated on upload complete)
+    avatarUrl.value = `/user/avatar/${encodeURIComponent(auth.username)}?t=${Date.now()}`
     message.success(t('profile.avatar_updated'))
   } catch (err: any) {
     message.error(te(err, 'profile.avatar_failed'))
@@ -254,7 +271,7 @@ async function disableOTP() {
   <PlasmaWindow
     v-if="windowOpen"
     :window-id="WINDOW_ID"
-    title="我"
+    :title="t('app.profile')"
     :icon="PROFILE_ICON"
     @close="handleClose"
   >

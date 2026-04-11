@@ -1,4 +1,4 @@
-import { defineConfig, loadEnv } from 'vite'
+import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 import Icons from 'unplugin-icons/vite'
 import path from 'node:path'
@@ -6,10 +6,7 @@ import { fileURLToPath } from 'node:url'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd())
-  const ossTarget = env.VITE_OSS_PROXY_TARGET
-
+export default defineConfig(() => {
   return {
     plugins: [vue(), Icons({ compiler: 'vue3' })],
     build: {
@@ -29,13 +26,6 @@ export default defineConfig(({ mode }) => {
     },
     server: {
       port: 5173,
-      proxy: ossTarget ? {
-        '/oss-proxy': {
-          target: ossTarget,
-          changeOrigin: true,
-          rewrite: (p: string) => p.replace(/^\/oss-proxy/, ''),
-        },
-      } : undefined,
     },
   }
 })

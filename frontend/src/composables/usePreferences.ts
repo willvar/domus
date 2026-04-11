@@ -1,7 +1,9 @@
 import { reactive } from 'vue'
-import api from './useApi'
 import { useWebSocket } from './useWebSocket'
+import { readEncryptedFile, writeEncryptedFile } from './useCryptoUpload'
 import type { UserPreferences } from '../types'
+
+const PREFS_PATH = '/.user/preferences.json'
 
 const defaults: UserPreferences = {
   largeFileLimitMB: 10,
@@ -23,9 +25,10 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null
 
 async function load(): Promise<void> {
   try {
-    const res = await api.get<UserPreferences>('/user/store/preferences.json')
-    if (res.data && typeof res.data === 'object') {
-      Object.assign(prefs, defaults, res.data)
+    const buf = await readEncryptedFile(PREFS_PATH, true)
+    const json = JSON.parse(new TextDecoder().decode(buf))
+    if (json && typeof json === 'object') {
+      Object.assign(prefs, defaults, json)
     }
   } catch {
     Object.assign(prefs, defaults)
@@ -37,10 +40,9 @@ function save(): void {
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(async () => {
     try {
-      await api.put('/user/store/preferences.json', JSON.stringify({ ...prefs }), {
-        headers: { 'Content-Type': 'application/json' },
-      })
-      // Push preference changes to other devices via workspace event
+      const json = JSON.stringify({ ...prefs })
+      const buf = new TextEncoder().encode(json).buffer as ArrayBuffer
+      await writeEncryptedFile(PREFS_PATH, buf, 'application/json')
       const ws = useWebSocket()
       ws.request('workspace.event', { action: 'prefs.changed', data: { ...prefs } }).catch(() => {})
     } catch { /* silent */ }

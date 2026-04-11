@@ -233,6 +233,8 @@ const messages: Messages = {
     'admin.confirm_reset_otp': '\u786e\u5b9a\u91cd\u7f6e {name} \u7684 OTP \u5417\uff1f',
     'admin.confirm_reset_email': '\u786e\u5b9a\u6e05\u9664 {name} \u7684\u90ae\u7bb1\u7ed1\u5b9a\u5417\uff1f',
     'admin.back_to_files': '\u8fd4\u56de',
+    'admin.cors_warning_title': 'OSS CORS \u672a\u914d\u7f6e',
+    'admin.cors_warning_body': 'OSS Bucket \u672a\u914d\u7f6e CORS \u89c4\u5219\uff0c\u6587\u4ef6\u76f4\u4f20\u5c06\u65e0\u6cd5\u5de5\u4f5c\u3002\u8bf7\u5728 OSS \u63a7\u5236\u53f0\u914d\u7f6e\uff1a\u5141\u8bb8\u6765\u6e90\u4e3a\u7ad9\u70b9\u57df\u540d\uff0c\u5141\u8bb8\u65b9\u6cd5 PUT/HEAD/DELETE\uff0c\u5141\u8bb8\u5934 Content-Type\uff0c\u66b4\u9732\u5934 ETag\u3002',
 
     // Profile
     'profile.tab_profile': '\u4e2a\u4eba\u8d44\u6599',
@@ -636,6 +638,8 @@ const messages: Messages = {
     'admin.confirm_reset_otp': 'Reset OTP for {name}?',
     'admin.confirm_reset_email': 'Clear email binding for {name}?',
     'admin.back_to_files': 'Back to Files',
+    'admin.cors_warning_title': 'OSS CORS Not Configured',
+    'admin.cors_warning_body': 'The OSS bucket does not have CORS rules configured. Browser direct uploads will not work. Please configure in the OSS console: allow origin (your site domain), methods PUT/HEAD/DELETE, header Content-Type, expose header ETag.',
 
     'profile.tab_profile': 'Profile',
     'profile.account_name': 'Account',
