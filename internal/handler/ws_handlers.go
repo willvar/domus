@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"mime"
-	"os"
 	"path"
 	"path/filepath"
 	"sort"
@@ -646,20 +645,17 @@ func (h *Handler) wsFileDelete(conn *ws.Conn, _ string, data json.RawMessage) (a
 
 	isDir := strings.HasSuffix(p.Path, "/")
 
-	// Non-ready files: cancel job, delete record, clean temp
+	// Non-ready files: abort multipart upload, delete OSS object, delete record
 	if !isDir {
 		fileRecord, err := h.Repos.Files.Get(conn.Session.UserID, resolvedPath)
 		if err != nil {
 			return nil, &wsError{Code: "not_found"}
 		}
 		if fileRecord.Status != "ready" {
-			if fileRecord.UploadID != "" {
-				if job, err := h.Repos.Jobs.FindActiveByParam("oss_upload", fileRecord.UploadID); err == nil {
-					h.Dispatcher.Cancel(job.JobID)
-				}
-				tempDir := filepath.Join(config.TempDir, "upload", fileRecord.UploadID)
-				_ = os.RemoveAll(tempDir)
+			if fileRecord.OSSUploadID != "" {
+				_ = h.Store.AbortMultipartUpload(resolvedPath, fileRecord.OSSUploadID)
 			}
+			_ = h.Store.DeleteObject(resolvedPath)
 			_ = h.Repos.Files.Delete(conn.Session.UserID, resolvedPath)
 			_ = h.Repos.Shares.DeleteByPath(conn.Session.UserID, resolvedPath)
 			h.Audit.Log(conn.Session.UserID, conn.Session.Username, "", "file_delete", p.Path, "", "success", 0)
@@ -1209,13 +1205,20 @@ func (h *Handler) wsTaskCancel(conn *ws.Conn, _ string, data json.RawMessage) (a
 		if j.Status == "pending" || j.Status == "running" {
 			h.Dispatcher.Cancel(j.JobID)
 		}
-		// For upload tasks: clean up placeholder file and temp dir
-		if task.Type == "upload" {
-			var params OSSUploadParams
-			if json.Unmarshal([]byte(j.Params), &params) == nil && params.UploadID != "" {
-				_ = h.Repos.Files.Delete(params.UserID, params.OSSKey)
-				_ = os.RemoveAll(params.TempDir)
-				h.notifyParentDir(conn.Session.Username, params.OSSKey)
+	}
+
+	// For upload tasks: abort multipart upload and clean up file record
+	if task.Type == "upload" {
+		files, _ := h.Repos.Files.ListByPrefix(conn.Session.UserID, "")
+		for _, f := range files {
+			if f.TaskID == p.TaskID && f.Status == "uploading" {
+				if f.OSSUploadID != "" {
+					_ = h.Store.AbortMultipartUpload(f.Path, f.OSSUploadID)
+				}
+				_ = h.Store.DeleteObject(f.Path)
+				_ = h.Repos.Files.Delete(conn.Session.UserID, f.Path)
+				h.notifyParentDir(conn.Session.Username, f.Path)
+				break
 			}
 		}
 	}

@@ -1,15 +1,20 @@
 oss:
-  # S3-compatible endpoint. Examples:
+  # All three endpoints can be the same value for single-machine / dev setups.
+  # Server endpoint: used by the server for transcode download/upload, HeadObject, Delete.
+  # Falls back to client_upload_endpoint if not set.
+  server_endpoint: ""
+  # Client upload endpoint (required): public S3-compatible endpoint for browser direct upload via presigned URL.
   #   Aliyun OSS:  s3.oss-cn-hangzhou.aliyuncs.com
   #   AWS S3:      s3.us-east-1.amazonaws.com
   #   MinIO:       minio.example.com
-  #   CNAME:       cdn.example.com  (set cname: true)
-  endpoint: "s3.oss-cn-hangzhou.aliyuncs.com"
+  client_upload_endpoint: "s3.oss-cn-hangzhou.aliyuncs.com"
+  # Client download endpoint: browser preview/download. CDN domain (with private bucket origin-pull) or public endpoint.
+  client_download_endpoint: ""
   access_key_id: ""
   access_key_secret: ""
   bucket: ""
   region: "cn-hangzhou"
-  cdn_domain: ""  # optional: CDN domain; requires private bucket origin-pull in CDN console
+  max_presign_batch: 100  # max presigned URLs returned per presign request
 
 server:
   port: 8080

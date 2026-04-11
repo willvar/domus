@@ -26,6 +26,7 @@ type FileRecord struct {
 	Status         string `gorm:"not null;default:'ready';index" json:"status"`
 	UploadID       string `gorm:"default:'';index" json:"-"`
 	TaskID         string `gorm:"default:'';index" json:"-"`
+	OSSUploadID    string `gorm:"default:''" json:"-"` // S3 multipart upload ID for client-direct-upload
 	ChunkSize      int    `gorm:"not null;default:0" json:"-"`
 	CompletedParts string `gorm:"default:''" json:"-"`
 	// Full-text search

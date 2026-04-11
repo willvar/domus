@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -42,21 +41,4 @@ func (h *Handler) indexFile(userID, ossKey, fileName, localFile string, indexCon
 // indexFileName updates the search vector with only the file name.
 func (h *Handler) indexFileName(userID, ossKey, fileName string) {
 	_ = h.Repos.Files.UpdateSearchVector(userID, ossKey, fileName)
-}
-
-// getUserIndexContentPref reads the user's preferences from OSS to check if content indexing is enabled.
-func (h *Handler) getUserIndexContentPref(username string) bool {
-	key := username + "/.user/preferences.json"
-	reader, err := h.Store.GetObjectContent(key)
-	if err != nil {
-		return false
-	}
-	defer func() { _ = reader.Close() }()
-	var prefs struct {
-		IndexContent bool `json:"indexContent"`
-	}
-	if err := json.NewDecoder(reader).Decode(&prefs); err != nil {
-		return false
-	}
-	return prefs.IndexContent
 }
