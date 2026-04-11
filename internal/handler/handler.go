@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	lru "github.com/hashicorp/golang-lru/v2"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
 
@@ -18,6 +20,14 @@ import (
 	"zephyr/internal/vsh"
 	"zephyr/internal/ws"
 )
+
+// avatarCacheMaxBytes is the total memory budget for the decrypted avatar LRU cache.
+const avatarCacheMaxBytes = 50 * 1024 * 1024 // 50 MB
+
+// avatarEntry holds a decrypted avatar image in the LRU cache.
+type avatarEntry struct {
+	data []byte
+}
 
 // Handler holds all dependencies for HTTP handlers.
 type Handler struct {
@@ -32,12 +42,19 @@ type Handler struct {
 	Mid        *middleware.Middleware
 	Hub        *ws.Hub
 	Vsh        *vsh.ShellManager
+
+	avatarCache *lru.Cache[string, *avatarEntry]
 }
 
 // RegisterRoutes registers all API routes on the Fiber app.
 func (h *Handler) RegisterRoutes(app *fiber.App) {
 	if h.Hub == nil {
 		h.Hub = ws.NewHub()
+	}
+
+	// Initialize avatar LRU cache (max 500 entries; byte-budget enforced on evict)
+	if h.avatarCache == nil {
+		h.avatarCache, _ = lru.New[string, *avatarEntry](500)
 	}
 
 	// /auth (public)
@@ -52,9 +69,6 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	// /user
 	user := authed.Group("/user")
 	user.Get("/", h.handleMe)
-	user.Post("/avatar", h.handleUploadAvatar)
-	user.Get("/store/*", h.handleUserStoreGet)
-	user.Put("/store/*", h.handleUserStorePut)
 	user.Get("/security", h.handleSecurityStatus)
 	user.Put("/security/password", h.handleChangePassword)
 	user.Post("/security/email/bind", h.handleBindEmail)
