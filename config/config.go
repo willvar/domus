@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -37,11 +38,12 @@ type OSSConfig struct {
 }
 
 type ServerConfig struct {
-	Port             int    `yaml:"port"`
-	PidFile          string `yaml:"pid_file"`
-	SessionSecret    string `yaml:"session_secret"`
-	EncryptionSecret string `yaml:"encryption_secret"`
-	CORSOrigins      string `yaml:"cors_origins"`
+	Port                      int    `yaml:"port"`
+	PidFile                   string `yaml:"pid_file"`
+	SessionSecret             string `yaml:"session_secret"`
+	EncryptionSecret          string `yaml:"encryption_secret"`
+	CORSOrigins               string `yaml:"cors_origins"`
+	RootBootstrapPasswordFile string `yaml:"root_bootstrap_password_file"`
 }
 
 type UploadConfig struct {
@@ -73,7 +75,6 @@ type TranscodeConfig struct {
 
 type JobsConfig struct {
 	TranscodeConcurrency int `yaml:"transcode_concurrency"`
-	ThumbnailConcurrency int `yaml:"thumbnail_concurrency"`
 	SystemConcurrency    int `yaml:"system_concurrency"`
 }
 
@@ -117,22 +118,25 @@ func (c *Config) Validate() error {
 	return nil
 }
 
+const defaultConfigPath = "config.yaml"
+const defaultDevConfigPath = "config.dev.yaml"
+
 // Load reads a YAML configuration file from path, applies defaults, and
 // returns the parsed Config.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
-	}
-
 	cfg := &Config{
 		Server: ServerConfig{Port: 8080, PidFile: "zephyr.pid"},
 		Upload: UploadConfig{MaxFileSize: 10 * 1024 * 1024 * 1024},
 		Log:    logger.Config{Level: "info"},
 	}
 
-	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("parse config: %w", err)
+	if err := loadInto(path, cfg); err != nil {
+		return nil, err
+	}
+	if path == defaultConfigPath {
+		if err := loadOptionalInto(defaultDevConfigPath, cfg); err != nil {
+			return nil, err
+		}
 	}
 
 	// OSS defaults
@@ -172,14 +176,32 @@ func Load(path string) (*Config, error) {
 	if cfg.Jobs.TranscodeConcurrency <= 0 {
 		cfg.Jobs.TranscodeConcurrency = 2
 	}
-	if cfg.Jobs.ThumbnailConcurrency <= 0 {
-		cfg.Jobs.ThumbnailConcurrency = 4
-	}
 	if cfg.Jobs.SystemConcurrency <= 0 {
 		cfg.Jobs.SystemConcurrency = 4
 	}
 
 	return cfg, nil
+}
+
+func loadInto(path string, cfg *Config) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	return nil
+}
+
+func loadOptionalInto(path string, cfg *Config) error {
+	if err := loadInto(path, cfg); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("load optional config %q: %w", path, err)
+	}
+	return nil
 }
 
 // Save writes the Config as YAML to the given path.

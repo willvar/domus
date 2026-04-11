@@ -69,7 +69,9 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	// /user
 	user := authed.Group("/user")
 	user.Get("/", h.handleMe)
+	user.Get("/storage", h.handleStorageUsage)
 	user.Get("/security", h.handleSecurityStatus)
+	user.Put("/display-name", h.handleUpdateDisplayName)
 	user.Put("/security/password", h.handleChangePassword)
 	user.Post("/security/email/bind", h.handleBindEmail)
 	user.Post("/security/email/verify", h.handleVerifyBindEmail)
@@ -97,9 +99,11 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	// /file
 	file := authed.Group("/file")
 	file.Get("/", h.handleList)
+	file.Get("/search", h.handleSearch)
 	file.Get("/access", h.handleFileAccess)
 	file.Get("/preview", h.handlePreview)
 	file.Put("/content/diff", h.handlePatchContent)
+	file.Put("/shared/:share_id/content/diff", h.handleSharePatchContent)
 	file.Post("/mkdir", h.handleMkdir)
 	file.Post("/rename", h.handleRename)
 	file.Post("/copy", h.handleCopy)
@@ -110,7 +114,9 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	fileUpload.Get("/", h.handleUploadStatus)
 	fileUpload.Post("/", h.handleUploadDispatch)
 	fileUpload.Get("/presign", h.handleUploadPresign)
-	fileUpload.Delete("/", h.handleUploadAbort)
+	fileUpload.Post("/heartbeat", h.handleUploadHeartbeat)
+	fileUpload.Post("/cancel", h.handleUploadCancel)
+	fileUpload.Post("/cleanup", h.handleUploadCleanup)
 
 	// /file/share (authenticated)
 	file.Post("/share", h.handleCreateShare)
@@ -118,12 +124,6 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	file.Delete("/share/:id", h.handleDeleteShare)
 	file.Get("/shared", h.handleListSharedWithMe)
 	file.Get("/shared/:share_id", h.handleShareInfo)
-
-	fileTrash := file.Group("/trash")
-	fileTrash.Get("/", h.handleListTrash)
-	fileTrash.Post("/restore", h.handleRestoreTrash)
-	fileTrash.Delete("/:id", h.handleDeleteTrashItem)
-	fileTrash.Delete("/", h.handleClearTrash)
 
 	// /job
 	job := authed.Group("/job")
@@ -133,6 +133,18 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	job.Get("/:id/status", h.handleJobStatus)
 	job.Delete("/:id", h.handleCancelJob)
 
+	// /task
+	task := authed.Group("/task")
+	task.Get("/", h.handleListTasks)
+	task.Delete("/done", h.handleClearDoneTasks)
+	task.Delete("/:id", h.handleCancelTask)
+
+	// /workspace
+	workspace := authed.Group("/workspace")
+	workspace.Get("/", h.handleWorkspaceLoad)
+	workspace.Put("/", h.handleWorkspaceSave)
+	workspace.Delete("/", h.handleWorkspaceClear)
+
 	// WebSocket — auth via cookie on HTTP upgrade
 	app.Use("/ws", h.Mid.WebSocketUpgrade())
 	app.Get("/ws", websocket.New(func(c *websocket.Conn) {
@@ -141,7 +153,7 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 		h.Hub.HandleConnection(c.Conn, session, sessionID)
 	}))
 
-	// Register all WS actions
+	// Register realtime/session WS actions only.
 	h.registerWSActions()
 }
 

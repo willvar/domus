@@ -19,8 +19,11 @@ oss:
 server:
   port: 8080
   pid_file: "zephyr.pid"
-  cors_origins: ""
+  cors_origins: ""  # optional, comma-separated origins for CORS when frontend and backend use different origins
+  # example: "http://localhost:5173,https://zephyr.willvar.cn"
   # session_secret and encryption_secret are auto-generated on first startup
+  # first startup root password: prefer a 0600 secret file; fallback env is ZEPHYR_ROOT_BOOTSTRAP_PASSWORD
+  root_bootstrap_password_file: ""
 
 log:
   level: "info"
@@ -43,7 +46,6 @@ transcode:
 
 jobs:
   transcode_concurrency: 2
-  thumbnail_concurrency: 4
   system_concurrency: 4
 
 # SMTP (optional, required for email verification)

@@ -9,6 +9,7 @@
 - [项目结构](#项目结构)
 - [开发环境搭建](#开发环境搭建)
 - [开发工作流](#开发工作流)
+- [接口文档](#接口文档)
 - [代码规范](#代码规范)
 - [提交规范](#提交规范)
 - [架构指南](#架构指南)
@@ -20,9 +21,9 @@
 Zephyr 是一个全栈云文件管理平台，提供 Plasma 桌面风格的 Web UI。核心功能包括：
 
 - 用户认证（密码 + TOTP 两步验证 + 邮箱验证）
-- 文件管理（上传、下载、搜索、收藏、回收站）
-- 媒体转码与缩略图生成（基于 FFmpeg）
-- WebSocket 实时通信
+- 文件管理（上传、下载、搜索、回收站）
+- 媒体转码与媒体缩略图
+- HTTP API + WebSocket 实时同步
 - 全文搜索与文件索引
 - 管理员面板与审计日志
 
@@ -57,22 +58,22 @@ zephyr/
 │   │   ├── crypto.go           #   加密/解密工具
 │   │   ├── challenge.go        #   多因素认证挑战
 │   │   └── totp.go             #   TOTP 两步验证
-│   ├── handler/                # HTTP 路由处理器
+│   ├── handler/                # HTTP 路由与 WebSocket 实时入口
 │   │   ├── handler.go          #   路由注册与依赖注入
 │   │   ├── auth.go             #   登录/登出/验证
 │   │   ├── account.go          #   用户资料与安全设置
-│   │   ├── files.go            #   文件 CRUD
+│   │   ├── files.go            #   文件列表 / 搜索 / 文件命令
 │   │   ├── upload.go           #   分片上传
-│   │   ├── download.go         #   文件下载与流媒体
 │   │   ├── content.go          #   文本编辑、原始内容
-│   │   ├── thumbnail.go        #   缩略图生成
 │   │   ├── transcode.go        #   媒体格式转换
-│   │   ├── trash.go            #   回收站（软删除与恢复）
-│   │   ├── jobs.go             #   异步任务管理
+│   │   ├── share.go            #   分享关系与共享访问
+│   │   ├── jobs.go             #   后台作业查询与控制
+│   │   ├── task.go             #   用户任务查询与控制
+│   │   ├── workspace.go        #   工作区快照保存 / 读取
 │   │   ├── indexer.go          #   全文搜索索引
-│   │   ├── bookmarks.go        #   用户收藏
+│   │   ├── vsh.go              #   浏览器终端与 SSH 会话
 │   │   ├── admin.go            #   管理员用户管理
-│   │   └── ws_handlers.go      #   WebSocket 消息处理
+│   │   └── ws_handlers.go      #   仅实时订阅 / 会话类 WS 动作
 │   ├── middleware/             # 中间件
 │   │   └── middleware.go       #   认证校验、权限检查、WebSocket 升级
 │   ├── model/                  # 数据模型与数据库
@@ -82,6 +83,8 @@ zephyr/
 │   │   ├── session.go          #   会话管理
 │   │   ├── job.go              #   后台作业
 │   │   ├── task.go             #   用户任务追踪
+│   │   ├── workspace.go        #   工作区快照
+│   │   ├── share.go            #   分享关系
 │   │   └── audit.go            #   审计日志
 │   ├── service/                # 业务逻辑服务
 │   │   ├── dispatcher.go       #   作业队列分发器
@@ -102,39 +105,39 @@ zephyr/
 │   └── version/                #   版本管理
 ├── frontend/                   # Vue 3 前端
 │   ├── src/
-│   │   ├── main.js             #   前端入口
-│   │   ├── router.js           #   路由定义 (/ → PlasmaShell, /admin → AdminView)
+│   │   ├── main.ts             #   前端入口
+│   │   ├── router.ts           #   路由定义 (/ → PlasmaShell, /admin → AdminView)
 │   │   ├── App.vue             #   根组件
+│   │   ├── i18n/               #   中英文翻译字典
 │   │   ├── components/
 │   │   │   ├── breeze/         #   Breeze 自建 UI 组件库
 │   │   │   ├── plasma/         #   Plasma 桌面环境组件 (Desktop, Window, Panel...)
 │   │   │   ├── dolphin/        #   文件管理器
 │   │   │   ├── kate/           #   文本/代码编辑器
 │   │   │   ├── elisa/          #   音频播放器
-│   │   │   ├── okular/         #   文档查看器
 │   │   │   ├── ark/            #   压缩包管理器
 │   │   │   ├── kfontview/      #   字体预览器
+│   │   │   ├── konsole/        #   终端模拟器
 │   │   │   ├── notebook/       #   笔记应用
 │   │   │   ├── LoginPage.vue   #   登录页
 │   │   │   ├── ViewerApp.vue   #   文件内容查看器
 │   │   │   ├── GlobalDialog.vue      # 全局对话框
 │   │   │   └── TranscodeDialog.vue   # 转码对话框
 │   │   ├── composables/        #   Vue 组合式函数
-│   │   │   ├── useApi.js       #     Axios 实例与拦截器
-│   │   │   ├── useWebSocket.js #     WebSocket 连接管理
-│   │   │   ├── useI18n.js      #     国际化 (中/英)
-│   │   │   ├── useKeyboard.js  #     键盘快捷键
-│   │   │   ├── useCodeMirror.js#     代码编辑器集成
-│   │   │   ├── useFileIcon.js  #     文件类型图标映射
+│   │   │   ├── useApi.ts       #     Axios 实例与拦截器
+│   │   │   ├── useWebSocket.ts #     WebSocket 连接管理
+│   │   │   ├── useI18n.ts      #     国际化 (中/英)
+│   │   │   ├── useKeyboard.ts  #     键盘快捷键
+│   │   │   ├── useCodeMirror.ts#     代码编辑器集成
+│   │   │   ├── useFileIcon.ts  #     文件类型图标映射
 │   │   │   └── ...             #     其他 composables
 │   │   ├── stores/             #   Pinia 状态管理
-│   │   │   ├── auth.js         #     用户认证状态
-│   │   │   ├── fileSystem.js   #     文件树与目录状态
-│   │   │   ├── upload.js       #     上传队列与进度
-│   │   │   ├── windowManager.js#     窗口管理器
-│   │   │   ├── jobs.js         #     后台作业追踪
-│   │   │   ├── operations.js   #     撤销/重做操作
-│   │   │   └── pendingOps.js   #     操作队列管理
+│   │   │   ├── auth.ts         #     用户认证状态
+│   │   │   ├── fileSystem.ts   #     目录状态与文件命令
+│   │   │   ├── upload.ts       #     上传会话与进度
+│   │   │   ├── tasks.ts        #     任务面板聚合视图
+│   │   │   ├── pendingOps.ts   #     离线重试队列
+│   │   │   └── windowManager.ts#     窗口管理器
 │   │   └── views/
 │   │       ├── PlasmaShell.vue #   主桌面视图
 │   │       └── AdminView.vue   #   管理员面板
@@ -185,6 +188,8 @@ cp config.example.yaml config.yaml
 - `transcode.*` — FFmpeg 路径（如需媒体转码）
 - `smtp.*` — 邮箱验证（可选）
 
+可选：开发环境可额外创建 `config.dev.yaml`，只填写需要覆盖的字段（例如本机数据库名、端口等）。默认启动时会先读取 `config.yaml`，再用 `config.dev.yaml` 覆盖；如果使用 `-c xxx.yaml` 显式指定配置文件，则不会自动读取 `config.dev.yaml`。
+
 > `session_secret` 和 `encryption_secret` 会在首次启动时自动生成，无需手动填写。
 
 4. **安装前端依赖**
@@ -207,7 +212,7 @@ cd frontend && npm run dev
 
 后端默认端口 `8080`，前端开发服务器端口 `5173`。
 
-> 首次启动时，系统会自动创建 root 用户并在终端输出随机密码，请注意保存。
+> 首次启动时，如果库里还没有用户，系统会自动创建 root 用户；初始密码必须由部署者提供（推荐 `server.root_bootstrap_password_file` 指向 0600 secret 文件，也可使用环境变量 `ZEPHYR_ROOT_BOOTSTRAP_PASSWORD`）。
 
 ### 构建
 
@@ -256,6 +261,13 @@ make tidy                        # go mod tidy
 cd frontend && npm install       # 前端依赖
 ```
 
+## 接口文档
+
+- `docs/api/README.md` — 项目的主接口文档入口，统一组织 HTTP 接口与 WebSocket 协议
+- `API.md` — 根目录兼容入口，便于从仓库首页快速跳转
+
+若后端路由或 WebSocket 动作发生变化，请同步更新 `docs/api/` 下对应文档。
+
 ## 代码规范
 
 ### Go 后端
@@ -277,7 +289,7 @@ cd frontend && npm install       # 前端依赖
 - 可复用逻辑提取为 composables（`composables/` 目录，`use` 前缀）
 - UI 组件使用项目自建的 Breeze 组件库（`components/breeze/`），不使用外部 UI 库
 - 图标使用 Material Design Icons，通过 `unplugin-icons` 按需加载，格式：`~icons/mdi/icon-name`
-- 国际化支持中英文，翻译定义在 `useI18n.js` 中
+- 国际化支持中英文，翻译定义在 `frontend/src/i18n/` 中，由 `useI18n.ts` 读取
 - ESLint 规则见 `frontend/eslint.config.js`，关闭了部分 Vue 风格规则以保持灵活性
 
 ### 前端组件命名
@@ -290,9 +302,9 @@ cd frontend && npm install       # 前端依赖
 | `dolphin/` | 文件管理器 | Dolphin |
 | `kate/` | 文本/代码编辑器 | Kate |
 | `elisa/` | 音频播放器 | Elisa |
-| `okular/` | 文档查看器 | Okular |
 | `ark/` | 压缩包管理 | Ark |
 | `kfontview/` | 字体预览 | KFontView |
+| `konsole/` | 终端模拟器 | Konsole |
 | `notebook/` | 笔记应用 | - |
 | `breeze/` | UI 组件库 | Breeze 主题 |
 
@@ -307,7 +319,7 @@ cd frontend && npm install       # 前端依赖
 | 前缀 | 用途 | 示例 |
 |------|------|------|
 | `ADD:` | 新功能 | `ADD: 全文搜索与文件索引` |
-| `OPT:` | 优化/重构 | `OPT: 前端HTTP通信全面迁移至WebSocket` |
+| `OPT:` | 优化/重构 | `OPT: 收紧 HTTP / WS 职责边界` |
 | `FIX:` | Bug 修复 | `FIX: 修复绕过数据库直接访问OSS的安全问题` |
 
 - 描述部分使用中文
@@ -328,14 +340,20 @@ HTTP 请求
           → store（OSS 文件存储）
 ```
 
+### HTTP / WebSocket 边界
+
+- **HTTP 负责普通 query / command**：文件列表、搜索、创建目录、重命名、复制、移动、删除、文本保存、用户资料、安全设置、分享、任务列表、工作区持久化、管理员操作等，都走普通 HTTP API。
+- **WebSocket 负责实时性**：目录订阅推送、`task.update` 进度广播、终端会话输入输出、工作区事件转发、客户端上传任务上报。
+- **设计原则**：不要为同一业务同时维护一套 HTTP 和一套 WS 命令接口；如果一个动作不依赖长连接实时语义，就应该归入 HTTP。
+
 ### WebSocket 通信
 
 ```
 客户端
   → ws/conn.go（连接管理）
-    → ws/router.go（消息路由）
-      → handler/ws_handlers.go（业务处理）
-        → ws/push.go（推送响应）
+    → ws/router.go（动作路由）
+      → handler/ws_handlers.go（仅 session / subscribe / relay / report）
+        → ws/push.go（dir.changed / task.update / session.* 推送）
           → ws/hub.go（广播 / 目录订阅）
 ```
 
@@ -345,13 +363,12 @@ HTTP 请求
 handler 发起作业请求
   → service/dispatcher.go（作业队列分发）
     → service/transcode.go（FFmpeg 转码）
-    → thumbnail 生成
     → OSS 上传
   → model/job.go（状态追踪）
   → ws/push.go（实时进度推送）
 ```
 
-**Job vs Task**：`Job` 是后台调度的内部工作单元（如转码、缩略图生成），由 `dispatcher` 消费，不直接暴露给前端。`Task` 是面向用户的进度追踪记录，显示在前端任务面板中。一个 Job 可通过 `TaskID` 字段关联到一个 Task，Job 的状态/进度变化会通过 `cascadeToTask` 自动同步到对应的 Task 并推送给客户端。
+**Job vs Task**：`Job` 是后台调度的内部工作单元（如转码），由 `dispatcher` 消费，不直接承担前端交互语义。`Task` 是面向用户的进度追踪记录，显示在前端任务面板中。一个 Job 可通过 `TaskID` 字段关联到一个 Task，Job 的状态/进度变化会同步到对应的 Task 并推送给客户端。
 
 ### 认证流程
 
@@ -366,12 +383,12 @@ handler 发起作业请求
 | 表名 | 用途 |
 |------|------|
 | `users` | 用户账户（密码哈希、邮箱、TOTP） |
-| `files` | 文件元数据（路径、大小、类型、全文检索向量） |
+| `files` | 文件元数据（路径、大小、类型、全文检索向量；回收站文件也在此表中，以 `__trash__` 路径空间表示） |
 | `sessions` | 用户会话（带过期时间） |
-| `trash` | 回收站（软删除文件） |
-| `bookmarks` | 用户收藏 |
-| `jobs` | 后台作业追踪（转码、缩略图） |
+| `jobs` | 后台作业追踪（转码） |
 | `tasks` | 用户任务进度 |
+| `workspace_states` | 工作区布局快照 |
+| `shares` | 文件分享关系 |
 | `audit_logs` | 操作审计日志 |
 
 ### 安全要点
@@ -380,4 +397,5 @@ handler 发起作业请求
 - 文件加密使用用户独立密钥（由 `encryption_secret` + 用户 ID 派生）
 - 权限控制使用位掩码组合（Read=1, Upload=2, Edit=4, Delete=8）
 - `session_secret` 和 `encryption_secret` 首次启动自动生成，务必妥善保管 `config.yaml`
+- 首次启动若需要自动初始化 `root`，请通过 `server.root_bootstrap_password_file` 或 `ZEPHYR_ROOT_BOOTSTRAP_PASSWORD` 提供初始密码，避免从日志泄露凭据
 - CORS 来源需在配置中显式指定

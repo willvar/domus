@@ -46,8 +46,8 @@ export interface LoginResponse {
 }
 
 /**
- * FileInfo returned by `file.list` WS action and GET /file/list.
- * Mirrors store.FileInfo in internal/store/oss.go.
+ * FileInfo returned by file-related HTTP responses such as `GET /file/`.
+ * Mirrors `store.FileInfo` in `internal/store/oss.go`.
  */
 export interface FileInfo {
   name: string
@@ -63,21 +63,20 @@ export interface FileInfo {
   media_height?: number
   media_duration?: number
   status?: 'ready' | 'uploading' | 'processing' | 'deleted'
-  job_id?: string
-  job_progress?: number
-  job_phase?: string
+  // When a file is still backed by a task (for example an active upload),
+  // the server includes task metadata so the list can render live progress.
+  task_id?: string
+  task_progress?: number
+  task_phase?: string
 }
 
 /**
  * Extended file info used in the frontend file list.
- * Adds virtual-view metadata for trash, shared, and search items.
+ * Adds virtual-view metadata for shared and search items.
  */
 export interface FileListItem extends FileInfo {
   /** Rank score from full-text search results. */
   rank?: number
-  // Trash virtual-view fields
-  _trashId?: number
-  _originalPath?: string
   // Shared virtual-view fields
   _shareId?: string
   _shareDbId?: number
@@ -85,17 +84,6 @@ export interface FileListItem extends FileInfo {
   _permission?: 'read' | 'write'
   _expiresAt?: string | null
   _originalName?: string
-}
-
-/** Trash item. Mirrors model.TrashItem. */
-export interface TrashItem {
-  id: number
-  user_id: string
-  original_path: string
-  trash_key: string
-  size: number
-  is_dir: boolean
-  deleted_at: string
 }
 
 /** Share record. Mirrors model.Share. */
@@ -108,6 +96,7 @@ export interface Share {
   file_size: number
   content_type: string
   target_user_id: string
+  target_username?: string
   permission: 'read' | 'write'
   expires_at?: string | null
   created_at: string
@@ -126,6 +115,7 @@ export interface Task {
   progress: number
   phase: string
   name: string
+  client_instance_id?: string
   created_at?: string
   updated_at?: string
 }
@@ -343,29 +333,49 @@ export interface RemoteFlag {
 /** Upload status values. */
 export type UploadStatus = 'uploading' | 'paused' | 'processing' | 'completed' | 'failed' | 'cancelled' | 'interrupted'
 
-/** A completed upload part. */
-export interface UploadPart {
-  partNumber: number
-}
-
-/** Upload entry tracked in the upload store. */
-export interface Upload {
+/** Frontend-owned upload session tracked in the upload store. */
+export interface UploadSession {
   id: string
   fileName: string
   fileSize: number
   progress: number
   speed: number
   status: UploadStatus
+  phase?: string
   uploadId: string | null
   taskId: string | null
   targetPath: string
-  completedParts: UploadPart[]
+  partSize?: number
+  totalParts?: number
+  encryptedSize?: number
+  dekHex?: string | null
   startTime: number
   startProgress: number
   bytesUploaded: number
   error?: string
+  _lastTaskSyncAt?: number
+  _lastTaskProgress?: number
+  _lastTaskPhase?: string
   _resume: (() => void) | null
   _file: File | null
+}
+
+/** Unified task item shown in the Activity panel. */
+export interface TaskItem {
+  id: string
+  source: 'upload_session' | 'server_task'
+  task_id?: string
+  type: string
+  status: TaskStatus | UploadStatus
+  progress: number
+  phase?: string
+  name: string
+  created_at?: string
+  updated_at?: string
+  speed?: number
+  fileSize?: number
+  bytesUploaded?: number
+  error?: string
 }
 
 /** Conflict info returned during upload pre-check. */
@@ -373,27 +383,6 @@ export interface ConflictInfo {
   name: string
   size?: number
   is_dir?: boolean
-}
-
-// --- Operations Store ---
-
-/** File operation type. */
-export type OperationType = 'copy' | 'move' | 'delete'
-
-/** File operation status. */
-export type OperationStatus = 'running' | 'completed' | 'failed'
-
-/** File operation tracked in the operations store. */
-export interface FileOperation {
-  id: number
-  opId: string | null
-  type: OperationType
-  description: string
-  status: OperationStatus
-  done: number
-  total: number
-  current: string
-  error: string | null
 }
 
 // --- Pending Operations Store ---
@@ -405,18 +394,19 @@ export interface PendingOp {
   lastAttempt: number | null
   lastError: string | null
   username?: string
-  // REST API retry fields
-  apiUrl?: string
-  apiMethod?: 'post' | 'put' | 'delete' | string
+  // HTTP retry fields
+  apiUrl: string
+  apiMethod: 'post' | 'put' | 'delete' | string
   apiData?: unknown
-  // SSE/WS retry fields
-  sseUrl?: string
-  sseBody?: Record<string, unknown>
   type?: string
   description?: string
   _retrying?: boolean
+  _completed?: boolean
   [key: string]: unknown
 }
+
+/** Input used when queueing a new pending HTTP operation. */
+export type PendingOpInput = Omit<PendingOp, 'id' | 'createdAt' | 'lastAttempt' | 'lastError'>
 
 // --- User Preferences ---
 
@@ -499,52 +489,13 @@ export interface WorkspaceSyncEvent {
 }
 
 /**
- * Known WS request actions (non-exhaustive).
+ * Known WS request actions that remain after moving query/command flows to HTTP.
+ * Boundary: WS handles realtime subscriptions, terminal sessions, workspace
+ * event relay, and client-side upload task reporting.
  */
 export type WSAction =
-  // File operations
-  | 'file.list'
-  | 'file.mkdir'
-  | 'file.rename'
-  | 'file.delete'
-  | 'file.copy'
-  | 'file.move'
-  | 'file.search'
-  | 'file.patchContent'
-  // Trash operations
-  | 'trash.list'
-  | 'trash.delete'
-  | 'trash.restore'
-  | 'trash.clear'
-  // Share operations
-  | 'share.list'
-  | 'share.patchContent'
-  // Upload operations
-  | 'upload.progress'
   // Task operations
-  | 'task.list'
-  | 'task.create'
-  | 'task.cancel'
-  | 'task.clearDone'
-  // User operations
-  | 'user.me'
-  | 'user.storageUsage'
-  | 'user.updateDisplayName'
-  | 'user.changePassword'
-  | 'user.bindEmail'
-  | 'user.verifyBindEmail'
-  | 'user.unbindEmail'
-  | 'user.otpSetup'
-  | 'user.otpEnable'
-  | 'user.otpDisable'
-  | 'user.security'
-  // Admin operations
-  | 'admin.listUsers'
-  | 'admin.createUser'
-  | 'admin.updateUser'
-  | 'admin.deleteUser'
-  | 'admin.resetUserOTP'
-  | 'admin.resetUserEmail'
+  | 'task.report'
   // Directory subscriptions
   | 'subscribe.directory'
   | 'unsubscribe.directory'
@@ -556,11 +507,6 @@ export type WSAction =
   | 'session.complete'
   // Workspace sync
   | 'workspace.event'
-  | 'workspace.save'
-  | 'workspace.load'
-  | 'workspace.clear'
-  // Audit
-  | 'audit.preview'
 
 // -----------------------------------------------------------------------------
 // 4. Dialog Types

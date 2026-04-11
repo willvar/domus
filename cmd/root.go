@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -31,7 +32,10 @@ import (
 	"zephyr/shared/version"
 )
 
-const daemonEnvKey = "ZEPHYR_DAEMON"
+const (
+	daemonEnvKey                = "ZEPHYR_DAEMON"
+	rootBootstrapPasswordEnvKey = "ZEPHYR_ROOT_BOOTSTRAP_PASSWORD"
+)
 
 // Execute 执行 CLI
 func Execute() {
@@ -229,6 +233,15 @@ func runServer(cfg *config.Config, configPath string) {
 		logger.Info("Generated new encryption secret and saved to config.")
 	}
 
+	if err := cfg.Validate(); err != nil {
+		logger.Fatal("Invalid config: %v", err)
+	}
+
+	serverKey, err := auth.ServerKeyFromSecret(cfg.Server.EncryptionSecret)
+	if err != nil {
+		logger.Fatal("Invalid encryption secret: %v", err)
+	}
+
 	// 初始化统计
 	serverStats := &ServerStats{BaseStats: stats.NewBaseStats()}
 
@@ -261,16 +274,12 @@ func runServer(cfg *config.Config, configPath string) {
 	hub := ws.NewHub()
 
 	// Build repository layer
-	onTaskUpdate := model.TaskUpdateFunc(func(userID, taskID, taskType, name, status string, progress float64, phase string) {
-		hub.PushTaskUpdate(userID, taskID, taskType, name, status, progress, phase)
+	onTaskUpdate := model.TaskUpdateFunc(func(userID, taskID, taskType, name, status, clientInstanceID string, progress float64, phase string) {
+		hub.PushTaskUpdate(userID, taskID, taskType, name, status, clientInstanceID, progress, phase)
 	})
 	repos := model.NewRepos(db, hasFTS, onTaskUpdate)
 
 	// Wire session KEK population
-	serverKey, err := auth.ServerKeyFromSecret(cfg.Server.EncryptionSecret)
-	if err != nil {
-		logger.Fatal("Invalid encryption secret: %v", err)
-	}
 	repos.Sessions.SetPopulateKEK(func(s *model.Session) {
 		wrappedHex, err := repos.Users.GetWrappedKEK(s.UserID)
 		if err != nil || wrappedHex == "" {
@@ -347,7 +356,6 @@ func runServer(cfg *config.Config, configPath string) {
 	// Initialize and start job dispatcher
 	dispatcher := service.NewDispatcher(repos.Jobs)
 	dispatcher.Register("transcode", cfg.Jobs.TranscodeConcurrency, h.RunTranscodeJob)
-	dispatcher.Register("thumbnail", cfg.Jobs.ThumbnailConcurrency, h.RunThumbnailJob)
 	dispatcher.Start()
 	defer dispatcher.Stop()
 	h.Dispatcher = dispatcher
@@ -364,7 +372,10 @@ func runServer(cfg *config.Config, configPath string) {
 
 	// Auto-create root user if no users exist
 	if count, err := repos.Users.Count(); err == nil && count == 0 {
-		password := generateRandomPassword()
+		password, err := loadRootBootstrapPassword(cfg)
+		if err != nil {
+			logger.Fatal("Failed to load root bootstrap password: %v", err)
+		}
 		wrappedKEKHex, err := generateWrappedKEKForUser(cfg.Server.EncryptionSecret)
 		if err != nil {
 			logger.Fatal("Failed to generate KEK for root user: %v", err)
@@ -379,12 +390,7 @@ func runServer(cfg *config.Config, configPath string) {
 		_ = fileStore.CreateDirectory("root/home/root/")
 		_ = repos.Files.Upsert(user.ID, "root/home/", "home", true, 0, "", "")
 		_ = repos.Files.Upsert(user.ID, "root/home/root/", "root", true, 0, "", "")
-		fmt.Println("========================================")
-		fmt.Println("  Root user created automatically")
-		fmt.Printf("  Username: root\n")
-		fmt.Printf("  Password: %s\n", password)
-		fmt.Println("  Please change the password after login!")
-		fmt.Println("========================================")
+		logger.Info("Root user initialized from bootstrap password source")
 	}
 
 	app := fiber.New(fiber.Config{
@@ -461,10 +467,24 @@ func (s *ServerStats) GetSnapshot() stats.Snapshot {
 	return s.BaseStats.GetBaseSnapshot()
 }
 
-func generateRandomPassword() string {
-	b := make([]byte, 12)
-	rand.Read(b)
-	return hex.EncodeToString(b)[:16]
+func loadRootBootstrapPassword(cfg *config.Config) (string, error) {
+	if path := strings.TrimSpace(cfg.Server.RootBootstrapPasswordFile); path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", path, err)
+		}
+		password := strings.TrimSpace(string(data))
+		if password == "" {
+			return "", fmt.Errorf("root bootstrap password file %s is empty", path)
+		}
+		return password, nil
+	}
+
+	password := strings.TrimSpace(os.Getenv(rootBootstrapPasswordEnvKey))
+	if password == "" {
+		return "", fmt.Errorf("set server.root_bootstrap_password_file or %s before first startup", rootBootstrapPasswordEnvKey)
+	}
+	return password, nil
 }
 
 func generateWrappedKEKForUser(encryptionSecret string) (string, error) {
