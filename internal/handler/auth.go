@@ -1,14 +1,11 @@
 package handler
 
 import (
+	"bytes"
 	"crypto/hmac"
-	"io"
+	"encoding/hex"
 	"log"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/gofiber/fiber/v2"
 
@@ -344,8 +341,8 @@ func (h *Handler) handleMe(c *fiber.Ctx) error {
 
 	avatarKey := user.Username + "/.user/avatar.webp"
 	var avatarURL string
-	if _, err := h.Store.GetObjectInfo(avatarKey); err == nil {
-		avatarURL, _ = h.Store.GeneratePresignedURL(avatarKey, 24*time.Hour)
+	if fr, err := h.Repos.Files.Get(user.ID, avatarKey); err == nil && fr.WrappedDEK != "" {
+		avatarURL = "/user/avatar/" + user.Username
 	}
 
 	return c.JSON(fiber.Map{
@@ -359,122 +356,74 @@ func (h *Handler) handleMe(c *fiber.Ctx) error {
 	})
 }
 
-// handlePublicAvatar returns the avatar presigned URL for a given username (public, no auth).
+// handlePublicAvatar serves the decrypted avatar image for a given username (public, no auth).
+// Avatars are encrypted on OSS like all other files. The server decrypts on demand with LRU caching.
 func (h *Handler) handlePublicAvatar(c *fiber.Ctx) error {
 	username := c.Params("username")
 	if username == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "missing_username"})
 	}
+
+	// Check LRU cache
+	if h.avatarCache != nil {
+		if entry, ok := h.avatarCache.Get(username); ok {
+			c.Set("Content-Type", "image/webp")
+			c.Set("Cache-Control", "public, max-age=3600")
+			return c.Send(entry.data)
+		}
+	}
+
+	// Look up avatar file record
 	avatarKey := username + "/.user/avatar.webp"
-	if _, err := h.Store.GetObjectInfo(avatarKey); err != nil {
+	user, err := h.Repos.Users.GetByUsername(username)
+	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "no_avatar"})
 	}
-	url, err := h.Store.GeneratePresignedURL(avatarKey, 24*time.Hour)
+	fileRecord, err := h.Repos.Files.Get(user.ID, avatarKey)
+	if err != nil || fileRecord.WrappedDEK == "" {
+		return c.Status(404).JSON(fiber.Map{"error": "no_avatar"})
+	}
+
+	// Decrypt avatar
+	kek, err := h.loadUserKEK(user.ID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
-	return c.JSON(fiber.Map{"avatar_url": url})
-}
-
-// handleUploadAvatar receives an image, converts to webp via ffmpeg, stores to OSS.
-func (h *Handler) handleUploadAvatar(c *fiber.Ctx) error {
-	session := c.Locals("session").(*model.Session)
-	user, err := h.Repos.Users.GetByID(session.UserID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
-	}
-
-	file, err := c.FormFile("file")
-	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "no_file"})
-	}
-
-	// Validate image content type
-	ct := file.Header.Get("Content-Type")
-	if !strings.HasPrefix(ct, "image/") {
-		return c.Status(400).JSON(fiber.Map{"error": "not_image"})
-	}
-
-	// Save to temp file
-	tmpDir, err := os.MkdirTemp("", "avatar-*")
+	wrappedBytes, err := hex.DecodeString(fileRecord.WrappedDEK)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
-	defer func() { _ = os.RemoveAll(tmpDir) }()
-
-	ext := filepath.Ext(file.Filename)
-	if ext == "" {
-		ext = ".jpg"
-	}
-	inputPath := filepath.Join(tmpDir, "input"+ext)
-	if err := c.SaveFile(file, inputPath); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "save_failed"})
-	}
-
-	// Convert to webp via ffmpeg
-	outputPath := filepath.Join(tmpDir, "avatar.webp")
-	cmd := exec.Command(h.Config.Transcode.FFmpegPath,
-		"-i", inputPath,
-		"-vf", "scale='min(512,iw)':'min(512,ih)':force_original_aspect_ratio=decrease",
-		"-y", outputPath,
-	)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		log.Printf("avatar ffmpeg error: %v\n%s", err, out)
-		return c.Status(500).JSON(fiber.Map{"error": "convert_failed"})
-	}
-
-	// Upload to OSS (unencrypted)
-	avatarKey := user.Username + "/.user/avatar.webp"
-	if err := h.Store.UploadFromFile(avatarKey, outputPath); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "upload_failed"})
-	}
-
-	url, _ := h.Store.GeneratePresignedURL(avatarKey, 24*time.Hour)
-	return c.JSON(fiber.Map{"avatar_url": url})
-}
-
-// handleUserStoreGet reads a file from {username}/.user/{path} in OSS.
-func (h *Handler) handleUserStoreGet(c *fiber.Ctx) error {
-	session := c.Locals("session").(*model.Session)
-	user, err := h.Repos.Users.GetByID(session.UserID)
+	dek, err := auth.UnwrapDEK(kek, wrappedBytes)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
+		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
-	subPath := c.Params("*")
-	if subPath == "" || strings.Contains(subPath, "..") {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
-	}
-	key := user.Username + "/.user/" + subPath
-	reader, err := h.Store.GetObjectContent(key)
+
+	reader, err := h.Store.GetObjectContent(avatarKey)
 	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+		return c.Status(404).JSON(fiber.Map{"error": "no_avatar"})
 	}
 	defer func() { _ = reader.Close() }()
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "read_failed"})
+
+	var buf bytes.Buffer
+	if err := auth.DecryptStream(dek, reader, &buf); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "decrypt_failed"})
 	}
-	// If JSON, set content type
-	if strings.HasSuffix(subPath, ".json") {
-		c.Set("Content-Type", "application/json")
+
+	data := buf.Bytes()
+
+	// Store in LRU cache
+	if h.avatarCache != nil && len(data) < avatarCacheMaxBytes {
+		h.avatarCache.Add(username, &avatarEntry{data: data})
 	}
+
+	c.Set("Content-Type", "image/webp")
+	c.Set("Cache-Control", "public, max-age=3600")
 	return c.Send(data)
 }
 
-// handleUserStorePut writes a file to {username}/.user/{path} in OSS.
-func (h *Handler) handleUserStorePut(c *fiber.Ctx) error {
-	session := c.Locals("session").(*model.Session)
-	user, err := h.Repos.Users.GetByID(session.UserID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
+// InvalidateAvatarCache removes a user's avatar from the LRU cache (call after avatar update).
+func (h *Handler) InvalidateAvatarCache(username string) {
+	if h.avatarCache != nil {
+		h.avatarCache.Remove(username)
 	}
-	subPath := c.Params("*")
-	if subPath == "" || strings.Contains(subPath, "..") {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
-	}
-	key := user.Username + "/.user/" + subPath
-	if err := h.Store.PutObjectBytes(key, c.Body()); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "write_failed"})
-	}
-	return c.JSON(fiber.Map{"ok": true})
 }

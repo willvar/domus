@@ -169,10 +169,11 @@ func (h *Handler) wsMe(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) 
 	if err != nil {
 		return nil, &wsError{Code: "user_not_found"}
 	}
+	// Avatar is encrypted on OSS; point to the server-side decrypt endpoint
 	avatarKey := user.Username + "/.user/avatar.webp"
 	var avatarURL string
-	if _, err := h.Store.GetObjectInfo(avatarKey); err == nil {
-		avatarURL, _ = h.Store.GeneratePresignedURL(avatarKey, 24*time.Hour)
+	if fr, err := h.Repos.Files.Get(user.ID, avatarKey); err == nil && fr.WrappedDEK != "" {
+		avatarURL = "/user/avatar/" + user.Username
 	}
 	return map[string]any{
 		"id":           user.ID,
