@@ -95,7 +95,7 @@ func (h *Handler) RunThumbnailJob(ctx context.Context, job *model.Job) error {
 		if err != nil {
 			return fmt.Errorf("load user KEK for probe: %w", err)
 		}
-		srcRecord, err := model.GetFile(job.UserID, params.SourceKey)
+		srcRecord, err := h.Repos.Files.Get(job.UserID, params.SourceKey)
 		if err != nil {
 			return fmt.Errorf("get file record for probe: %w", err)
 		}
@@ -131,7 +131,7 @@ func (h *Handler) RunThumbnailJob(ctx context.Context, job *model.Job) error {
 		if srcRecord.ThumbnailKey == params.ThumbnailKey && srcRecord.ThumbnailWrappedDEK != "" {
 			thumbWrappedDEK = srcRecord.ThumbnailWrappedDEK
 		}
-		_ = model.UpdateFileThumbnail(job.UserID, params.SourceKey, params.ThumbnailKey, thumbWrappedDEK, width, height, duration)
+		_ = h.Repos.Files.UpdateThumbnail(job.UserID, params.SourceKey, params.ThumbnailKey, thumbWrappedDEK, width, height, duration)
 
 		if h.Hub != nil {
 			parent := parentDirOf(params.SourceKey)
@@ -148,7 +148,7 @@ func (h *Handler) RunThumbnailJob(ctx context.Context, job *model.Job) error {
 	}
 
 	// Phase 1: Download and decrypt source file
-	_ = model.UpdateJobProgress(job.JobID, 0.0, "downloading")
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.0, "downloading")
 	inputExt := filepath.Ext(params.FileName)
 	inputPath := filepath.Join(params.TempDir, "input"+inputExt)
 
@@ -160,7 +160,7 @@ func (h *Handler) RunThumbnailJob(ctx context.Context, job *model.Job) error {
 	if err != nil {
 		return fmt.Errorf("load user KEK: %w", err)
 	}
-	srcRecord, err := model.GetFile(job.UserID, params.SourceKey)
+	srcRecord, err := h.Repos.Files.Get(job.UserID, params.SourceKey)
 	if err != nil {
 		return fmt.Errorf("get file record: %w", err)
 	}
@@ -186,7 +186,7 @@ func (h *Handler) RunThumbnailJob(ctx context.Context, job *model.Job) error {
 	}
 
 	// Phase 2: Generate thumbnail with ffmpeg
-	_ = model.UpdateJobProgress(job.JobID, 0.3, "generating")
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.3, "generating")
 	thumbPath := filepath.Join(params.TempDir, "thumb.webp")
 
 	var args []string
@@ -218,7 +218,7 @@ func (h *Handler) RunThumbnailJob(ctx context.Context, job *model.Job) error {
 	}
 
 	// Phase 3: Probe media info
-	_ = model.UpdateJobProgress(job.JobID, 0.6, "probing")
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.6, "probing")
 	transcoder := service.NewTranscoder(h.Config.Transcode)
 	probe, _ := transcoder.Probe(ctx, inputPath)
 	var width, height int
@@ -230,15 +230,15 @@ func (h *Handler) RunThumbnailJob(ctx context.Context, job *model.Job) error {
 	}
 
 	// Phase 4: Encrypt and upload thumbnail to OSS
-	_ = model.UpdateJobProgress(job.JobID, 0.8, "uploading")
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.8, "uploading")
 	thumbWrappedHex, err := h.encryptAndUploadThumbnail(job.UserID, params.ThumbnailKey, thumbPath)
 	if err != nil {
 		return fmt.Errorf("encrypt+upload thumbnail: %w", err)
 	}
 
 	// Update file record with thumbnail key and media info
-	_ = model.UpdateFileThumbnail(job.UserID, params.SourceKey, params.ThumbnailKey, thumbWrappedHex, width, height, duration)
-	_ = model.UpdateJobResult(job.JobID, `{"ok":true}`)
+	_ = h.Repos.Files.UpdateThumbnail(job.UserID, params.SourceKey, params.ThumbnailKey, thumbWrappedHex, width, height, duration)
+	_ = h.Repos.Jobs.UpdateResult(job.JobID, `{"ok":true}`)
 
 	// Notify directory subscribers so the file list refreshes with the new thumbnail
 	if h.Hub != nil {
@@ -297,7 +297,7 @@ func (h *Handler) handleThumbnail(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	fileRecord, err := model.GetFile(session.UserID, resolvedPath)
+	fileRecord, err := h.Repos.Files.Get(session.UserID, resolvedPath)
 	if err != nil || fileRecord.ThumbnailKey == "" || fileRecord.ThumbnailWrappedDEK == "" {
 		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
 	}
@@ -319,7 +319,7 @@ func (h *Handler) handleThumbnail(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "read_failed"})
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 
 	c.Set("Content-Type", "image/webp")
 	c.Set("Cache-Control", "private, max-age=3600")

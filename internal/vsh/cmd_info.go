@@ -13,7 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"zephyr/internal/model"
 	"zephyr/shared/version"
 )
 
@@ -39,15 +38,15 @@ func cmdStat(s *Session, args []string, redirect string) (string, error) {
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("  File: %s\r\n", appPath))
+	fmt.Fprintf(&b, "  File: %s\r\n", appPath)
 	if info.IsDir {
 		b.WriteString("  Type: directory\r\n")
 	} else {
 		b.WriteString("  Type: file\r\n")
-		b.WriteString(fmt.Sprintf("  Size: %s (%d bytes)\r\n", formatSize(info.Size), info.Size))
-		b.WriteString(fmt.Sprintf("  MIME: %s\r\n", info.ContentType))
+		fmt.Fprintf(&b, "  Size: %s (%d bytes)\r\n", formatSize(info.Size), info.Size)
+		fmt.Fprintf(&b, "  MIME: %s\r\n", info.ContentType)
 	}
-	b.WriteString(fmt.Sprintf("Modify: %s\r\n", info.LastModified.Format(time.RFC3339)))
+	fmt.Fprintf(&b, "Modify: %s\r\n", info.LastModified.Format(time.RFC3339))
 	return b.String(), nil
 }
 
@@ -89,19 +88,19 @@ func cmdFile(s *Session, args []string, redirect string) (string, error) {
 		}
 		ossPath, _, err := s.resolvePath(file)
 		if err != nil {
-			b.WriteString(fmt.Sprintf("%s: cannot stat\r\n", file))
+			fmt.Fprintf(&b, "%s: cannot stat\r\n", file)
 			continue
 		}
 
-		rec, recErr := model.GetFile(s.UserID, ossPath+"/")
+		rec, recErr := s.repos.Files.Get(s.UserID, ossPath+"/")
 		if recErr == nil && rec.IsDir {
-			b.WriteString(fmt.Sprintf("%s: directory\r\n", file))
+			fmt.Fprintf(&b, "%s: directory\r\n", file)
 			continue
 		}
 
-		rec, recErr = model.GetFile(s.UserID, ossPath)
+		rec, recErr = s.repos.Files.Get(s.UserID, ossPath)
 		if recErr != nil {
-			b.WriteString(fmt.Sprintf("%s: cannot stat\r\n", file))
+			fmt.Fprintf(&b, "%s: cannot stat\r\n", file)
 			continue
 		}
 
@@ -120,7 +119,7 @@ func cmdFile(s *Session, args []string, redirect string) (string, error) {
 		case strings.HasPrefix(ct, "audio/"):
 			desc = fmt.Sprintf("%s, %.1fs", ct, rec.MediaDuration)
 		}
-		b.WriteString(fmt.Sprintf("%s: %s\r\n", file, desc))
+		fmt.Fprintf(&b, "%s: %s\r\n", file, desc)
 	}
 	return b.String(), nil
 }
@@ -152,9 +151,9 @@ func cmdWhich(s *Session, args []string, redirect string) (string, error) {
 	var b strings.Builder
 	for _, name := range args {
 		if _, ok := commands[name]; ok {
-			b.WriteString(fmt.Sprintf("%s: zephyr-vsh built-in\r\n", name))
+			fmt.Fprintf(&b, "%s: zephyr-vsh built-in\r\n", name)
 		} else {
-			b.WriteString(fmt.Sprintf("%s: not found\r\n", name))
+			fmt.Fprintf(&b, "%s: not found\r\n", name)
 		}
 	}
 	return b.String(), nil
@@ -177,9 +176,9 @@ func cmdMd5sum(s *Session, args []string, redirect string) (string, error) {
 			return "", err
 		}
 
-		rec, recErr := model.GetFile(s.UserID, ossPath)
+		rec, recErr := s.repos.Files.Get(s.UserID, ossPath)
 		if recErr == nil && rec.ContentHash != "" {
-			b.WriteString(fmt.Sprintf("%s  %s\r\n", rec.ContentHash, file))
+			fmt.Fprintf(&b, "%s  %s\r\n", rec.ContentHash, file)
 			continue
 		}
 
@@ -189,7 +188,7 @@ func cmdMd5sum(s *Session, args []string, redirect string) (string, error) {
 		}
 		h := md5.New()
 		h.Write(data)
-		b.WriteString(fmt.Sprintf("%s  %s\r\n", hex.EncodeToString(h.Sum(nil)), file))
+		fmt.Fprintf(&b, "%s  %s\r\n", hex.EncodeToString(h.Sum(nil)), file)
 	}
 	return b.String(), nil
 }
@@ -216,7 +215,7 @@ func cmdSha256sum(s *Session, args []string, redirect string) (string, error) {
 		}
 		h := sha256.New()
 		h.Write(data)
-		b.WriteString(fmt.Sprintf("%s  %s\r\n", hex.EncodeToString(h.Sum(nil)), file))
+		fmt.Fprintf(&b, "%s  %s\r\n", hex.EncodeToString(h.Sum(nil)), file)
 	}
 	return b.String(), nil
 }
@@ -249,7 +248,7 @@ func cmdHistory(s *Session, args []string, redirect string) (string, error) {
 
 	var b strings.Builder
 	for i, line := range lines {
-		b.WriteString(fmt.Sprintf(" %4d  %s\r\n", i+1, line))
+		fmt.Fprintf(&b, " %4d  %s\r\n", i+1, line)
 	}
 	return b.String(), nil
 }

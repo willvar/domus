@@ -8,8 +8,6 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
-
-	"zephyr/internal/model"
 )
 
 // cmdFunc is the signature for a virtual shell command.
@@ -150,6 +148,6 @@ func syncDirDB(s *Session, prefix string) {
 		if !isDir {
 			ct = mime.TypeByExtension(filepath.Ext(obj.Key))
 		}
-		_ = model.UpsertFile(s.UserID, obj.Key, name, isDir, obj.Size, ct, "")
+		_ = s.repos.Files.Upsert(s.UserID, obj.Key, name, isDir, obj.Size, ct, "")
 	}
 }

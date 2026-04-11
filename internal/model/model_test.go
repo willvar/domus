@@ -10,30 +10,31 @@ import (
 	gormlogger "gorm.io/gorm/logger"
 )
 
-func setupTestDB(t *testing.T) {
+func setupTestDB(t *testing.T) (*gorm.DB, *Repos) {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_DSN")
 	if dsn == "" {
-		dsn = "host=localhost port=5432 user=postgres password= dbname=zephyr_test sslmode=disable"
+		dsn = "host=localhost port=5432 user=postgres password= dbname=zephyr_test_model sslmode=disable"
 	}
-	var err error
-	db, err = gorm.Open(postgres.Open(dsn), &gorm.Config{
+	testDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
 	})
 	if err != nil {
 		t.Skipf("skipping test: could not connect to PostgreSQL: %v", err)
 	}
-	if err := db.AutoMigrate(&User{}, &TrashItem{}, &FileRecord{}, &DBSession{}, &Job{}, &Task{}, &AuditLog{}, &WorkspaceState{}, &Share{}); err != nil {
+	if err := testDB.AutoMigrate(&User{}, &TrashItem{}, &FileRecord{}, &DBSession{}, &Job{}, &Task{}, &AuditLog{}, &WorkspaceState{}, &Share{}); err != nil {
 		t.Fatalf("failed to migrate: %v", err)
 	}
-	db.Exec("DELETE FROM users")
-	db.Exec("DELETE FROM trash")
-	db.Exec("DELETE FROM files")
-	db.Exec("DELETE FROM sessions")
-	db.Exec("DELETE FROM jobs")
-	db.Exec("DELETE FROM tasks")
-	db.Exec("DELETE FROM workspace_states")
-	db.Exec("DELETE FROM shares")
+	testDB.Exec("DELETE FROM users")
+	testDB.Exec("DELETE FROM trash")
+	testDB.Exec("DELETE FROM files")
+	testDB.Exec("DELETE FROM sessions")
+	testDB.Exec("DELETE FROM jobs")
+	testDB.Exec("DELETE FROM tasks")
+	testDB.Exec("DELETE FROM workspace_states")
+	testDB.Exec("DELETE FROM shares")
+	repos := NewRepos(testDB, false, nil)
+	return testDB, repos
 }
 
 // --- User tests ---
@@ -52,8 +53,8 @@ func TestHashAndCheckPassword(t *testing.T) {
 }
 
 func TestCreateUser(t *testing.T) {
-	setupTestDB(t)
-	user, err := CreateUser("alice", "password123", "root", "")
+	_, repos := setupTestDB(t)
+	user, err := repos.Users.Create("alice", "password123", "root", "")
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
@@ -69,21 +70,21 @@ func TestCreateUser(t *testing.T) {
 }
 
 func TestCreateUserDuplicateUsername(t *testing.T) {
-	setupTestDB(t)
-	_, err := CreateUser("alice", "pass1", "user", "")
+	_, repos := setupTestDB(t)
+	_, err := repos.Users.Create("alice", "pass1", "user", "")
 	if err != nil {
 		t.Fatalf("first create: %v", err)
 	}
-	_, err = CreateUser("alice", "pass2", "user", "")
+	_, err = repos.Users.Create("alice", "pass2", "user", "")
 	if err == nil {
 		t.Fatal("expected error for duplicate username")
 	}
 }
 
 func TestGetUserByUsername(t *testing.T) {
-	setupTestDB(t)
-	_, _ = CreateUser("bob", "pass", "user", "")
-	user, err := GetUserByUsername("bob")
+	_, repos := setupTestDB(t)
+	_, _ = repos.Users.Create("bob", "pass", "user", "")
+	user, err := repos.Users.GetByUsername("bob")
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
@@ -93,9 +94,9 @@ func TestGetUserByUsername(t *testing.T) {
 }
 
 func TestGetUserByID(t *testing.T) {
-	setupTestDB(t)
-	created, _ := CreateUser("charlie", "pass", "user", "")
-	user, err := GetUserByID(created.ID)
+	_, repos := setupTestDB(t)
+	created, _ := repos.Users.Create("charlie", "pass", "user", "")
+	user, err := repos.Users.GetByID(created.ID)
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
@@ -105,26 +106,26 @@ func TestGetUserByID(t *testing.T) {
 }
 
 func TestUpdateUser(t *testing.T) {
-	setupTestDB(t)
-	user, _ := CreateUser("dave", "pass", "user", "")
-	err := UpdateUser(user.ID, "root")
+	_, repos := setupTestDB(t)
+	user, _ := repos.Users.Create("dave", "pass", "user", "")
+	err := repos.Users.UpdateRole(user.ID, "root")
 	if err != nil {
 		t.Fatalf("update: %v", err)
 	}
-	updated, _ := GetUserByID(user.ID)
+	updated, _ := repos.Users.GetByID(user.ID)
 	if updated.Role != "root" {
 		t.Fatalf("expected admin, got %s", updated.Role)
 	}
 }
 
 func TestUpdateUserPassword(t *testing.T) {
-	setupTestDB(t)
-	user, _ := CreateUser("eve", "oldpass", "user", "")
-	err := UpdateUserPassword(user.ID, "newpass")
+	_, repos := setupTestDB(t)
+	user, _ := repos.Users.Create("eve", "oldpass", "user", "")
+	err := repos.Users.UpdatePassword(user.ID, "newpass")
 	if err != nil {
 		t.Fatalf("update password: %v", err)
 	}
-	updated, _ := GetUserByID(user.ID)
+	updated, _ := repos.Users.GetByID(user.ID)
 	if !CheckPassword(updated.PasswordHash, "newpass") {
 		t.Fatal("new password should work")
 	}
@@ -134,49 +135,49 @@ func TestUpdateUserPassword(t *testing.T) {
 }
 
 func TestDeleteUser(t *testing.T) {
-	setupTestDB(t)
-	user, _ := CreateUser("frank", "pass", "user", "")
-	err := DeleteUser(user.ID)
+	_, repos := setupTestDB(t)
+	user, _ := repos.Users.Create("frank", "pass", "user", "")
+	err := repos.Users.Delete(user.ID)
 	if err != nil {
 		t.Fatalf("delete: %v", err)
 	}
-	_, err = GetUserByID(user.ID)
+	_, err = repos.Users.GetByID(user.ID)
 	if err == nil {
 		t.Fatal("expected error after deletion")
 	}
 }
 
 func TestDeleteUserAndRelatedData(t *testing.T) {
-	setupTestDB(t)
+	testDB, repos := setupTestDB(t)
 
-	owner, _ := CreateUser("owner", "pass", "user", "")
-	target, _ := CreateUser("target", "pass", "user", "")
-	other, _ := CreateUser("other", "pass", "user", "")
+	owner, _ := repos.Users.Create("owner", "pass", "user", "")
+	target, _ := repos.Users.Create("target", "pass", "user", "")
+	other, _ := repos.Users.Create("other", "pass", "user", "")
 
-	store := NewSessionStore(db)
+	store := NewSessionStore(testDB)
 	sessionID, err := store.Create(owner.ID, owner.Username, owner.Role)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
 	filePath := owner.Username + "/home/" + owner.Username + "/doc.txt"
-	if err := UpsertFile(owner.ID, filePath, "doc.txt", false, 123, "text/plain", "hash"); err != nil {
+	if err := repos.Files.Upsert(owner.ID, filePath, "doc.txt", false, 123, "text/plain", "hash"); err != nil {
 		t.Fatalf("upsert file: %v", err)
 	}
-	if err := CreateTrashRecord(owner.ID, filePath, owner.Username+"/.trash/doc.txt", 123, false); err != nil {
+	if err := repos.Trash.Create(owner.ID, filePath, owner.Username+"/.trash/doc.txt", 123, false); err != nil {
 		t.Fatalf("create trash record: %v", err)
 	}
-	if _, err := CreateJob(owner.ID, "job-clean-owner", "transcode", "{}"); err != nil {
+	if _, err := repos.Jobs.Create(owner.ID, "job-clean-owner", "transcode", "{}"); err != nil {
 		t.Fatalf("create job: %v", err)
 	}
-	if err := CreateTask(owner.ID, "task-clean-owner", "upload", "doc.txt"); err != nil {
+	if err := repos.Tasks.Create(owner.ID, "task-clean-owner", "upload", "doc.txt"); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if err := SaveWorkspaceState(owner.ID, `{"layout":"test"}`); err != nil {
+	if err := repos.Workspace.Save(owner.ID, `{"layout":"test"}`); err != nil {
 		t.Fatalf("save workspace state: %v", err)
 	}
 
-	if err := CreateShare(&Share{
+	if err := repos.Shares.Create(&Share{
 		ShareID:      "share-owner-clean",
 		OwnerID:      owner.ID,
 		FilePath:     filePath,
@@ -189,7 +190,7 @@ func TestDeleteUserAndRelatedData(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create owner share: %v", err)
 	}
-	if err := CreateShare(&Share{
+	if err := repos.Shares.Create(&Share{
 		ShareID:      "share-target-clean",
 		OwnerID:      other.ID,
 		FilePath:     other.Username + "/home/" + other.Username + "/x.txt",
@@ -202,7 +203,7 @@ func TestDeleteUserAndRelatedData(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create target share: %v", err)
 	}
-	if err := CreateShare(&Share{
+	if err := repos.Shares.Create(&Share{
 		ShareID:      "share-other-keep",
 		OwnerID:      other.ID,
 		FilePath:     other.Username + "/home/" + other.Username + "/keep.txt",
@@ -216,78 +217,78 @@ func TestDeleteUserAndRelatedData(t *testing.T) {
 		t.Fatalf("create keep share: %v", err)
 	}
 
-	if err := DeleteUserAndRelatedData(owner.ID); err != nil {
+	if err := repos.Cleanup.DeleteUserAndRelatedData(owner.ID); err != nil {
 		t.Fatalf("DeleteUserAndRelatedData: %v", err)
 	}
 
-	if _, err := GetUserByID(owner.ID); err == nil {
+	if _, err := repos.Users.GetByID(owner.ID); err == nil {
 		t.Fatal("expected owner to be deleted")
 	}
 	if store.Get(sessionID) != nil {
 		t.Fatal("expected owner session to be deleted")
 	}
-	if _, err := GetFile(owner.ID, filePath); err == nil {
+	if _, err := repos.Files.Get(owner.ID, filePath); err == nil {
 		t.Fatal("expected owner file to be deleted")
 	}
-	trash, err := ListTrash(owner.ID)
+	trash, err := repos.Trash.List(owner.ID)
 	if err != nil {
 		t.Fatalf("list trash: %v", err)
 	}
 	if len(trash) != 0 {
 		t.Fatalf("expected no trash records, got %d", len(trash))
 	}
-	jobs, err := ListActiveJobs(owner.ID)
+	jobs, err := repos.Jobs.ListActive(owner.ID)
 	if err != nil {
 		t.Fatalf("list jobs: %v", err)
 	}
 	if len(jobs) != 0 {
 		t.Fatalf("expected no jobs, got %d", len(jobs))
 	}
-	tasks, err := ListRecentTasks(owner.ID)
+	tasks, err := repos.Tasks.ListRecent(owner.ID)
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
 	if len(tasks) != 0 {
 		t.Fatalf("expected no tasks, got %d", len(tasks))
 	}
-	if _, err := GetWorkspaceState(owner.ID); err == nil {
+	if _, err := repos.Workspace.Get(owner.ID); err == nil {
 		t.Fatal("expected workspace state to be deleted")
 	}
-	if _, err := GetShareByID("share-owner-clean"); err == nil {
+	if _, err := repos.Shares.GetByID("share-owner-clean"); err == nil {
 		t.Fatal("expected owner share to be deleted")
 	}
-	if _, err := GetShareByID("share-target-clean"); err == nil {
+	if _, err := repos.Shares.GetByID("share-target-clean"); err == nil {
 		t.Fatal("expected target share to be deleted")
 	}
-	if _, err := GetShareByID("share-other-keep"); err != nil {
+	if _, err := repos.Shares.GetByID("share-other-keep"); err != nil {
 		t.Fatalf("expected unrelated share to remain: %v", err)
 	}
 }
 
 func TestUserCount(t *testing.T) {
-	setupTestDB(t)
-	count, err := UserCount()
+	_, repos := setupTestDB(t)
+	count, err := repos.Users.Count()
 	if err != nil {
 		t.Fatalf("count: %v", err)
 	}
 	if count != 0 {
 		t.Fatalf("expected 0, got %d", count)
 	}
-	_, _ = CreateUser("user1", "pass", "user", "")
-	_, _ = CreateUser("user2", "pass", "user", "")
-	count, _ = UserCount()
+	_, _ = repos.Users.Create("user1", "pass", "user", "")
+	_, _ = repos.Users.Create("user2", "pass", "user", "")
+	count, _ = repos.Users.Count()
 	if count != 2 {
 		t.Fatalf("expected 2, got %d", count)
 	}
 }
 
 func TestCountUsersByRole(t *testing.T) {
-	setupTestDB(t)
-	_, _ = CreateUser("root-user", "pass", "root", "")
-	_, _ = CreateUser("normal-user-1", "pass", "user", "")
-	_, _ = CreateUser("normal-user-2", "pass", "user", "")
+	_, repos := setupTestDB(t)
+	_, _ = repos.Users.Create("root-user", "pass", "root", "")
+	_, _ = repos.Users.Create("normal-user-1", "pass", "user", "")
+	_, _ = repos.Users.Create("normal-user-2", "pass", "user", "")
 
-	rootCount, err := CountUsersByRole("root")
+	rootCount, err := repos.Users.CountByRole("root")
 	if err != nil {
 		t.Fatalf("count root users: %v", err)
 	}
@@ -295,7 +296,7 @@ func TestCountUsersByRole(t *testing.T) {
 		t.Fatalf("expected 1 root user, got %d", rootCount)
 	}
 
-	userCount, err := CountUsersByRole("user")
+	userCount, err := repos.Users.CountByRole("user")
 	if err != nil {
 		t.Fatalf("count normal users: %v", err)
 	}
@@ -307,8 +308,8 @@ func TestCountUsersByRole(t *testing.T) {
 // --- Session tests ---
 
 func TestSessionStore_CreateAndGet(t *testing.T) {
-	setupTestDB(t)
-	store := NewSessionStore(db)
+	testDB, _ := setupTestDB(t)
+	store := NewSessionStore(testDB)
 
 	id, err := store.Create("user-uuid-1", "alice", "root")
 	if err != nil {
@@ -330,14 +331,14 @@ func TestSessionStore_CreateAndGet(t *testing.T) {
 }
 
 func TestSessionStore_GetExpired(t *testing.T) {
-	setupTestDB(t)
-	store := NewSessionStore(db)
+	testDB, _ := setupTestDB(t)
+	store := NewSessionStore(testDB)
 
 	id, err := store.Create("user-uuid-1", "alice", "root")
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	db.Model(&DBSession{}).Where("id = ?", id).Update("expires_at", time.Now().Add(-1*time.Hour))
+	testDB.Model(&DBSession{}).Where("id = ?", id).Update("expires_at", time.Now().Add(-1*time.Hour))
 	session := store.Get(id)
 	if session != nil {
 		t.Fatal("expected nil for expired session")
@@ -345,8 +346,8 @@ func TestSessionStore_GetExpired(t *testing.T) {
 }
 
 func TestSessionStore_GetNotFound(t *testing.T) {
-	setupTestDB(t)
-	store := NewSessionStore(db)
+	testDB, _ := setupTestDB(t)
+	store := NewSessionStore(testDB)
 	session := store.Get("nonexistent-id")
 	if session != nil {
 		t.Fatal("expected nil for nonexistent session")
@@ -354,8 +355,8 @@ func TestSessionStore_GetNotFound(t *testing.T) {
 }
 
 func TestSessionStore_Delete(t *testing.T) {
-	setupTestDB(t)
-	store := NewSessionStore(db)
+	testDB, _ := setupTestDB(t)
+	store := NewSessionStore(testDB)
 	id, _ := store.Create("user-uuid-1", "alice", "root")
 	store.Delete(id)
 	session := store.Get(id)
@@ -365,8 +366,8 @@ func TestSessionStore_Delete(t *testing.T) {
 }
 
 func TestSessionStore_DeleteByUserID(t *testing.T) {
-	setupTestDB(t)
-	store := NewSessionStore(db)
+	testDB, _ := setupTestDB(t)
+	store := NewSessionStore(testDB)
 	id1, _ := store.Create("user-uuid-1", "alice", "root")
 	id2, _ := store.Create("user-uuid-1", "alice", "root")
 	id3, _ := store.Create("user-uuid-2", "bob", "user")
@@ -383,17 +384,17 @@ func TestSessionStore_DeleteByUserID(t *testing.T) {
 }
 
 func TestCleanExpiredSessions(t *testing.T) {
-	setupTestDB(t)
-	store := NewSessionStore(db)
+	testDB, _ := setupTestDB(t)
+	store := NewSessionStore(testDB)
 	validID, _ := store.Create("user-uuid-1", "alice", "root")
 	expiredID, _ := store.Create("user-uuid-2", "bob", "user")
-	db.Model(&DBSession{}).Where("id = ?", expiredID).Update("expires_at", time.Now().Add(-1*time.Hour))
-	CleanExpiredSessions()
+	testDB.Model(&DBSession{}).Where("id = ?", expiredID).Update("expires_at", time.Now().Add(-1*time.Hour))
+	store.CleanExpired()
 	if store.Get(validID) == nil {
 		t.Fatal("valid session should still exist")
 	}
 	var count int64
-	db.Model(&DBSession{}).Where("id = ?", expiredID).Count(&count)
+	testDB.Model(&DBSession{}).Where("id = ?", expiredID).Count(&count)
 	if count != 0 {
 		t.Fatal("expired session should be cleaned up")
 	}

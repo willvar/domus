@@ -58,7 +58,7 @@ func cmdHead(s *Session, args []string, redirect string) (string, error) {
 	var file string
 	for i := 0; i < len(args); i++ {
 		if args[i] == "-n" && i+1 < len(args) {
-			fmt.Sscanf(args[i+1], "%d", &n)
+			_, _ = fmt.Sscanf(args[i+1], "%d", &n)
 			i++
 		} else if !strings.HasPrefix(args[i], "-") {
 			file = args[i]
@@ -92,7 +92,7 @@ func cmdTail(s *Session, args []string, redirect string) (string, error) {
 	var file string
 	for i := 0; i < len(args); i++ {
 		if args[i] == "-n" && i+1 < len(args) {
-			fmt.Sscanf(args[i+1], "%d", &n)
+			_, _ = fmt.Sscanf(args[i+1], "%d", &n)
 			i++
 		} else if !strings.HasPrefix(args[i], "-") {
 			file = args[i]
@@ -152,7 +152,7 @@ func cmdEcho(s *Session, args []string, redirect string) (string, error) {
 		}
 		name := path.Base(ossPath)
 		ct := mime.TypeByExtension(filepath.Ext(name))
-		_ = model.UpsertFile(s.UserID, ossPath, name, false, int64(len(content)), ct, "",
+		_ = s.repos.Files.Upsert(s.UserID, ossPath, name, false, int64(len(content)), ct, "",
 			model.UpsertFileOpts{WrappedDEK: wrappedDEK})
 		s.notifyParentDir(ossPath, "modified")
 		return "", nil
@@ -209,7 +209,7 @@ func cmdGrep(s *Session, args []string, redirect string) (string, error) {
 		}
 		if strings.Contains(testLine, matchPattern) {
 			if lineNumbers {
-				b.WriteString(fmt.Sprintf("\033[32m%d\033[0m:", i+1))
+				fmt.Fprintf(&b, "\033[32m%d\033[0m:", i+1)
 			}
 			remaining := line
 			for {
@@ -273,8 +273,8 @@ func cmdSort(s *Session, args []string, redirect string) (string, error) {
 	if numeric {
 		gosort.Slice(lines, func(i, j int) bool {
 			var a, b float64
-			fmt.Sscanf(lines[i], "%f", &a)
-			fmt.Sscanf(lines[j], "%f", &b)
+			_, _ = fmt.Sscanf(lines[i], "%f", &a)
+			_, _ = fmt.Sscanf(lines[j], "%f", &b)
 			if reverse {
 				return a > b
 			}
@@ -333,7 +333,7 @@ func cmdUniq(s *Session, args []string, redirect string) (string, error) {
 			continue
 		}
 		if countMode {
-			b.WriteString(fmt.Sprintf("%4d %s\r\n", count, lines[i-1]))
+			fmt.Fprintf(&b, "%4d %s\r\n", count, lines[i-1])
 		} else {
 			b.WriteString(lines[i-1] + "\r\n")
 		}
@@ -373,7 +373,7 @@ func cmdDiff(s *Session, args []string, redirect string) (string, error) {
 	lines2 := strings.Split(content2, "\n")
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("--- %s\r\n+++ %s\r\n", positional[0], positional[1]))
+	fmt.Fprintf(&b, "--- %s\r\n+++ %s\r\n", positional[0], positional[1])
 
 	maxLen := len(lines1)
 	if len(lines2) > maxLen {

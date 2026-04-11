@@ -47,7 +47,7 @@ func (h *Handler) handleCreateShare(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	fileRecord, err := model.GetFile(session.UserID, resolvedPath)
+	fileRecord, err := h.Repos.Files.Get(session.UserID, resolvedPath)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "file_not_found"})
 	}
@@ -76,7 +76,7 @@ func (h *Handler) handleCreateShare(c *fiber.Ctx) error {
 	}
 
 	// Resolve target user
-	targetUser, err := model.GetUserByUsername(body.TargetUsername)
+	targetUser, err := h.Repos.Users.GetByUsername(body.TargetUsername)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "target_user_not_found"})
 	}
@@ -115,7 +115,7 @@ func (h *Handler) handleCreateShare(c *fiber.Ctx) error {
 		share.ExpiresAt = &exp
 	}
 
-	if err := model.CreateShare(share); err != nil {
+	if err := h.Repos.Shares.Create(share); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "create_share_failed"})
 	}
 
@@ -143,7 +143,7 @@ func (h *Handler) handleListShares(c *fiber.Ctx) error {
 		return err
 	}
 	session := c.Locals("session").(*model.Session)
-	shares, err := model.ListSharesForFile(session.UserID, resolvedPath)
+	shares, err := h.Repos.Shares.ListForFile(session.UserID, resolvedPath)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "list_failed"})
 	}
@@ -161,7 +161,7 @@ func (h *Handler) handleDeleteShare(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_id"})
 	}
 	session := c.Locals("session").(*model.Session)
-	deleted, err := model.DeleteShare(int64(id), session.UserID)
+	deleted, err := h.Repos.Shares.Delete(int64(id), session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
 	}
@@ -184,7 +184,7 @@ func (h *Handler) handleDeleteShare(c *fiber.Ctx) error {
 // GET /file/shared
 func (h *Handler) handleListSharedWithMe(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	shares, err := model.ListSharesForUser(session.UserID)
+	shares, err := h.Repos.Shares.ListForUser(session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "list_failed"})
 	}
@@ -203,7 +203,7 @@ func (h *Handler) handleShareInfo(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "missing_share_id"})
 	}
 
-	share, err := model.GetShareByID(shareID)
+	share, err := h.Repos.Shares.GetByID(shareID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "share_not_found"})
 	}

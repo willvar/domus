@@ -81,7 +81,7 @@ func (h *Handler) handlePatchContent(c *fiber.Ctx) error {
 
 	// Validate base_size against DB record
 	session := c.Locals("session").(*model.Session)
-	fileRecord, err := model.GetFile(session.UserID, resolvedPath)
+	fileRecord, err := h.Repos.Files.Get(session.UserID, resolvedPath)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "file_not_found"})
 	}
@@ -187,7 +187,7 @@ func (h *Handler) handlePatchContent(c *fiber.Ctx) error {
 	// Update file record
 	fileName := filepath.Base(resolvedPath)
 	ct := mime.TypeByExtension(filepath.Ext(resolvedPath))
-	_ = model.UpsertFile(session.UserID, resolvedPath, fileName, false, newSize, ct, "")
+	_ = h.Repos.Files.Upsert(session.UserID, resolvedPath, fileName, false, newSize, ct, "")
 
 	// Notify WebSocket subscribers of the parent directory
 	if parent := parentDirOf(resolvedPath); parent != "" {

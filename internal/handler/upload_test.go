@@ -13,7 +13,6 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"zephyr/internal/middleware"
-	"zephyr/internal/model"
 )
 
 type uploadInitResult struct {
@@ -101,7 +100,7 @@ func completeUploadForTest(t *testing.T, app *fiber.App, cookie, uploadID string
 }
 
 func TestUploadPartRejectsOutOfRangePartNumber(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, _, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 	initResult := initUploadForTest(t, app, cookie, "a.txt", 1)
 
@@ -118,7 +117,7 @@ func TestUploadPartRejectsOutOfRangePartNumber(t *testing.T) {
 }
 
 func TestUploadPartRejectsInvalidChunkSize(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, _, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 	initResult := initUploadForTest(t, app, cookie, "b.txt", 2)
 
@@ -135,7 +134,7 @@ func TestUploadPartRejectsInvalidChunkSize(t *testing.T) {
 }
 
 func TestUploadPartDeduplicatesCompletedParts(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, _, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 	initResult := initUploadForTest(t, app, cookie, "c.txt", 1)
 
@@ -171,7 +170,7 @@ func TestUploadPartDeduplicatesCompletedParts(t *testing.T) {
 }
 
 func TestUploadPartRejectsZeroSizeUpload(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, _, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 	initResult := initUploadForTest(t, app, cookie, "d.txt", 0)
 
@@ -188,7 +187,7 @@ func TestUploadPartRejectsZeroSizeUpload(t *testing.T) {
 }
 
 func TestUploadCompleteRejectsIncompleteUpload(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, _, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 	initResult := initUploadForTest(t, app, cookie, "e.txt", 2)
 
@@ -205,7 +204,7 @@ func TestUploadCompleteRejectsIncompleteUpload(t *testing.T) {
 }
 
 func TestUploadCompleteAcceptsFullyUploadedFile(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, _, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 	initResult := initUploadForTest(t, app, cookie, "f.txt", 1)
 
@@ -221,7 +220,7 @@ func TestUploadCompleteAcceptsFullyUploadedFile(t *testing.T) {
 }
 
 func TestUploadStatusReturnsActiveForUploading(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, _, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 	initResult := initUploadForTest(t, app, cookie, "h.txt", 1)
 
@@ -246,7 +245,7 @@ func TestUploadStatusReturnsActiveForUploading(t *testing.T) {
 }
 
 func TestUploadAbortCancelsTask(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 	initResult := initUploadForTest(t, app, cookie, "g.txt", 1)
 
@@ -260,7 +259,7 @@ func TestUploadAbortCancelsTask(t *testing.T) {
 		t.Fatalf("abort upload: expected 200, got %d", resp.StatusCode)
 	}
 
-	task, err := model.GetTask(initResult.TaskID)
+	task, err := repos.Tasks.Get(initResult.TaskID)
 	if err != nil {
 		t.Fatalf("get task: %v", err)
 	}

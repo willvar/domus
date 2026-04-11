@@ -8,7 +8,6 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
-	"gorm.io/gorm"
 
 	"zephyr/config"
 	"zephyr/internal/auth"
@@ -23,9 +22,9 @@ import (
 // Handler holds all dependencies for HTTP handlers.
 type Handler struct {
 	Config     *config.Config
-	DB         *gorm.DB
+	Repos      *model.Repos
 	Store      store.FileStore
-	Sessions   *model.SessionStore
+	Email      service.EmailSender
 	Dispatcher *service.Dispatcher
 	Transcoder *service.Transcoder
 	Audit      *model.AuditWorker
@@ -140,7 +139,7 @@ func (h *Handler) getFileEncryptionKey(session *model.Session) ([]byte, error) {
 // loadUserKEK loads and unwraps a user's KEK from the database.
 // Used by background jobs (no session) and for target user KEK in sharing.
 func (h *Handler) loadUserKEK(userID string) ([]byte, error) {
-	wrappedHex, err := model.GetUserWrappedKEK(userID)
+	wrappedHex, err := h.Repos.Users.GetWrappedKEK(userID)
 	if err != nil {
 		return nil, fmt.Errorf("load wrapped KEK: %w", err)
 	}
@@ -179,7 +178,7 @@ func (h *Handler) generateWrappedKEK() (string, error) {
 // cloneDirFiles copies file records from srcPrefix to dstPrefix,
 // preserving WrappedDEK, plaintext size, and other metadata.
 func (h *Handler) cloneDirFiles(userID, srcPrefix, dstPrefix string) {
-	records, err := model.ListFilesByPrefix(userID, srcPrefix)
+	records, err := h.Repos.Files.ListByPrefix(userID, srcPrefix)
 	if err != nil {
 		return
 	}
@@ -190,9 +189,9 @@ func (h *Handler) cloneDirFiles(userID, srcPrefix, dstPrefix string) {
 		if r.WrappedDEK != "" {
 			opts = append(opts, model.UpsertFileOpts{WrappedDEK: r.WrappedDEK})
 		}
-		_ = model.UpsertFile(userID, newPath, newName, r.IsDir, r.Size, r.ContentType, r.ContentHash, opts...)
+		_ = h.Repos.Files.Upsert(userID, newPath, newName, r.IsDir, r.Size, r.ContentType, r.ContentHash, opts...)
 		if r.ThumbnailKey != "" {
-			_ = model.UpdateFileThumbnail(userID, newPath, r.ThumbnailKey, r.ThumbnailWrappedDEK, r.MediaWidth, r.MediaHeight, r.MediaDuration)
+			_ = h.Repos.Files.UpdateThumbnail(userID, newPath, r.ThumbnailKey, r.ThumbnailWrappedDEK, r.MediaWidth, r.MediaHeight, r.MediaDuration)
 		}
 	}
 }

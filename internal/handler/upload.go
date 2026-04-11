@@ -130,7 +130,7 @@ func (h *Handler) handleUploadConflictCheck(c *fiber.Ctx) error {
 		return err
 	}
 
-	allFiles, _ := model.ListAllChildren(session.UserID, resolvedDir)
+	allFiles, _ := h.Repos.Files.ListAllChildren(session.UserID, resolvedDir)
 	existingByName := make(map[string]*model.FileRecord, len(allFiles))
 	for i := range allFiles {
 		existingByName[allFiles[i].Name] = &allFiles[i]
@@ -185,20 +185,20 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 	}
 
 	// Check if file already exists (in DB, covers all statuses: uploading/processing/ready)
-	existing, err := model.GetFile(session.UserID, resolvedPath)
+	existing, err := h.Repos.Files.Get(session.UserID, resolvedPath)
 	if err == nil && existing != nil {
 		// File exists — act based on strategy
 		switch body.ConflictStrategy {
 		case "replace":
 			// Delete the existing record so the new upload can take its place
-			_ = model.DeleteFile(session.UserID, resolvedPath)
+			_ = h.Repos.Files.Delete(session.UserID, resolvedPath)
 		case "rename":
 			// Collect existing names from the database (all statuses to avoid collisions)
 			resolvedDir, dirErr := middleware.ResolvePath(c, dirPath)
 			if dirErr != nil {
 				return dirErr
 			}
-			allFiles, _ := model.ListAllChildren(session.UserID, resolvedDir)
+			allFiles, _ := h.Repos.Files.ListAllChildren(session.UserID, resolvedDir)
 			usedNames := make(map[string]struct{})
 			for _, f := range allFiles {
 				usedNames[f.Name] = struct{}{}
@@ -232,14 +232,14 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 
 	// Create a user-facing task to track the full upload lifecycle
 	taskID := uuid.New().String()
-	if err := model.CreateTask(session.UserID, taskID, "upload", fileName); err != nil {
+	if err := h.Repos.Tasks.Create(session.UserID, taskID, "upload", fileName); err != nil {
 		_ = os.RemoveAll(tempDir)
 		return c.Status(500).JSON(fiber.Map{"error": "create_task_failed"})
 	}
 
 	chunkSize := int(config.UploadChunkSize)
-	if err := model.CreateUploadFile(session.UserID, uploadID, taskID, resolvedPath, fileName, body.FileSize, chunkSize); err != nil {
-		_ = model.DeleteTask(taskID)
+	if err := h.Repos.Files.CreateUpload(session.UserID, uploadID, taskID, resolvedPath, fileName, body.FileSize, chunkSize); err != nil {
+		_ = h.Repos.Tasks.Delete(taskID)
 		_ = os.RemoveAll(tempDir)
 		return c.Status(500).JSON(fiber.Map{"error": "record_upload_failed"})
 	}
@@ -273,7 +273,7 @@ func (h *Handler) handleUploadPart(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	record, err := model.GetUploadFile(session.UserID, uploadID)
+	record, err := h.Repos.Files.GetUpload(session.UserID, uploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}
@@ -339,7 +339,7 @@ func (h *Handler) handleUploadPart(c *fiber.Ctx) error {
 	}
 
 	// Track completed parts
-	freshRecord, err := model.GetUploadFile(session.UserID, uploadID)
+	freshRecord, err := h.Repos.Files.GetUpload(session.UserID, uploadID)
 	if err == nil {
 		var parts []int
 		_ = json.Unmarshal([]byte(freshRecord.CompletedParts), &parts)
@@ -353,7 +353,7 @@ func (h *Handler) handleUploadPart(c *fiber.Ctx) error {
 		if !exists {
 			parts = append(parts, pn)
 			partsJSON, _ := json.Marshal(parts)
-			_ = model.UpdateUploadFileParts(uploadID, string(partsJSON))
+			_ = h.Repos.Files.UpdateUploadParts(uploadID, string(partsJSON))
 		}
 	}
 	mu.Unlock()
@@ -374,7 +374,7 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	record, err := model.GetUploadFile(session.UserID, body.UploadID)
+	record, err := h.Repos.Files.GetUpload(session.UserID, body.UploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}
@@ -402,7 +402,7 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 	}
 
 	// Queue for async server-side processing
-	_ = model.UpdateFileStatus(body.UploadID, "processing")
+	_ = h.Repos.Files.UpdateStatus(body.UploadID, "processing")
 	uploadMu.Delete(body.UploadID)
 
 	// Create a dispatcher job linked to the user-facing task
@@ -421,7 +421,7 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		TempDir:  filepath.Join(config.TempDir, "upload", body.UploadID),
 	}
 	paramsJSON, _ := json.Marshal(params)
-	_ = model.CreateJobDirect(&model.Job{
+	_ = h.Repos.Jobs.CreateDirect(&model.Job{
 		UserID: session.UserID,
 		JobID:  jobID,
 		TaskID: taskID,
@@ -432,7 +432,7 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 
 	// Update the task phase to indicate server processing has begun
 	if taskID != "" {
-		_ = model.UpdateTaskProgress(taskID, 0, "processing")
+		_ = h.Repos.Tasks.UpdateProgress(taskID, 0, "processing")
 	}
 
 	h.Audit.LogFromCtx(c, "file_upload", record.Path, record.Name, "processing", 0)
@@ -449,10 +449,10 @@ func (h *Handler) RunOSSUploadJob(ctx context.Context, job *model.Job) error {
 	localFile := filepath.Join(params.TempDir, "data")
 
 	// Hashing
-	_ = model.UpdateJobProgress(job.JobID, 0.1, "hashing")
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.1, "hashing")
 	contentHash, err := hashFile(localFile)
 	if err != nil {
-		_ = model.UpdateFileStatus(params.UploadID, "failed")
+		_ = h.Repos.Files.UpdateStatus(params.UploadID, "failed")
 		return fmt.Errorf("hash file: %w", err)
 	}
 
@@ -469,7 +469,7 @@ func (h *Handler) RunOSSUploadJob(ctx context.Context, job *model.Job) error {
 	var mediaWidth, mediaHeight int
 	var mediaDuration float64
 	if mediaType := service.DetectMediaType(params.FileName); mediaType == "image" || mediaType == "video" {
-		_ = model.UpdateJobProgress(job.JobID, 0.25, "thumbnail")
+		_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.25, "thumbnail")
 		thumbKey := fmt.Sprintf("%s/.user/thumbnails/%s_%d.webp", params.Username, contentHash, params.FileSize)
 
 		result, err := h.GenerateThumbnailFromPlaintext(ctx, localFile, mediaType, params.TempDir)
@@ -485,25 +485,25 @@ func (h *Handler) RunOSSUploadJob(ctx context.Context, job *model.Job) error {
 	}
 
 	// Encrypting
-	_ = model.UpdateJobProgress(job.JobID, 0.3, "encrypting")
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.3, "encrypting")
 	kek, err := h.loadUserKEK(params.UserID)
 	if err != nil {
-		_ = model.UpdateFileStatus(params.UploadID, "failed")
+		_ = h.Repos.Files.UpdateStatus(params.UploadID, "failed")
 		return fmt.Errorf("load user KEK: %w", err)
 	}
 	dek, err := auth.GenerateDEK()
 	if err != nil {
-		_ = model.UpdateFileStatus(params.UploadID, "failed")
+		_ = h.Repos.Files.UpdateStatus(params.UploadID, "failed")
 		return fmt.Errorf("generate DEK: %w", err)
 	}
 	encFile := localFile + ".enc"
 	if err := auth.EncryptFile(dek, localFile, encFile); err != nil {
-		_ = model.UpdateFileStatus(params.UploadID, "failed")
+		_ = h.Repos.Files.UpdateStatus(params.UploadID, "failed")
 		return fmt.Errorf("encrypt: %w", err)
 	}
 	wrappedDEK, err := auth.WrapDEK(kek, dek)
 	if err != nil {
-		_ = model.UpdateFileStatus(params.UploadID, "failed")
+		_ = h.Repos.Files.UpdateStatus(params.UploadID, "failed")
 		return fmt.Errorf("wrap DEK: %w", err)
 	}
 	wrappedDEKHex := hex.EncodeToString(wrappedDEK)
@@ -514,7 +514,7 @@ func (h *Handler) RunOSSUploadJob(ctx context.Context, job *model.Job) error {
 	}
 
 	// Transferring to OSS
-	_ = model.UpdateJobProgress(job.JobID, 0.5, "transferring")
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.5, "transferring")
 	var lastReport time.Time
 	var lastPct float64
 	onProgress := func(done, total int64) {
@@ -529,7 +529,7 @@ func (h *Handler) RunOSSUploadJob(ctx context.Context, job *model.Job) error {
 		lastReport = now
 		lastPct = pct
 		// Map byte ratio 0~1 to job progress 0.5~1.0
-		_ = model.UpdateJobProgress(job.JobID, 0.5+pct*0.5, "transferring")
+		_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.5+pct*0.5, "transferring")
 	}
 	if err := h.Store.UploadFromFileCtxProgress(ctx, params.OSSKey, encFile, onProgress); err != nil {
 		if ctx.Err() != nil {
@@ -537,12 +537,12 @@ func (h *Handler) RunOSSUploadJob(ctx context.Context, job *model.Job) error {
 			_ = os.RemoveAll(params.TempDir)
 			return ctx.Err()
 		}
-		_ = model.UpdateFileStatus(params.UploadID, "failed")
+		_ = h.Repos.Files.UpdateStatus(params.UploadID, "failed")
 		return fmt.Errorf("upload to oss: %w", err)
 	}
 
 	// Upload succeeded, but check if file record was deleted during transfer
-	if _, err := model.GetUploadFile(params.UserID, params.UploadID); err != nil {
+	if _, err := h.Repos.Files.GetUpload(params.UserID, params.UploadID); err != nil {
 		_ = h.Store.DeleteObject(params.OSSKey)
 		_ = os.RemoveAll(params.TempDir)
 		return fmt.Errorf("file record deleted during upload")
@@ -556,19 +556,19 @@ func (h *Handler) RunOSSUploadJob(ctx context.Context, job *model.Job) error {
 		}
 	}
 	ct := mime.TypeByExtension(filepath.Ext(params.FileName))
-	_ = model.UpsertFile(params.UserID, params.OSSKey, params.FileName, false, fileSize, ct, contentHash, model.UpsertFileOpts{WrappedDEK: wrappedDEKHex})
-	_ = model.UpdateFileStatus(params.UploadID, "ready")
+	_ = h.Repos.Files.Upsert(params.UserID, params.OSSKey, params.FileName, false, fileSize, ct, contentHash, model.UpsertFileOpts{WrappedDEK: wrappedDEKHex})
+	_ = h.Repos.Files.UpdateStatus(params.UploadID, "ready")
 
 	// Update thumbnail info (generated before encryption)
 	if thumbnailKey != "" {
-		_ = model.UpdateFileThumbnail(params.UserID, params.OSSKey, thumbnailKey, thumbnailWrappedDEKHex, mediaWidth, mediaHeight, mediaDuration)
+		_ = h.Repos.Files.UpdateThumbnail(params.UserID, params.OSSKey, thumbnailKey, thumbnailWrappedDEKHex, mediaWidth, mediaHeight, mediaDuration)
 	}
 
 	// Clean up temp files
 	_ = os.RemoveAll(params.TempDir)
 
 	resultJSON, _ := json.Marshal(map[string]string{"oss_key": params.OSSKey})
-	_ = model.UpdateJobResult(job.JobID, string(resultJSON))
+	_ = h.Repos.Jobs.UpdateResult(job.JobID, string(resultJSON))
 
 	// Notify directory subscribers about the new file
 	if h.Hub != nil {
@@ -590,7 +590,7 @@ func (h *Handler) handleUploadAbort(c *fiber.Ctx) error {
 	taskID := c.Query("task_id", "")
 
 	session := c.Locals("session").(*model.Session)
-	record, err := model.GetUploadFile(session.UserID, uploadID)
+	record, err := h.Repos.Files.GetUpload(session.UserID, uploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}
@@ -600,13 +600,13 @@ func (h *Handler) handleUploadAbort(c *fiber.Ctx) error {
 	_ = os.RemoveAll(tempDir)
 
 	// Delete the file record (it was only a placeholder)
-	_ = model.DeleteFile(session.UserID, record.Path)
+	_ = h.Repos.Files.Delete(session.UserID, record.Path)
 	uploadMu.Delete(uploadID)
 	if taskID == "" {
 		taskID = record.TaskID
 	}
 	if taskID != "" {
-		_ = model.UpdateTaskStatus(taskID, "cancelled")
+		_ = h.Repos.Tasks.UpdateStatus(taskID, "cancelled")
 	}
 
 	return c.JSON(fiber.Map{"ok": true})
@@ -619,7 +619,7 @@ func (h *Handler) handleUploadStatus(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	record, err := model.GetUploadFile(session.UserID, uploadID)
+	record, err := h.Repos.Files.GetUpload(session.UserID, uploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}

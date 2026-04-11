@@ -63,11 +63,11 @@ func (s *timedStore[T]) Clean() {
 // LoginChallenge holds a verified identity pending session creation.
 // Methods is empty for direct login, non-empty when additional verification is required.
 type LoginChallenge struct {
-	UserID      string
-	Username    string
-	Role        string
-	Methods     []string // [] = direct, ["email"] / ["otp"] / ["email","otp"] = need code
-	EmailCode   string   // stored email code (if methods contains "email")
+	UserID    string
+	Username  string
+	Role      string
+	Methods   []string // [] = direct, ["email"] / ["otp"] / ["email","otp"] = need code
+	EmailCode string   // stored email code (if methods contains "email")
 }
 
 // EmailBindEntry holds a pending email-bind verification code.

@@ -158,7 +158,7 @@ func (h *Handler) wsAuthConfig(_ *ws.Conn, _ string, _ json.RawMessage) (any, er
 
 func (h *Handler) wsLogout(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
 	h.Audit.Log(conn.Session.UserID, conn.Session.Username, "", "logout", "", "", "success", 0)
-	h.Sessions.Delete(conn.SessionID)
+	h.Repos.Sessions.Delete(conn.SessionID)
 	conn.Close()
 	return map[string]any{"ok": true}, nil
 }
@@ -166,7 +166,7 @@ func (h *Handler) wsLogout(conn *ws.Conn, _ string, _ json.RawMessage) (any, err
 // --- User actions ---
 
 func (h *Handler) wsMe(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	user, err := model.GetUserByID(conn.Session.UserID)
+	user, err := h.Repos.Users.GetByID(conn.Session.UserID)
 	if err != nil {
 		return nil, &wsError{Code: "user_not_found"}
 	}
@@ -187,7 +187,7 @@ func (h *Handler) wsMe(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) 
 }
 
 func (h *Handler) wsSecurityStatus(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	user, err := model.GetUserByID(conn.Session.UserID)
+	user, err := h.Repos.Users.GetByID(conn.Session.UserID)
 	if err != nil {
 		return nil, &wsError{Code: "internal_error"}
 	}
@@ -206,14 +206,14 @@ func (h *Handler) wsUpdateDisplayName(conn *ws.Conn, _ string, data json.RawMess
 	if err := json.Unmarshal(data, &p); err != nil {
 		return nil, &wsError{Code: "invalid_params"}
 	}
-	if err := model.UpdateUserDisplayName(conn.Session.UserID, strings.TrimSpace(p.DisplayName)); err != nil {
+	if err := h.Repos.Users.UpdateDisplayName(conn.Session.UserID, strings.TrimSpace(p.DisplayName)); err != nil {
 		return nil, &wsError{Code: "update_failed"}
 	}
 	return map[string]any{"ok": true}, nil
 }
 
 func (h *Handler) wsStorageUsage(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	user, err := model.GetUserByID(conn.Session.UserID)
+	user, err := h.Repos.Users.GetByID(conn.Session.UserID)
 	if err != nil {
 		return nil, &wsError{Code: "user_not_found"}
 	}
@@ -239,17 +239,17 @@ func (h *Handler) wsChangePassword(conn *ws.Conn, _ string, data json.RawMessage
 		return nil, &wsError{Code: "new_password_required"}
 	}
 
-	user, err := model.GetUserByID(conn.Session.UserID)
+	user, err := h.Repos.Users.GetByID(conn.Session.UserID)
 	if err != nil {
 		return nil, &wsError{Code: "internal_error"}
 	}
 	if !model.CheckPassword(user.PasswordHash, p.OldPassword) {
 		return nil, &wsError{Code: "wrong_password"}
 	}
-	if err := model.UpdateUserPassword(user.ID, p.NewPassword); err != nil {
+	if err := h.Repos.Users.UpdatePassword(user.ID, p.NewPassword); err != nil {
 		return nil, &wsError{Code: "update_password_failed"}
 	}
-	h.Sessions.DeleteByUserIDExcept(user.ID, conn.SessionID)
+	h.Repos.Sessions.DeleteByUserIDExcept(user.ID, conn.SessionID)
 	return map[string]any{"ok": true}, nil
 }
 
@@ -265,7 +265,7 @@ func (h *Handler) wsBindEmail(conn *ws.Conn, _ string, data json.RawMessage) (an
 	}
 	code := service.GenerateEmailCode()
 	h.Challenges.StoreEmailBindCode(conn.Session.UserID, p.Email, code)
-	go func() { _ = service.SendVerificationEmail(h.Config.SMTP, p.Email, code) }()
+	go func() { _ = h.Email.SendVerification(p.Email, code) }()
 	return map[string]any{"ok": true}, nil
 }
 
@@ -280,21 +280,21 @@ func (h *Handler) wsVerifyBindEmail(conn *ws.Conn, _ string, data json.RawMessag
 	if !h.Challenges.VerifyEmailBindCode(conn.Session.UserID, p.Email, p.Code) {
 		return nil, &wsError{Code: "invalid_code"}
 	}
-	if err := model.UpdateUserEmail(conn.Session.UserID, p.Email); err != nil {
+	if err := h.Repos.Users.UpdateEmail(conn.Session.UserID, p.Email); err != nil {
 		return nil, &wsError{Code: "update_email_failed"}
 	}
 	return map[string]any{"ok": true}, nil
 }
 
 func (h *Handler) wsUnbindEmail(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	if err := model.UpdateUserEmail(conn.Session.UserID, ""); err != nil {
+	if err := h.Repos.Users.UpdateEmail(conn.Session.UserID, ""); err != nil {
 		return nil, &wsError{Code: "unbind_email_failed"}
 	}
 	return map[string]any{"ok": true}, nil
 }
 
 func (h *Handler) wsOTPSetup(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	user, err := model.GetUserByID(conn.Session.UserID)
+	user, err := h.Repos.Users.GetByID(conn.Session.UserID)
 	if err != nil {
 		return nil, &wsError{Code: "internal_error"}
 	}
@@ -326,7 +326,7 @@ func (h *Handler) wsOTPEnable(conn *ws.Conn, _ string, data json.RawMessage) (an
 	if !auth.ValidateTOTP(secret, p.Code) {
 		return nil, &wsError{Code: "invalid_code"}
 	}
-	if err := model.UpdateUserTOTP(conn.Session.UserID, secret, true); err != nil {
+	if err := h.Repos.Users.UpdateTOTP(conn.Session.UserID, secret, true); err != nil {
 		return nil, &wsError{Code: "enable_otp_failed"}
 	}
 	h.Challenges.DeletePendingTOTP(conn.Session.UserID)
@@ -334,7 +334,7 @@ func (h *Handler) wsOTPEnable(conn *ws.Conn, _ string, data json.RawMessage) (an
 }
 
 func (h *Handler) wsOTPDisable(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	if err := model.UpdateUserTOTP(conn.Session.UserID, "", false); err != nil {
+	if err := h.Repos.Users.UpdateTOTP(conn.Session.UserID, "", false); err != nil {
 		return nil, &wsError{Code: "disable_otp_failed"}
 	}
 	return map[string]any{"ok": true}, nil
@@ -355,7 +355,7 @@ func (h *Handler) wsFileList(conn *ws.Conn, _ string, data json.RawMessage) (any
 		return nil, err
 	}
 
-	records, err := model.ListDirectChildren(conn.Session.UserID, resolvedPath)
+	records, err := h.Repos.Files.ListDirectChildren(conn.Session.UserID, resolvedPath)
 	if err != nil {
 		return nil, &wsError{Code: "list_failed"}
 	}
@@ -367,7 +367,7 @@ func (h *Handler) wsFileList(conn *ws.Conn, _ string, data json.RawMessage) (any
 		Phase    string
 	}
 	uploadTasks := make(map[string]taskInfo)
-	if jobs, err := model.ListActiveUploadJobs(conn.Session.UserID); err == nil {
+	if jobs, err := h.Repos.Jobs.ListActiveUploads(conn.Session.UserID); err == nil {
 		for _, j := range jobs {
 			if j.TaskID == "" {
 				continue
@@ -376,7 +376,7 @@ func (h *Handler) wsFileList(conn *ws.Conn, _ string, data json.RawMessage) (any
 				UploadID string `json:"upload_id"`
 			}
 			if json.Unmarshal([]byte(j.Params), &jp) == nil && jp.UploadID != "" {
-				if task, err := model.GetTask(j.TaskID); err == nil {
+				if task, err := h.Repos.Tasks.Get(j.TaskID); err == nil {
 					uploadTasks[jp.UploadID] = taskInfo{TaskID: task.TaskID, Progress: task.Progress, Phase: task.Phase}
 				}
 			}
@@ -435,7 +435,7 @@ func (h *Handler) wsFileMkdir(conn *ws.Conn, _ string, data json.RawMessage) (an
 	}
 
 	dirName := filepath.Base(strings.TrimSuffix(resolvedPath, "/"))
-	_ = model.UpsertFile(conn.Session.UserID, resolvedPath, dirName, true, 0, "", "")
+	_ = h.Repos.Files.Upsert(conn.Session.UserID, resolvedPath, dirName, true, 0, "", "")
 
 	h.notifyParentDir(conn.Session.Username, resolvedPath)
 	return map[string]any{"ok": true}, nil
@@ -457,7 +457,7 @@ func (h *Handler) wsFileRename(conn *ws.Conn, _ string, data json.RawMessage) (a
 	}
 
 	if !p.IsDir {
-		if rec, err := model.GetFile(conn.Session.UserID, oldResolved); err == nil && rec.Status != "ready" {
+		if rec, err := h.Repos.Files.Get(conn.Session.UserID, oldResolved); err == nil && rec.Status != "ready" {
 			return nil, &wsError{Code: "file_not_ready"}
 		}
 	}
@@ -472,12 +472,12 @@ func (h *Handler) wsFileRename(conn *ws.Conn, _ string, data json.RawMessage) (a
 	}
 
 	if p.IsDir {
-		_ = model.MoveFilesByPrefix(conn.Session.UserID, oldResolved, newResolved)
-		_ = model.MoveSharesByPrefix(conn.Session.UserID, oldResolved, newResolved)
+		_ = h.Repos.Files.MoveByPrefix(conn.Session.UserID, oldResolved, newResolved)
+		_ = h.Repos.Shares.MoveByPrefix(conn.Session.UserID, oldResolved, newResolved)
 	} else {
 		newName := filepath.Base(newResolved)
-		_ = model.MoveFile(conn.Session.UserID, oldResolved, newResolved, newName)
-		_ = model.MoveSharesByPath(conn.Session.UserID, oldResolved, newResolved)
+		_ = h.Repos.Files.Move(conn.Session.UserID, oldResolved, newResolved, newName)
+		_ = h.Repos.Shares.MoveByPath(conn.Session.UserID, oldResolved, newResolved)
 	}
 
 	// Re-index search vector with new file name
@@ -514,7 +514,7 @@ func (h *Handler) wsFileCopy(conn *ws.Conn, _ string, data json.RawMessage) (any
 	var srcContentHash string
 	var srcWrappedDEK string
 	if !p.IsDir {
-		srcRecord, err := model.GetFile(conn.Session.UserID, srcResolved)
+		srcRecord, err := h.Repos.Files.Get(conn.Session.UserID, srcResolved)
 		if err != nil {
 			return nil, &wsError{Code: "source_not_found"}
 		}
@@ -529,7 +529,7 @@ func (h *Handler) wsFileCopy(conn *ws.Conn, _ string, data json.RawMessage) (any
 	srcName := filepath.Base(strings.TrimSuffix(p.SrcPath, "/"))
 	taskID := uuid.New().String()
 	userID := conn.Session.UserID
-	_ = model.CreateTask(userID, taskID, "copy", srcName)
+	_ = h.Repos.Tasks.Create(userID, taskID, "copy", srcName)
 
 	go func() {
 		progress := func(done, total int, current string) {
@@ -557,7 +557,7 @@ func (h *Handler) wsFileCopy(conn *ws.Conn, _ string, data json.RawMessage) (any
 			if srcWrappedDEK != "" {
 				copyOpts = append(copyOpts, model.UpsertFileOpts{WrappedDEK: srcWrappedDEK})
 			}
-			_ = model.UpsertFile(userID, dstResolved, dstName, false, srcSize, ct, srcContentHash, copyOpts...)
+			_ = h.Repos.Files.Upsert(userID, dstResolved, dstName, false, srcSize, ct, srcContentHash, copyOpts...)
 		}
 		h.finishTaskOp(userID, taskID, "copy", srcName, "completed")
 		h.notifyParentDir(conn.Session.Username, dstResolved)
@@ -581,7 +581,7 @@ func (h *Handler) wsFileMove(conn *ws.Conn, _ string, data json.RawMessage) (any
 		return nil, err
 	}
 	if !p.IsDir {
-		if rec, err := model.GetFile(conn.Session.UserID, srcResolved); err == nil && rec.Status != "ready" {
+		if rec, err := h.Repos.Files.Get(conn.Session.UserID, srcResolved); err == nil && rec.Status != "ready" {
 			return nil, &wsError{Code: "file_not_ready"}
 		}
 	}
@@ -593,7 +593,7 @@ func (h *Handler) wsFileMove(conn *ws.Conn, _ string, data json.RawMessage) (any
 	srcName := filepath.Base(strings.TrimSuffix(p.SrcPath, "/"))
 	taskID := uuid.New().String()
 	userID := conn.Session.UserID
-	_ = model.CreateTask(userID, taskID, "move", srcName)
+	_ = h.Repos.Tasks.Create(userID, taskID, "move", srcName)
 
 	go func() {
 		progress := func(done, total int, current string) {
@@ -613,12 +613,12 @@ func (h *Handler) wsFileMove(conn *ws.Conn, _ string, data json.RawMessage) (any
 			return
 		}
 		if p.IsDir {
-			_ = model.MoveFilesByPrefix(userID, srcResolved, dstResolved)
-			_ = model.MoveSharesByPrefix(userID, srcResolved, dstResolved)
+			_ = h.Repos.Files.MoveByPrefix(userID, srcResolved, dstResolved)
+			_ = h.Repos.Shares.MoveByPrefix(userID, srcResolved, dstResolved)
 		} else {
 			newName := filepath.Base(dstResolved)
-			_ = model.MoveFile(userID, srcResolved, dstResolved, newName)
-			_ = model.MoveSharesByPath(userID, srcResolved, dstResolved)
+			_ = h.Repos.Files.Move(userID, srcResolved, dstResolved, newName)
+			_ = h.Repos.Shares.MoveByPath(userID, srcResolved, dstResolved)
 		}
 		h.finishTaskOp(userID, taskID, "move", srcName, "completed")
 		h.notifyParentDir(conn.Session.Username, srcResolved)
@@ -648,20 +648,20 @@ func (h *Handler) wsFileDelete(conn *ws.Conn, _ string, data json.RawMessage) (a
 
 	// Non-ready files: cancel job, delete record, clean temp
 	if !isDir {
-		fileRecord, err := model.GetFile(conn.Session.UserID, resolvedPath)
+		fileRecord, err := h.Repos.Files.Get(conn.Session.UserID, resolvedPath)
 		if err != nil {
 			return nil, &wsError{Code: "not_found"}
 		}
 		if fileRecord.Status != "ready" {
 			if fileRecord.UploadID != "" {
-				if job, err := model.FindActiveJobByParam("oss_upload", fileRecord.UploadID); err == nil {
+				if job, err := h.Repos.Jobs.FindActiveByParam("oss_upload", fileRecord.UploadID); err == nil {
 					h.Dispatcher.Cancel(job.JobID)
 				}
 				tempDir := filepath.Join(config.TempDir, "upload", fileRecord.UploadID)
 				_ = os.RemoveAll(tempDir)
 			}
-			_ = model.DeleteFile(conn.Session.UserID, resolvedPath)
-			_ = model.DeleteSharesByPath(conn.Session.UserID, resolvedPath)
+			_ = h.Repos.Files.Delete(conn.Session.UserID, resolvedPath)
+			_ = h.Repos.Shares.DeleteByPath(conn.Session.UserID, resolvedPath)
 			h.Audit.Log(conn.Session.UserID, conn.Session.Username, "", "file_delete", p.Path, "", "success", 0)
 			h.notifyParentDir(conn.Session.Username, resolvedPath)
 			return map[string]any{"ok": true}, nil
@@ -670,13 +670,13 @@ func (h *Handler) wsFileDelete(conn *ws.Conn, _ string, data json.RawMessage) (a
 
 	var totalSize int64
 	if isDir {
-		size, err := model.SumFileSizeByPrefix(conn.Session.UserID, resolvedPath)
+		size, err := h.Repos.Files.SumSizeByPrefix(conn.Session.UserID, resolvedPath)
 		if err != nil {
 			return nil, &wsError{Code: "internal_error"}
 		}
 		totalSize = size
 	} else {
-		fileRecord, err := model.GetFile(conn.Session.UserID, resolvedPath)
+		fileRecord, err := h.Repos.Files.Get(conn.Session.UserID, resolvedPath)
 		if err != nil {
 			return nil, &wsError{Code: "not_found"}
 		}
@@ -695,7 +695,7 @@ func (h *Handler) wsFileDelete(conn *ws.Conn, _ string, data json.RawMessage) (a
 	deleteName := filepath.Base(strings.TrimSuffix(p.Path, "/"))
 	taskID := uuid.New().String()
 	userID := conn.Session.UserID
-	_ = model.CreateTask(userID, taskID, "delete", deleteName)
+	_ = h.Repos.Tasks.Create(userID, taskID, "delete", deleteName)
 
 	go func() {
 		progress := func(done, total int, current string) {
@@ -714,13 +714,13 @@ func (h *Handler) wsFileDelete(conn *ws.Conn, _ string, data json.RawMessage) (a
 			h.finishTaskOp(userID, taskID, "delete", deleteName, "failed")
 			return
 		}
-		_ = model.CreateTrashRecord(userID, p.Path, trashKey, totalSize, isDir)
+		_ = h.Repos.Trash.Create(userID, p.Path, trashKey, totalSize, isDir)
 		if isDir {
-			_ = model.MoveFilesByPrefix(userID, resolvedPath, trashKey)
-			_ = model.DeleteSharesByPrefix(userID, resolvedPath)
+			_ = h.Repos.Files.MoveByPrefix(userID, resolvedPath, trashKey)
+			_ = h.Repos.Shares.DeleteByPrefix(userID, resolvedPath)
 		} else {
-			_ = model.MoveFile(userID, resolvedPath, trashKey, filepath.Base(trashKey))
-			_ = model.DeleteSharesByPath(userID, resolvedPath)
+			_ = h.Repos.Files.Move(userID, resolvedPath, trashKey, filepath.Base(trashKey))
+			_ = h.Repos.Shares.DeleteByPath(userID, resolvedPath)
 		}
 		h.finishTaskOp(userID, taskID, "delete", deleteName, "completed")
 		h.Audit.Log(userID, conn.Session.Username, "", "file_delete", p.Path, "", "success", 0)
@@ -752,7 +752,7 @@ func (h *Handler) wsFilePatchContent(conn *ws.Conn, _ string, data json.RawMessa
 		return nil, err
 	}
 
-	fileRecord, err := model.GetFile(conn.Session.UserID, resolvedPath)
+	fileRecord, err := h.Repos.Files.Get(conn.Session.UserID, resolvedPath)
 	if err != nil {
 		return nil, &wsError{Code: "file_not_found"}
 	}
@@ -844,7 +844,7 @@ func (h *Handler) wsFilePatchContent(conn *ws.Conn, _ string, data json.RawMessa
 
 	fileName := filepath.Base(resolvedPath)
 	ct := mime.TypeByExtension(filepath.Ext(resolvedPath))
-	_ = model.UpsertFile(conn.Session.UserID, resolvedPath, fileName, false, newSize, ct, "")
+	_ = h.Repos.Files.Upsert(conn.Session.UserID, resolvedPath, fileName, false, newSize, ct, "")
 
 	// Re-index: for inline edits we only refresh the file name index
 	// (full content re-index would require another decrypt pass, not worth it)
@@ -865,7 +865,7 @@ func (h *Handler) wsFileSearch(conn *ws.Conn, _ string, data json.RawMessage) (a
 	if err := json.Unmarshal(data, &p); err != nil || p.Query == "" {
 		return nil, &wsError{Code: "invalid_request"}
 	}
-	results, err := model.SearchFiles(conn.Session.UserID, p.Query, p.Limit)
+	results, err := h.Repos.Files.SearchFiles(conn.Session.UserID, p.Query, p.Limit)
 	if err != nil {
 		return nil, &wsError{Code: "search_failed"}
 	}
@@ -890,7 +890,7 @@ func (h *Handler) wsFileSearch(conn *ws.Conn, _ string, data json.RawMessage) (a
 // --- Share actions ---
 
 func (h *Handler) wsShareList(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	views, err := model.ListSharesAsFiles(conn.Session.UserID)
+	views, err := h.Repos.Shares.ListAsFiles(conn.Session.UserID)
 	if err != nil {
 		return nil, &wsError{Code: "list_failed"}
 	}
@@ -916,7 +916,7 @@ func (h *Handler) wsSharePatchContent(conn *ws.Conn, _ string, data json.RawMess
 		return nil, &wsError{Code: "edits_required"}
 	}
 
-	share, err := model.GetShareByID(p.ShareID)
+	share, err := h.Repos.Shares.GetByID(p.ShareID)
 	if err != nil {
 		return nil, &wsError{Code: "share_not_found"}
 	}
@@ -931,11 +931,11 @@ func (h *Handler) wsSharePatchContent(conn *ws.Conn, _ string, data json.RawMess
 	}
 
 	// Load the file record from the owner's files
-	ownerUser, err := model.GetUserByID(share.OwnerID)
+	ownerUser, err := h.Repos.Users.GetByID(share.OwnerID)
 	if err != nil {
 		return nil, &wsError{Code: "internal_error"}
 	}
-	fileRecord, err := model.GetFile(share.OwnerID, share.FilePath)
+	fileRecord, err := h.Repos.Files.Get(share.OwnerID, share.FilePath)
 	if err != nil {
 		return nil, &wsError{Code: "file_not_found"}
 	}
@@ -1028,11 +1028,11 @@ func (h *Handler) wsSharePatchContent(conn *ws.Conn, _ string, data json.RawMess
 
 	fileName := filepath.Base(share.FilePath)
 	ct := mime.TypeByExtension(filepath.Ext(share.FilePath))
-	_ = model.UpsertFile(share.OwnerID, share.FilePath, fileName, false, newSize, ct, "")
+	_ = h.Repos.Files.Upsert(share.OwnerID, share.FilePath, fileName, false, newSize, ct, "")
 
 	// Update share record with new file size
 	share.FileSize = newSize
-	_ = model.UpdateShareFileSize(share.ShareID, newSize)
+	_ = h.Repos.Shares.UpdateFileSize(share.ShareID, newSize)
 
 	h.Audit.Log(conn.Session.UserID, conn.Session.Username, "", "file_write", share.FilePath, "shared", "success", 0)
 
@@ -1045,7 +1045,7 @@ func (h *Handler) wsSharePatchContent(conn *ws.Conn, _ string, data json.RawMess
 // --- Trash actions ---
 
 func (h *Handler) wsTrashList(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	items, err := model.ListTrash(conn.Session.UserID)
+	items, err := h.Repos.Trash.List(conn.Session.UserID)
 	if err != nil {
 		return nil, &wsError{Code: "list_trash_failed"}
 	}
@@ -1063,7 +1063,7 @@ func (h *Handler) wsTrashRestore(conn *ws.Conn, _ string, data json.RawMessage) 
 		return nil, &wsError{Code: "invalid_request"}
 	}
 
-	item, err := model.GetTrashItem(p.ID, conn.Session.UserID)
+	item, err := h.Repos.Trash.Get(p.ID, conn.Session.UserID)
 	if err != nil {
 		return nil, &wsError{Code: "trash_not_found"}
 	}
@@ -1077,15 +1077,15 @@ func (h *Handler) wsTrashRestore(conn *ws.Conn, _ string, data json.RawMessage) 
 		if err := h.Store.RecursiveMove(item.TrashKey, originalResolved, nil); err != nil {
 			return nil, &wsError{Code: "restore_failed"}
 		}
-		_ = model.MoveFilesByPrefix(conn.Session.UserID, item.TrashKey, originalResolved)
+		_ = h.Repos.Files.MoveByPrefix(conn.Session.UserID, item.TrashKey, originalResolved)
 	} else {
 		if err := h.Store.MoveObject(item.TrashKey, originalResolved); err != nil {
 			return nil, &wsError{Code: "restore_failed"}
 		}
-		_ = model.MoveFile(conn.Session.UserID, item.TrashKey, originalResolved, filepath.Base(originalResolved))
+		_ = h.Repos.Files.Move(conn.Session.UserID, item.TrashKey, originalResolved, filepath.Base(originalResolved))
 	}
 
-	_ = model.DeleteTrashRecord(item.ID)
+	_ = h.Repos.Trash.Delete(item.ID)
 	h.notifyParentDir(conn.Session.Username, originalResolved)
 	h.notifyTrash(conn.Session.UserID)
 	return map[string]any{"ok": true}, nil
@@ -1099,7 +1099,7 @@ func (h *Handler) wsTrashDelete(conn *ws.Conn, _ string, data json.RawMessage) (
 		return nil, &wsError{Code: "invalid_request"}
 	}
 
-	item, err := model.GetTrashItem(p.ID, conn.Session.UserID)
+	item, err := h.Repos.Trash.Get(p.ID, conn.Session.UserID)
 	if err != nil {
 		return nil, &wsError{Code: "trash_not_found"}
 	}
@@ -1108,15 +1108,15 @@ func (h *Handler) wsTrashDelete(conn *ws.Conn, _ string, data json.RawMessage) (
 		if err := h.Store.RecursiveDelete(item.TrashKey, nil); err != nil {
 			return nil, &wsError{Code: "delete_from_storage_failed"}
 		}
-		_ = model.DeleteFilesByPrefix(conn.Session.UserID, item.TrashKey)
+		_ = h.Repos.Files.DeleteByPrefix(conn.Session.UserID, item.TrashKey)
 	} else {
 		if err := h.Store.DeleteObject(item.TrashKey); err != nil {
 			return nil, &wsError{Code: "delete_from_storage_failed"}
 		}
-		_ = model.DeleteFile(conn.Session.UserID, item.TrashKey)
+		_ = h.Repos.Files.Delete(conn.Session.UserID, item.TrashKey)
 	}
 
-	if err := model.DeleteTrashRecord(item.ID); err != nil {
+	if err := h.Repos.Trash.Delete(item.ID); err != nil {
 		return nil, &wsError{Code: "delete_record_failed"}
 	}
 	h.notifyTrash(conn.Session.UserID)
@@ -1124,14 +1124,14 @@ func (h *Handler) wsTrashDelete(conn *ws.Conn, _ string, data json.RawMessage) (
 }
 
 func (h *Handler) wsTrashClear(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	items, err := model.ListTrash(conn.Session.UserID)
+	items, err := h.Repos.Trash.List(conn.Session.UserID)
 	if err != nil {
 		return nil, &wsError{Code: "clear_trash_failed"}
 	}
 
 	taskID := uuid.New().String()
 	userID := conn.Session.UserID
-	_ = model.CreateTask(userID, taskID, "clear_trash", "")
+	_ = h.Repos.Tasks.Create(userID, taskID, "clear_trash", "")
 
 	go func() {
 		total := len(items)
@@ -1140,19 +1140,19 @@ func (h *Handler) wsTrashClear(conn *ws.Conn, _ string, _ json.RawMessage) (any,
 			if item.IsDir {
 				clearErr = h.Store.RecursiveDelete(item.TrashKey, nil)
 				if clearErr == nil {
-					_ = model.DeleteFilesByPrefix(userID, item.TrashKey)
+					_ = h.Repos.Files.DeleteByPrefix(userID, item.TrashKey)
 				}
 			} else {
 				clearErr = h.Store.DeleteObject(item.TrashKey)
 				if clearErr == nil {
-					_ = model.DeleteFile(userID, item.TrashKey)
+					_ = h.Repos.Files.Delete(userID, item.TrashKey)
 				}
 			}
 			if clearErr != nil {
 				h.finishTaskOp(userID, taskID, "clear_trash", "", "failed")
 				return
 			}
-			_ = model.DeleteTrashRecord(item.ID)
+			_ = h.Repos.Trash.Delete(item.ID)
 			h.updateTaskOp(userID, taskID, "clear_trash", "", i+1, total, "clearing")
 		}
 		h.finishTaskOp(userID, taskID, "clear_trash", "", "completed")
@@ -1165,7 +1165,7 @@ func (h *Handler) wsTrashClear(conn *ws.Conn, _ string, _ json.RawMessage) (any,
 // --- Task actions ---
 
 func (h *Handler) wsTaskList(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	tasks, err := model.ListRecentTasks(conn.Session.UserID)
+	tasks, err := h.Repos.Tasks.ListRecent(conn.Session.UserID)
 	if err != nil {
 		return nil, &wsError{Code: "list_tasks_failed"}
 	}
@@ -1195,7 +1195,7 @@ func (h *Handler) wsTaskCancel(conn *ws.Conn, _ string, data json.RawMessage) (a
 		return nil, &wsError{Code: "invalid_request"}
 	}
 
-	task, err := model.GetTask(p.TaskID)
+	task, err := h.Repos.Tasks.Get(p.TaskID)
 	if err != nil {
 		return nil, &wsError{Code: "task_not_found"}
 	}
@@ -1204,8 +1204,7 @@ func (h *Handler) wsTaskCancel(conn *ws.Conn, _ string, data json.RawMessage) (a
 	}
 
 	// Cancel linked jobs and clean up resources
-	var jobs []model.Job
-	h.DB.Where("task_id = ?", p.TaskID).Find(&jobs)
+	jobs, _ := h.Repos.Jobs.FindByTaskID(p.TaskID)
 	for _, j := range jobs {
 		if j.Status == "pending" || j.Status == "running" {
 			h.Dispatcher.Cancel(j.JobID)
@@ -1214,19 +1213,19 @@ func (h *Handler) wsTaskCancel(conn *ws.Conn, _ string, data json.RawMessage) (a
 		if task.Type == "upload" {
 			var params OSSUploadParams
 			if json.Unmarshal([]byte(j.Params), &params) == nil && params.UploadID != "" {
-				_ = model.DeleteFile(params.UserID, params.OSSKey)
+				_ = h.Repos.Files.Delete(params.UserID, params.OSSKey)
 				_ = os.RemoveAll(params.TempDir)
 				h.notifyParentDir(conn.Session.Username, params.OSSKey)
 			}
 		}
 	}
 
-	_ = model.UpdateTaskStatus(p.TaskID, "cancelled")
+	_ = h.Repos.Tasks.UpdateStatus(p.TaskID, "cancelled")
 	return map[string]any{"ok": true}, nil
 }
 
 func (h *Handler) wsTaskClearDone(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	if err := model.DeleteCompletedTasks(conn.Session.UserID); err != nil {
+	if err := h.Repos.Tasks.DeleteCompleted(conn.Session.UserID); err != nil {
 		return nil, &wsError{Code: "clear_tasks_failed"}
 	}
 	return map[string]any{"ok": true}, nil
@@ -1248,7 +1247,7 @@ func (h *Handler) wsTranscodeStart(conn *ws.Conn, data json.RawMessage) (any, er
 		return nil, err
 	}
 
-	fileRecord, err := model.GetFile(conn.Session.UserID, resolvedPath)
+	fileRecord, err := h.Repos.Files.Get(conn.Session.UserID, resolvedPath)
 	if err != nil {
 		return nil, &wsError{Code: "file_not_found"}
 	}
@@ -1304,10 +1303,10 @@ func (h *Handler) wsTranscodeStart(conn *ws.Conn, data json.RawMessage) (any, er
 
 	// Create user-facing task
 	taskID := uuid.New().String()
-	_ = model.CreateTask(conn.Session.UserID, taskID, "transcode", originalName)
+	_ = h.Repos.Tasks.Create(conn.Session.UserID, taskID, "transcode", originalName)
 
 	// Create dispatcher job linked to task
-	_ = model.CreateJobDirect(&model.Job{
+	_ = h.Repos.Jobs.CreateDirect(&model.Job{
 		UserID: conn.Session.UserID,
 		JobID:  jobID,
 		TaskID: taskID,
@@ -1353,29 +1352,27 @@ func (h *Handler) wsAuditLogs(conn *ws.Conn, _ string, data json.RawMessage) (an
 		p.Size = 50
 	}
 
-	q := h.DB.Model(&model.AuditLog{})
-	if p.User != "" {
-		q = q.Where("username = ?", p.User)
-	}
-	if p.Action != "" {
-		q = q.Where("action = ?", p.Action)
+	filter := model.AuditFilter{
+		User:   p.User,
+		Action: p.Action,
+		Page:   p.Page,
+		Size:   p.Size,
 	}
 	if p.From != "" {
 		if t, err := time.Parse(time.RFC3339, p.From); err == nil {
-			q = q.Where("created_at >= ?", t)
+			filter.From = &t
 		}
 	}
 	if p.To != "" {
 		if t, err := time.Parse(time.RFC3339, p.To); err == nil {
-			q = q.Where("created_at <= ?", t)
+			filter.To = &t
 		}
 	}
 
-	var total int64
-	q.Count(&total)
-
-	var logs []model.AuditLog
-	q.Order("id DESC").Offset((p.Page - 1) * p.Size).Limit(p.Size).Find(&logs)
+	logs, total, err := h.Repos.Audit.ListLogs(filter)
+	if err != nil {
+		return nil, &wsError{Code: "query_failed"}
+	}
 
 	return map[string]any{
 		"total": total,
@@ -1388,7 +1385,7 @@ func (h *Handler) wsAuditLogs(conn *ws.Conn, _ string, data json.RawMessage) (an
 // --- Admin actions ---
 
 func (h *Handler) wsAdminListUsers(_ *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	users, err := model.ListUsers()
+	users, err := h.Repos.Users.List()
 	if err != nil {
 		return nil, &wsError{Code: "list_users_failed"}
 	}
@@ -1422,7 +1419,7 @@ func (h *Handler) wsAdminCreateUser(conn *ws.Conn, _ string, data json.RawMessag
 		return nil, &wsError{Code: "key_generation_failed"}
 	}
 
-	user, err := model.CreateUser(p.Username, p.Password, p.Role, wrappedKEKHex)
+	user, err := h.Repos.Users.Create(p.Username, p.Password, p.Role, wrappedKEKHex)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return nil, &wsError{Code: "username_exists"}
@@ -1433,8 +1430,8 @@ func (h *Handler) wsAdminCreateUser(conn *ws.Conn, _ string, data json.RawMessag
 	_ = h.Store.CreateDirectory(user.Username + "/")
 	_ = h.Store.CreateDirectory(user.Username + "/home/")
 	_ = h.Store.CreateDirectory(user.Username + "/home/" + user.Username + "/")
-	_ = model.UpsertFile(user.ID, user.Username+"/home/", "home", true, 0, "", "")
-	_ = model.UpsertFile(user.ID, user.Username+"/home/"+user.Username+"/", user.Username, true, 0, "", "")
+	_ = h.Repos.Files.Upsert(user.ID, user.Username+"/home/", "home", true, 0, "", "")
+	_ = h.Repos.Files.Upsert(user.ID, user.Username+"/home/"+user.Username+"/", user.Username, true, 0, "", "")
 
 	h.Audit.Log(conn.Session.UserID, conn.Session.Username, "", "user_create", user.Username, p.Role, "success", 0)
 	return user, nil
@@ -1450,13 +1447,13 @@ func (h *Handler) wsAdminUpdateUser(conn *ws.Conn, _ string, data json.RawMessag
 		return nil, &wsError{Code: "invalid_request"}
 	}
 
-	user, err := model.GetUserByID(p.ID)
+	user, err := h.Repos.Users.GetByID(p.ID)
 	if err != nil {
 		return nil, &wsError{Code: "user_not_found"}
 	}
 
 	if p.Password != "" {
-		if err := model.UpdateUserPassword(user.ID, p.Password); err != nil {
+		if err := h.Repos.Users.UpdatePassword(user.ID, p.Password); err != nil {
 			return nil, &wsError{Code: "update_password_failed"}
 		}
 	}
@@ -1466,7 +1463,7 @@ func (h *Handler) wsAdminUpdateUser(conn *ws.Conn, _ string, data json.RawMessag
 		if !isValidUserRole(p.Role) {
 			return nil, &wsError{Code: "invalid_role"}
 		}
-		if code, guardErr := ensureNotDemotingLastRoot(user, p.Role); guardErr != nil {
+		if code, guardErr := ensureNotDemotingLastRoot(h.Repos.Users, user, p.Role); guardErr != nil {
 			return nil, &wsError{Code: "update_user_failed"}
 		} else if code != "" {
 			return nil, &wsError{Code: code}
@@ -1474,7 +1471,7 @@ func (h *Handler) wsAdminUpdateUser(conn *ws.Conn, _ string, data json.RawMessag
 		role = p.Role
 	}
 
-	if err := model.UpdateUser(user.ID, role); err != nil {
+	if err := h.Repos.Users.UpdateRole(user.ID, role); err != nil {
 		return nil, &wsError{Code: "update_user_failed"}
 	}
 
@@ -1497,11 +1494,11 @@ func (h *Handler) wsAdminDeleteUser(conn *ws.Conn, _ string, data json.RawMessag
 		return nil, &wsError{Code: "cannot_delete_self"}
 	}
 
-	user, err := model.GetUserByID(p.ID)
+	user, err := h.Repos.Users.GetByID(p.ID)
 	if err != nil {
 		return nil, &wsError{Code: "user_not_found"}
 	}
-	if code, guardErr := ensureNotDeletingLastRoot(user); guardErr != nil {
+	if code, guardErr := ensureNotDeletingLastRoot(h.Repos.Users, user); guardErr != nil {
 		return nil, &wsError{Code: "delete_user_failed"}
 	} else if code != "" {
 		return nil, &wsError{Code: code}
@@ -1522,10 +1519,10 @@ func (h *Handler) wsAdminResetUserOTP(conn *ws.Conn, _ string, data json.RawMess
 	if err := json.Unmarshal(data, &p); err != nil {
 		return nil, &wsError{Code: "invalid_request"}
 	}
-	if _, err := model.GetUserByID(p.ID); err != nil {
+	if _, err := h.Repos.Users.GetByID(p.ID); err != nil {
 		return nil, &wsError{Code: "user_not_found"}
 	}
-	if err := model.UpdateUserTOTP(p.ID, "", false); err != nil {
+	if err := h.Repos.Users.UpdateTOTP(p.ID, "", false); err != nil {
 		return nil, &wsError{Code: "update_failed"}
 	}
 	h.revokeUserSessions(p.ID)
@@ -1540,10 +1537,10 @@ func (h *Handler) wsAdminResetUserEmail(conn *ws.Conn, _ string, data json.RawMe
 	if err := json.Unmarshal(data, &p); err != nil {
 		return nil, &wsError{Code: "invalid_request"}
 	}
-	if _, err := model.GetUserByID(p.ID); err != nil {
+	if _, err := h.Repos.Users.GetByID(p.ID); err != nil {
 		return nil, &wsError{Code: "user_not_found"}
 	}
-	if err := model.UpdateUserEmail(p.ID, ""); err != nil {
+	if err := h.Repos.Users.UpdateEmail(p.ID, ""); err != nil {
 		return nil, &wsError{Code: "update_failed"}
 	}
 	h.revokeUserSessions(p.ID)
@@ -1562,7 +1559,7 @@ func (h *Handler) wsUploadProgress(conn *ws.Conn, _ string, data json.RawMessage
 		return nil, &wsError{Code: "invalid_request"}
 	}
 
-	task, err := model.GetTask(p.TaskID)
+	task, err := h.Repos.Tasks.Get(p.TaskID)
 	if err != nil {
 		return nil, &wsError{Code: "task_not_found"}
 	}
@@ -1570,7 +1567,7 @@ func (h *Handler) wsUploadProgress(conn *ws.Conn, _ string, data json.RawMessage
 		return nil, &wsError{Code: "access_denied"}
 	}
 
-	_ = model.UpdateTaskProgress(p.TaskID, p.Progress, "uploading")
+	_ = h.Repos.Tasks.UpdateProgress(p.TaskID, p.Progress, "uploading")
 	return map[string]any{"ok": true}, nil
 }
 
@@ -1630,7 +1627,7 @@ func (h *Handler) wsWorkspaceSave(conn *ws.Conn, _ string, data json.RawMessage)
 	if err := json.Unmarshal(data, &p); err != nil {
 		return nil, &wsError{Code: "invalid_request"}
 	}
-	if err := model.SaveWorkspaceState(conn.UserID, string(p.State)); err != nil {
+	if err := h.Repos.Workspace.Save(conn.UserID, string(p.State)); err != nil {
 		return nil, &wsError{Code: "save_failed"}
 	}
 	return nil, nil
@@ -1638,7 +1635,7 @@ func (h *Handler) wsWorkspaceSave(conn *ws.Conn, _ string, data json.RawMessage)
 
 // wsWorkspaceLoad returns the saved workspace snapshot.
 func (h *Handler) wsWorkspaceLoad(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	state, err := model.GetWorkspaceState(conn.UserID)
+	state, err := h.Repos.Workspace.Get(conn.UserID)
 	if err != nil {
 		// No saved state — return empty
 		return map[string]any{"state": nil}, nil
@@ -1649,7 +1646,7 @@ func (h *Handler) wsWorkspaceLoad(conn *ws.Conn, _ string, _ json.RawMessage) (a
 
 // wsWorkspaceClear deletes the saved workspace snapshot.
 func (h *Handler) wsWorkspaceClear(conn *ws.Conn, _ string, _ json.RawMessage) (any, error) {
-	_ = model.DeleteWorkspaceState(conn.UserID)
+	_ = h.Repos.Workspace.Delete(conn.UserID)
 	return nil, nil
 }
 
@@ -1661,7 +1658,7 @@ func (h *Handler) updateTaskOp(userID, taskID, taskType, name string, done, tota
 	if total > 0 {
 		progress = float64(done) / float64(total)
 	}
-	_ = model.UpdateTaskProgress(taskID, progress, phase)
+	_ = h.Repos.Tasks.UpdateProgress(taskID, progress, phase)
 	if h.Hub != nil {
 		h.Hub.PushTaskUpdate(userID, taskID, taskType, name, "running", progress, phase)
 	}
@@ -1669,7 +1666,7 @@ func (h *Handler) updateTaskOp(userID, taskID, taskType, name string, done, tota
 
 // finishTaskOp marks a task as completed/failed and pushes a WebSocket event.
 func (h *Handler) finishTaskOp(userID, taskID, taskType, name, status string) {
-	_ = model.UpdateTaskStatus(taskID, status)
+	_ = h.Repos.Tasks.UpdateStatus(taskID, status)
 	if h.Hub != nil {
 		var progress float64
 		if status == "completed" {

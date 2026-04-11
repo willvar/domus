@@ -14,7 +14,7 @@ import (
 
 func (h *Handler) handleListTrash(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	items, err := model.ListTrash(session.UserID)
+	items, err := h.Repos.Trash.List(session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "list_trash_failed"})
 	}
@@ -33,7 +33,7 @@ func (h *Handler) handleRestoreTrash(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	item, err := model.GetTrashItem(body.ID, session.UserID)
+	item, err := h.Repos.Trash.Get(body.ID, session.UserID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "trash_not_found"})
 	}
@@ -48,15 +48,15 @@ func (h *Handler) handleRestoreTrash(c *fiber.Ctx) error {
 		if err := h.Store.RecursiveMove(item.TrashKey, originalResolved, nil); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "restore_failed"})
 		}
-		_ = model.MoveFilesByPrefix(session.UserID, item.TrashKey, originalResolved)
+		_ = h.Repos.Files.MoveByPrefix(session.UserID, item.TrashKey, originalResolved)
 	} else {
 		if err := h.Store.MoveObject(item.TrashKey, originalResolved); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "restore_failed"})
 		}
-		_ = model.MoveFile(session.UserID, item.TrashKey, originalResolved, filepath.Base(originalResolved))
+		_ = h.Repos.Files.Move(session.UserID, item.TrashKey, originalResolved, filepath.Base(originalResolved))
 	}
 
-	_ = model.DeleteTrashRecord(item.ID)
+	_ = h.Repos.Trash.Delete(item.ID)
 
 	// Notify WebSocket subscribers of the restored file's parent directory
 	if parent := parentDirOf(originalResolved); parent != "" {
@@ -74,7 +74,7 @@ func (h *Handler) handleDeleteTrashItem(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	item, err := model.GetTrashItem(int64(id), session.UserID)
+	item, err := h.Repos.Trash.Get(int64(id), session.UserID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "trash_not_found"})
 	}
@@ -84,15 +84,15 @@ func (h *Handler) handleDeleteTrashItem(c *fiber.Ctx) error {
 		if err := h.Store.RecursiveDelete(item.TrashKey, nil); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "delete_from_storage_failed"})
 		}
-		_ = model.DeleteFilesByPrefix(session.UserID, item.TrashKey)
+		_ = h.Repos.Files.DeleteByPrefix(session.UserID, item.TrashKey)
 	} else {
 		if err := h.Store.DeleteObject(item.TrashKey); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "delete_from_storage_failed"})
 		}
-		_ = model.DeleteFile(session.UserID, item.TrashKey)
+		_ = h.Repos.Files.Delete(session.UserID, item.TrashKey)
 	}
 
-	if err := model.DeleteTrashRecord(item.ID); err != nil {
+	if err := h.Repos.Trash.Delete(item.ID); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "delete_record_failed"})
 	}
 
@@ -101,7 +101,7 @@ func (h *Handler) handleDeleteTrashItem(c *fiber.Ctx) error {
 
 func (h *Handler) handleClearTrash(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	items, err := model.ListTrash(session.UserID)
+	items, err := h.Repos.Trash.List(session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "clear_trash_failed"})
 	}
@@ -111,14 +111,14 @@ func (h *Handler) handleClearTrash(c *fiber.Ctx) error {
 			if err := h.Store.RecursiveDelete(item.TrashKey, nil); err != nil {
 				return err
 			}
-			_ = model.DeleteFilesByPrefix(session.UserID, item.TrashKey)
+			_ = h.Repos.Files.DeleteByPrefix(session.UserID, item.TrashKey)
 		} else {
 			if err := h.Store.DeleteObject(item.TrashKey); err != nil {
 				return err
 			}
-			_ = model.DeleteFile(session.UserID, item.TrashKey)
+			_ = h.Repos.Files.Delete(session.UserID, item.TrashKey)
 		}
-		return model.DeleteTrashRecord(item.ID)
+		return h.Repos.Trash.Delete(item.ID)
 	}
 
 	if c.Get("Accept") == "text/event-stream" {

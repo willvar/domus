@@ -19,23 +19,23 @@ type userDeleteFixture struct {
 	keepShareID     string
 }
 
-func seedUserDeleteFixture(t *testing.T, victim, other, target *model.User) userDeleteFixture {
+func seedUserDeleteFixture(t *testing.T, repos *model.Repos, victim, other, target *model.User) userDeleteFixture {
 	t.Helper()
 
 	filePath := victim.Username + "/home/" + victim.Username + "/doc.txt"
-	if err := model.UpsertFile(victim.ID, filePath, "doc.txt", false, 123, "text/plain", "hash"); err != nil {
+	if err := repos.Files.Upsert(victim.ID, filePath, "doc.txt", false, 123, "text/plain", "hash"); err != nil {
 		t.Fatalf("upsert file: %v", err)
 	}
-	if err := model.CreateTrashRecord(victim.ID, filePath, victim.Username+"/.trash/doc.txt", 123, false); err != nil {
+	if err := repos.Trash.Create(victim.ID, filePath, victim.Username+"/.trash/doc.txt", 123, false); err != nil {
 		t.Fatalf("create trash record: %v", err)
 	}
-	if _, err := model.CreateJob(victim.ID, "job-clean-"+victim.Username, "transcode", "{}"); err != nil {
+	if _, err := repos.Jobs.Create(victim.ID, "job-clean-"+victim.Username, "transcode", "{}"); err != nil {
 		t.Fatalf("create job: %v", err)
 	}
-	if err := model.CreateTask(victim.ID, "task-clean-"+victim.Username, "upload", "doc.txt"); err != nil {
+	if err := repos.Tasks.Create(victim.ID, "task-clean-"+victim.Username, "upload", "doc.txt"); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
-	if err := model.SaveWorkspaceState(victim.ID, `{"layout":"grid"}`); err != nil {
+	if err := repos.Workspace.Save(victim.ID, `{"layout":"grid"}`); err != nil {
 		t.Fatalf("save workspace state: %v", err)
 	}
 
@@ -43,7 +43,7 @@ func seedUserDeleteFixture(t *testing.T, victim, other, target *model.User) user
 	incomingShareID := "share-incoming-" + victim.Username
 	keepShareID := "share-keep-" + victim.Username
 
-	if err := model.CreateShare(&model.Share{
+	if err := repos.Shares.Create(&model.Share{
 		ShareID:      ownedShareID,
 		OwnerID:      victim.ID,
 		FilePath:     filePath,
@@ -56,7 +56,7 @@ func seedUserDeleteFixture(t *testing.T, victim, other, target *model.User) user
 	}); err != nil {
 		t.Fatalf("create owned share: %v", err)
 	}
-	if err := model.CreateShare(&model.Share{
+	if err := repos.Shares.Create(&model.Share{
 		ShareID:      incomingShareID,
 		OwnerID:      other.ID,
 		FilePath:     other.Username + "/home/" + other.Username + "/from-other.txt",
@@ -69,7 +69,7 @@ func seedUserDeleteFixture(t *testing.T, victim, other, target *model.User) user
 	}); err != nil {
 		t.Fatalf("create incoming share: %v", err)
 	}
-	if err := model.CreateShare(&model.Share{
+	if err := repos.Shares.Create(&model.Share{
 		ShareID:      keepShareID,
 		OwnerID:      other.ID,
 		FilePath:     other.Username + "/home/" + other.Username + "/keep.txt",
@@ -91,62 +91,71 @@ func seedUserDeleteFixture(t *testing.T, victim, other, target *model.User) user
 	}
 }
 
-func assertUserDeletedCompletely(t *testing.T, victim *model.User, fx userDeleteFixture) {
+func assertUserDeletedCompletely(t *testing.T, repos *model.Repos, victim *model.User, fx userDeleteFixture) {
 	t.Helper()
 
-	if _, err := model.GetUserByID(victim.ID); err == nil {
+	if _, err := repos.Users.GetByID(victim.ID); err == nil {
 		t.Fatal("expected user to be deleted")
 	}
-	if _, err := model.GetFile(victim.ID, fx.filePath); err == nil {
+	if _, err := repos.Files.Get(victim.ID, fx.filePath); err == nil {
 		t.Fatal("expected file record to be deleted")
 	}
-	trash, err := model.ListTrash(victim.ID)
+	trash, err := repos.Trash.List(victim.ID)
 	if err != nil {
 		t.Fatalf("list trash: %v", err)
 	}
 	if len(trash) != 0 {
 		t.Fatalf("expected no trash records, got %d", len(trash))
 	}
-	jobs, err := model.ListActiveJobs(victim.ID)
+	jobs, err := repos.Jobs.ListActive(victim.ID)
 	if err != nil {
 		t.Fatalf("list jobs: %v", err)
 	}
 	if len(jobs) != 0 {
 		t.Fatalf("expected no active jobs, got %d", len(jobs))
 	}
-	tasks, err := model.ListRecentTasks(victim.ID)
+	tasks, err := repos.Tasks.ListRecent(victim.ID)
 	if err != nil {
 		t.Fatalf("list tasks: %v", err)
 	}
 	if len(tasks) != 0 {
 		t.Fatalf("expected no tasks, got %d", len(tasks))
 	}
-	if _, err := model.GetWorkspaceState(victim.ID); err == nil {
+	if _, err := repos.Workspace.Get(victim.ID); err == nil {
 		t.Fatal("expected workspace state to be deleted")
 	}
-	if _, err := model.GetShareByID(fx.ownedShareID); err == nil {
+	if _, err := repos.Shares.GetByID(fx.ownedShareID); err == nil {
 		t.Fatal("expected owned share to be deleted")
 	}
-	if _, err := model.GetShareByID(fx.incomingShareID); err == nil {
+	if _, err := repos.Shares.GetByID(fx.incomingShareID); err == nil {
 		t.Fatal("expected incoming share to be deleted")
 	}
-	if _, err := model.GetShareByID(fx.keepShareID); err != nil {
+	if _, err := repos.Shares.GetByID(fx.keepShareID); err != nil {
 		t.Fatalf("expected unrelated share to remain: %v", err)
 	}
 }
 
 func TestDeleteUserHTTPCleansRelatedData(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 
 	adminCookie := loginAs("root", "pass")
 	victimCookie := loginAs("victim-http", "pass")
 	_ = loginAs("other-http", "pass")
 	_ = loginAs("target-http", "pass")
 
-	victim, _ := model.GetUserByUsername("victim-http")
-	other, _ := model.GetUserByUsername("other-http")
-	target, _ := model.GetUserByUsername("target-http")
-	fx := seedUserDeleteFixture(t, victim, other, target)
+	victim, err := repos.Users.GetByUsername("victim-http")
+	if err != nil {
+		t.Fatalf("get victim user: %v", err)
+	}
+	other, err := repos.Users.GetByUsername("other-http")
+	if err != nil {
+		t.Fatalf("get other user: %v", err)
+	}
+	target, err := repos.Users.GetByUsername("target-http")
+	if err != nil {
+		t.Fatalf("get target user: %v", err)
+	}
+	fx := seedUserDeleteFixture(t, repos, victim, other, target)
 
 	req := httptest.NewRequest("DELETE", "/audit/user/"+victim.ID, nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: adminCookie})
@@ -168,32 +177,28 @@ func TestDeleteUserHTTPCleansRelatedData(t *testing.T) {
 		t.Fatalf("expected victim session to be invalidated, got %d", meResp.StatusCode)
 	}
 
-	assertUserDeletedCompletely(t, victim, fx)
+	assertUserDeletedCompletely(t, repos, victim, fx)
 }
 
 func TestDeleteUserWSCleansRelatedData(t *testing.T) {
-	testDB := setupTestDB(t)
-	model.SetDB(testDB)
+	repos := model.NewMemRepos(nil)
 
-	sessions := model.NewSessionStore(testDB)
-	audit := model.NewAuditWorker(testDB)
-	audit.Start()
+	audit := model.NewAuditWorker(nil)
 
 	h := &Handler{
-		DB:       testDB,
-		Store:    &MockFileStore{},
-		Sessions: sessions,
-		Audit:    audit,
-		Hub:      ws.NewHub(),
+		Repos: repos,
+		Store: &MockFileStore{},
+		Audit: audit,
+		Hub:   ws.NewHub(),
 	}
 
-	admin, _ := model.CreateUser("admin-ws", "pass", "root", "")
-	victim, _ := model.CreateUser("victim-ws", "pass", "user", "")
-	other, _ := model.CreateUser("other-ws", "pass", "user", "")
-	target, _ := model.CreateUser("target-ws", "pass", "user", "")
-	fx := seedUserDeleteFixture(t, victim, other, target)
+	admin, _ := repos.Users.Create("admin-ws", "pass", "root", "")
+	victim, _ := repos.Users.Create("victim-ws", "pass", "user", "")
+	other, _ := repos.Users.Create("other-ws", "pass", "user", "")
+	target, _ := repos.Users.Create("target-ws", "pass", "user", "")
+	fx := seedUserDeleteFixture(t, repos, victim, other, target)
 
-	victimSessionID, err := sessions.Create(victim.ID, victim.Username, victim.Role)
+	victimSessionID, err := repos.Sessions.Create(victim.ID, victim.Username, victim.Role)
 	if err != nil {
 		t.Fatalf("create victim session: %v", err)
 	}
@@ -215,24 +220,24 @@ func TestDeleteUserWSCleansRelatedData(t *testing.T) {
 	if !ok || resultMap["ok"] != true {
 		t.Fatalf("expected ok response, got %#v", result)
 	}
-	if sessions.Get(victimSessionID) != nil {
+	if repos.Sessions.Get(victimSessionID) != nil {
 		t.Fatal("expected victim sessions to be deleted")
 	}
 
-	assertUserDeletedCompletely(t, victim, fx)
+	assertUserDeletedCompletely(t, repos, victim, fx)
 }
 
 func TestDeleteUserCompletelyIgnoresStorageCleanupError(t *testing.T) {
-	testDB := setupTestDB(t)
-	model.SetDB(testDB)
+	repos := model.NewMemRepos(nil)
 
-	victim, _ := model.CreateUser("victim-store-fail", "pass", "user", "")
-	if err := model.UpsertFile(victim.ID, "victim-store-fail/home/victim-store-fail/a.txt", "a.txt", false, 1, "text/plain", "h"); err != nil {
+	victim, _ := repos.Users.Create("victim-store-fail", "pass", "user", "")
+	if err := repos.Files.Upsert(victim.ID, "victim-store-fail/home/victim-store-fail/a.txt", "a.txt", false, 1, "text/plain", "h"); err != nil {
 		t.Fatalf("upsert file: %v", err)
 	}
 
 	var calledPrefix string
 	h := &Handler{
+		Repos: repos,
 		Store: &MockFileStore{
 			RecursiveDeleteFn: func(prefix string, _ func(done, total int, current string)) error {
 				calledPrefix = prefix
@@ -248,28 +253,24 @@ func TestDeleteUserCompletelyIgnoresStorageCleanupError(t *testing.T) {
 	if calledPrefix != victim.Username+"/" {
 		t.Fatalf("expected cleanup prefix %q, got %q", victim.Username+"/", calledPrefix)
 	}
-	if _, err := model.GetUserByID(victim.ID); err == nil {
+	if _, err := repos.Users.GetByID(victim.ID); err == nil {
 		t.Fatal("expected user to be deleted even when storage cleanup fails")
 	}
 }
 
 func TestDeleteLastRootRejectedWS(t *testing.T) {
-	testDB := setupTestDB(t)
-	model.SetDB(testDB)
+	repos := model.NewMemRepos(nil)
 
-	sessions := model.NewSessionStore(testDB)
-	audit := model.NewAuditWorker(testDB)
-	audit.Start()
+	audit := model.NewAuditWorker(nil)
 
 	h := &Handler{
-		DB:       testDB,
-		Store:    &MockFileStore{},
-		Sessions: sessions,
-		Audit:    audit,
-		Hub:      ws.NewHub(),
+		Repos: repos,
+		Store: &MockFileStore{},
+		Audit: audit,
+		Hub:   ws.NewHub(),
 	}
 
-	lastRoot, _ := model.CreateUser("last-root", "pass", "root", "")
+	lastRoot, _ := repos.Users.Create("last-root", "pass", "root", "")
 	payload, _ := json.Marshal(map[string]string{"id": lastRoot.ID})
 	conn := &ws.Conn{
 		Session: &model.Session{
@@ -291,7 +292,7 @@ func TestDeleteLastRootRejectedWS(t *testing.T) {
 		t.Fatalf("expected cannot_delete_last_root, got %s", wsErr.Code)
 	}
 
-	if _, err := model.GetUserByID(lastRoot.ID); err != nil {
+	if _, err := repos.Users.GetByID(lastRoot.ID); err != nil {
 		t.Fatalf("expected last root to remain, got err: %v", err)
 	}
 }

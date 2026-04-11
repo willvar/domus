@@ -1,8 +1,8 @@
 package handler
 
 func (h *Handler) revokeUserSessions(userID string) {
-	if h.Sessions != nil {
-		h.Sessions.DeleteByUserID(userID)
+	if h.Repos != nil && h.Repos.Sessions != nil {
+		h.Repos.Sessions.DeleteByUserID(userID)
 	}
 	if h.Hub != nil {
 		h.Hub.PushSessionExpired(userID)

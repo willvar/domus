@@ -4,36 +4,40 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"testing"
 
 	"github.com/gofiber/fiber/v2"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
-	gormlogger "gorm.io/gorm/logger"
 
 	"zephyr/internal/auth"
 	"zephyr/internal/model"
 )
 
-func setupTestDB(t *testing.T) *gorm.DB {
-	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_DSN")
-	if dsn == "" {
-		dsn = "host=localhost port=5432 user=postgres password= dbname=zephyr_test sslmode=disable"
-	}
-	testDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
-	})
-	if err != nil {
-		t.Skipf("skipping test: could not connect to PostgreSQL: %v", err)
-	}
-	if err := testDB.AutoMigrate(&model.DBSession{}); err != nil {
-		t.Fatalf("failed to migrate: %v", err)
-	}
-	testDB.Exec("DELETE FROM sessions")
-	return testDB
+// mockSessionRepo is a minimal in-memory session store for middleware tests.
+type mockSessionRepo struct {
+	sessions map[string]*model.Session
 }
+
+func newMockSessionRepo() *mockSessionRepo {
+	return &mockSessionRepo{sessions: make(map[string]*model.Session)}
+}
+
+func (m *mockSessionRepo) Create(userID, username, role string) (string, error) {
+	id := "sess-" + username
+	m.sessions[id] = &model.Session{UserID: userID, Username: username, Role: role}
+	return id, nil
+}
+
+func (m *mockSessionRepo) Get(id string) *model.Session { return m.sessions[id] }
+
+func (m *mockSessionRepo) Delete(id string) { delete(m.sessions, id) }
+
+func (m *mockSessionRepo) DeleteByUserID(string) {}
+
+func (m *mockSessionRepo) DeleteByUserIDExcept(string, string) {}
+
+func (m *mockSessionRepo) CleanExpired() {}
+
+func (m *mockSessionRepo) SetPopulateKEK(func(*model.Session)) {}
 
 func resolvePathTestApp() *fiber.App {
 	app := fiber.New()
@@ -134,8 +138,7 @@ func TestResolvePath_AdminCrossUser(t *testing.T) {
 }
 
 func TestAuthRequired_NoCookie(t *testing.T) {
-	testDB := setupTestDB(t)
-	sessions := model.NewSessionStore(testDB)
+	sessions := newMockSessionRepo()
 	m := New(sessions, "test")
 
 	app := fiber.New()
@@ -151,8 +154,7 @@ func TestAuthRequired_NoCookie(t *testing.T) {
 }
 
 func TestAuthRequired_InvalidSignature(t *testing.T) {
-	testDB := setupTestDB(t)
-	sessions := model.NewSessionStore(testDB)
+	sessions := newMockSessionRepo()
 	m := New(sessions, "test")
 
 	app := fiber.New()
@@ -169,8 +171,7 @@ func TestAuthRequired_InvalidSignature(t *testing.T) {
 }
 
 func TestAuthRequired_ValidSession(t *testing.T) {
-	testDB := setupTestDB(t)
-	sessions := model.NewSessionStore(testDB)
+	sessions := newMockSessionRepo()
 	m := New(sessions, "test")
 
 	sessionID, _ := sessions.Create("test-user-id", "alice", "root")

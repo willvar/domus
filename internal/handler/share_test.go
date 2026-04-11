@@ -19,10 +19,10 @@ import (
 
 const testServerEncryptionSecret = "0000000000000000000000000000000000000000000000000000000000000000"
 
-func mustCreateReadyEncryptedFile(t *testing.T, username, appPath, name string, size int64) {
+func mustCreateReadyEncryptedFile(t *testing.T, repos *model.Repos, username, appPath, name string, size int64) {
 	t.Helper()
 
-	user, err := model.GetUserByUsername(username)
+	user, err := repos.Users.GetByUsername(username)
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
@@ -49,7 +49,7 @@ func mustCreateReadyEncryptedFile(t *testing.T, username, appPath, name string, 
 	}
 
 	ossPath := username + appPath
-	if err := model.UpsertFile(user.ID, ossPath, name, false, size, "text/plain", "hash",
+	if err := repos.Files.Upsert(user.ID, ossPath, name, false, size, "text/plain", "hash",
 		model.UpsertFileOpts{WrappedDEK: hex.EncodeToString(wrappedDEK)}); err != nil {
 		t.Fatalf("upsert file: %v", err)
 	}
@@ -69,9 +69,9 @@ func createShareRequest(t *testing.T, app *fiber.App, cookie string, payload map
 	return resp
 }
 
-func mustUserKEK(t *testing.T, username string) []byte {
+func mustUserKEK(t *testing.T, repos *model.Repos, username string) []byte {
 	t.Helper()
-	user, err := model.GetUserByUsername(username)
+	user, err := repos.Users.GetByUsername(username)
 	if err != nil {
 		t.Fatalf("get user %s: %v", username, err)
 	}
@@ -91,11 +91,11 @@ func mustUserKEK(t *testing.T, username string) []byte {
 }
 
 func TestCreateShareRejectsDirectory(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 	_ = loginAs("alice", "pass")
-	user, _ := model.GetUserByUsername("root")
-	_ = model.UpsertFile(user.ID, "root/home/root/docs/", "docs", true, 0, "", "")
+	user, _ := repos.Users.GetByUsername("root")
+	_ = repos.Files.Upsert(user.ID, "root/home/root/docs/", "docs", true, 0, "", "")
 
 	resp := createShareRequest(t, app, cookie, map[string]any{
 		"path":            "/home/root/docs/",
@@ -112,11 +112,11 @@ func TestCreateShareRejectsDirectory(t *testing.T) {
 }
 
 func TestCreateShareRejectsUnencryptedFile(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 	_ = loginAs("alice", "pass")
-	user, _ := model.GetUserByUsername("root")
-	_ = model.UpsertFile(user.ID, "root/home/root/plain.txt", "plain.txt", false, 1, "text/plain", "hash")
+	user, _ := repos.Users.GetByUsername("root")
+	_ = repos.Files.Upsert(user.ID, "root/home/root/plain.txt", "plain.txt", false, 1, "text/plain", "hash")
 
 	resp := createShareRequest(t, app, cookie, map[string]any{
 		"path":            "/home/root/plain.txt",
@@ -133,9 +133,9 @@ func TestCreateShareRejectsUnencryptedFile(t *testing.T) {
 }
 
 func TestCreateShareRejectsSelfTarget(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
-	mustCreateReadyEncryptedFile(t, "root", "/home/root/s2.txt", "s2.txt", 1)
+	mustCreateReadyEncryptedFile(t, repos, "root", "/home/root/s2.txt", "s2.txt", 1)
 
 	respSelf := createShareRequest(t, app, cookie, map[string]any{
 		"path":            "/home/root/s2.txt",
@@ -152,10 +152,10 @@ func TestCreateShareRejectsSelfTarget(t *testing.T) {
 }
 
 func TestCreateShareRejectsInvalidExpiry(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 	_ = loginAs("alice", "pass")
-	mustCreateReadyEncryptedFile(t, "root", "/home/root/exp.txt", "exp.txt", 1)
+	mustCreateReadyEncryptedFile(t, repos, "root", "/home/root/exp.txt", "exp.txt", 1)
 
 	resp := createShareRequest(t, app, cookie, map[string]any{
 		"path":            "/home/root/exp.txt",
@@ -173,10 +173,10 @@ func TestCreateShareRejectsInvalidExpiry(t *testing.T) {
 }
 
 func TestUserShareWithExpiry(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 	_ = loginAs("alice", "pass")
-	mustCreateReadyEncryptedFile(t, "root", "/home/root/expiry.txt", "expiry.txt", 1)
+	mustCreateReadyEncryptedFile(t, repos, "root", "/home/root/expiry.txt", "expiry.txt", 1)
 
 	resp := createShareRequest(t, app, cookie, map[string]any{
 		"path":            "/home/root/expiry.txt",
@@ -193,7 +193,7 @@ func TestUserShareWithExpiry(t *testing.T) {
 		t.Fatal("expected share_id")
 	}
 
-	share, err := model.GetShareByID(shareID)
+	share, err := repos.Shares.GetByID(shareID)
 	if err != nil {
 		t.Fatalf("get share: %v", err)
 	}
@@ -206,18 +206,18 @@ func TestUserShareWithExpiry(t *testing.T) {
 }
 
 func TestUserShareExpired(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	_ = loginAs("root", "pass")
 	aliceCookie := loginAs("alice", "pass")
 
-	owner, _ := model.GetUserByUsername("root")
-	alice, _ := model.GetUserByUsername("alice")
-	aliceKEK := mustUserKEK(t, "alice")
+	owner, _ := repos.Users.GetByUsername("root")
+	alice, _ := repos.Users.GetByUsername("alice")
+	aliceKEK := mustUserKEK(t, repos, "alice")
 	dek, _ := auth.GenerateDEK()
 	wrappedForAlice, _ := auth.WrapDEK(aliceKEK, dek)
 
 	exp := time.Now().Add(-time.Minute)
-	if err := model.CreateShare(&model.Share{
+	if err := repos.Shares.Create(&model.Share{
 		ShareID:      "expired-user-share",
 		OwnerID:      owner.ID,
 		FilePath:     "root/home/root/e.txt",
@@ -244,14 +244,14 @@ func TestUserShareExpired(t *testing.T) {
 }
 
 func TestShareInfoUserShareAuthBoundaries(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	_ = loginAs("root", "pass")
 	aliceCookie := loginAs("alice", "pass")
 	bobCookie := loginAs("bob", "pass")
 
-	owner, _ := model.GetUserByUsername("root")
-	alice, _ := model.GetUserByUsername("alice")
-	aliceKEK := mustUserKEK(t, "alice")
+	owner, _ := repos.Users.GetByUsername("root")
+	alice, _ := repos.Users.GetByUsername("alice")
+	aliceKEK := mustUserKEK(t, repos, "alice")
 	dek, err := auth.GenerateDEK()
 	if err != nil {
 		t.Fatalf("generate dek: %v", err)
@@ -260,7 +260,7 @@ func TestShareInfoUserShareAuthBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wrap dek: %v", err)
 	}
-	if err := model.CreateShare(&model.Share{
+	if err := repos.Shares.Create(&model.Share{
 		ShareID:      "user-share-auth",
 		OwnerID:      owner.ID,
 		FilePath:     "root/home/root/u.txt",
@@ -274,7 +274,7 @@ func TestShareInfoUserShareAuthBoundaries(t *testing.T) {
 		t.Fatalf("create share: %v", err)
 	}
 
-	// No auth → 401 (middleware blocks)
+	// No auth -> 401 (middleware blocks)
 	reqNoAuth := httptest.NewRequest("GET", "/file/shared/user-share-auth", nil)
 	respNoAuth, err := app.Test(reqNoAuth)
 	if err != nil {
@@ -284,7 +284,7 @@ func TestShareInfoUserShareAuthBoundaries(t *testing.T) {
 		t.Fatalf("expected 401, got %d", respNoAuth.StatusCode)
 	}
 
-	// Wrong user → 403
+	// Wrong user -> 403
 	reqOther := httptest.NewRequest("GET", "/file/shared/user-share-auth", nil)
 	reqOther.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: bobCookie})
 	respOther, err := app.Test(reqOther)
@@ -295,7 +295,7 @@ func TestShareInfoUserShareAuthBoundaries(t *testing.T) {
 		t.Fatalf("expected 403, got %d", respOther.StatusCode)
 	}
 
-	// Target user → 200 with dek
+	// Target user -> 200 with dek
 	reqTarget := httptest.NewRequest("GET", "/file/shared/user-share-auth", nil)
 	reqTarget.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: aliceCookie})
 	respTarget, err := app.Test(reqTarget)
@@ -324,14 +324,14 @@ func TestShareInfoUserShareAuthBoundaries(t *testing.T) {
 }
 
 func TestDeleteShareReturns404ForUnrelatedUser(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	_ = loginAs("root", "pass")
 	_ = loginAs("alice", "pass")
 	bobCookie := loginAs("bob", "pass")
 
-	owner, _ := model.GetUserByUsername("root")
-	alice, _ := model.GetUserByUsername("alice")
-	if err := model.CreateShare(&model.Share{
+	owner, _ := repos.Users.GetByUsername("root")
+	alice, _ := repos.Users.GetByUsername("alice")
+	if err := repos.Shares.Create(&model.Share{
 		ShareID:      "delete-unrelated-check",
 		OwnerID:      owner.ID,
 		FilePath:     "root/home/root/del.txt",
@@ -344,12 +344,12 @@ func TestDeleteShareReturns404ForUnrelatedUser(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create share: %v", err)
 	}
-	share, err := model.GetShareByID("delete-unrelated-check")
+	share, err := repos.Shares.GetByID("delete-unrelated-check")
 	if err != nil {
 		t.Fatalf("get share: %v", err)
 	}
 
-	// Bob is neither owner nor target — should get 404
+	// Bob is neither owner nor target -- should get 404
 	req := httptest.NewRequest("DELETE", "/file/share/"+strconv.FormatInt(share.ID, 10), nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: bobCookie})
 	resp, err := app.Test(req)
@@ -362,13 +362,13 @@ func TestDeleteShareReturns404ForUnrelatedUser(t *testing.T) {
 }
 
 func TestTargetUserCanDeleteShare(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	_ = loginAs("root", "pass")
 	aliceCookie := loginAs("alice", "pass")
 
-	owner, _ := model.GetUserByUsername("root")
-	alice, _ := model.GetUserByUsername("alice")
-	if err := model.CreateShare(&model.Share{
+	owner, _ := repos.Users.GetByUsername("root")
+	alice, _ := repos.Users.GetByUsername("alice")
+	if err := repos.Shares.Create(&model.Share{
 		ShareID:      "target-can-delete",
 		OwnerID:      owner.ID,
 		FilePath:     "root/home/root/del2.txt",
@@ -381,7 +381,7 @@ func TestTargetUserCanDeleteShare(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create share: %v", err)
 	}
-	share, err := model.GetShareByID("target-can-delete")
+	share, err := repos.Shares.GetByID("target-can-delete")
 	if err != nil {
 		t.Fatalf("get share: %v", err)
 	}
@@ -396,17 +396,17 @@ func TestTargetUserCanDeleteShare(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 
-	_, err = model.GetShareByID("target-can-delete")
+	_, err = repos.Shares.GetByID("target-can-delete")
 	if err == nil {
 		t.Fatal("expected share to be deleted")
 	}
 }
 
 func TestDeleteFileInvalidatesUserShare(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 	_ = loginAs("alice", "pass")
-	mustCreateReadyEncryptedFile(t, "root", "/home/root/will-delete.txt", "will-delete.txt", 1)
+	mustCreateReadyEncryptedFile(t, repos, "root", "/home/root/will-delete.txt", "will-delete.txt", 1)
 
 	shareResp := createShareRequest(t, app, cookie, map[string]any{
 		"path":            "/home/root/will-delete.txt",
@@ -445,10 +445,10 @@ func TestDeleteFileInvalidatesUserShare(t *testing.T) {
 }
 
 func TestRenameFileKeepsUserShareValid(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 	_ = loginAs("alice", "pass")
-	mustCreateReadyEncryptedFile(t, "root", "/home/root/rename-me.txt", "rename-me.txt", 1)
+	mustCreateReadyEncryptedFile(t, repos, "root", "/home/root/rename-me.txt", "rename-me.txt", 1)
 
 	shareResp := createShareRequest(t, app, cookie, map[string]any{
 		"path":            "/home/root/rename-me.txt",

@@ -22,7 +22,7 @@ func isValidEmail(email string) bool {
 // handleSecurityStatus returns the user's current security configuration.
 func (h *Handler) handleSecurityStatus(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	user, err := model.GetUserByID(session.UserID)
+	user, err := h.Repos.Users.GetByID(session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
@@ -31,13 +31,13 @@ func (h *Handler) handleSecurityStatus(c *fiber.Ctx) error {
 		"email":        user.Email,
 		"has_email":    user.Email != "",
 		"totp_enabled": user.TOTPEnabled,
-		"smtp_enabled": service.SmtpConfigured(h.Config.SMTP),
+		"smtp_enabled": h.Email.Configured(),
 	})
 }
 
 // handleBindEmail sends a verification code to the provided email address.
 func (h *Handler) handleBindEmail(c *fiber.Ctx) error {
-	if !service.SmtpConfigured(h.Config.SMTP) {
+	if !h.Email.Configured() {
 		return c.Status(400).JSON(fiber.Map{"error": "email_not_configured"})
 	}
 
@@ -53,7 +53,7 @@ func (h *Handler) handleBindEmail(c *fiber.Ctx) error {
 	h.Challenges.StoreEmailBindCode(session.UserID, body.Email, code)
 
 	go func() {
-		if err := service.SendVerificationEmail(h.Config.SMTP, body.Email, code); err != nil {
+		if err := h.Email.SendVerification(body.Email, code); err != nil {
 			log.Printf("[account] failed to send bind email to %s: %v", body.Email, err)
 		}
 	}()
@@ -76,7 +76,7 @@ func (h *Handler) handleVerifyBindEmail(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_code"})
 	}
 
-	if err := model.UpdateUserEmail(session.UserID, body.Email); err != nil {
+	if err := h.Repos.Users.UpdateEmail(session.UserID, body.Email); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "update_email_failed"})
 	}
 
@@ -86,7 +86,7 @@ func (h *Handler) handleVerifyBindEmail(c *fiber.Ctx) error {
 // handleUnbindEmail removes the user's email binding.
 func (h *Handler) handleUnbindEmail(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	if err := model.UpdateUserEmail(session.UserID, ""); err != nil {
+	if err := h.Repos.Users.UpdateEmail(session.UserID, ""); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "unbind_email_failed"})
 	}
 	return c.JSON(fiber.Map{"ok": true})
@@ -95,7 +95,7 @@ func (h *Handler) handleUnbindEmail(c *fiber.Ctx) error {
 // handleOTPSetup generates a new TOTP secret and returns it with the QR URI.
 func (h *Handler) handleOTPSetup(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	user, err := model.GetUserByID(session.UserID)
+	user, err := h.Repos.Users.GetByID(session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
@@ -136,7 +136,7 @@ func (h *Handler) handleOTPEnable(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_code"})
 	}
 
-	if err := model.UpdateUserTOTP(session.UserID, secret, true); err != nil {
+	if err := h.Repos.Users.UpdateTOTP(session.UserID, secret, true); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "enable_otp_failed"})
 	}
 	h.Challenges.DeletePendingTOTP(session.UserID)
@@ -147,7 +147,7 @@ func (h *Handler) handleOTPEnable(c *fiber.Ctx) error {
 // handleOTPDisable disables OTP for the current user.
 func (h *Handler) handleOTPDisable(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	if err := model.UpdateUserTOTP(session.UserID, "", false); err != nil {
+	if err := h.Repos.Users.UpdateTOTP(session.UserID, "", false); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "disable_otp_failed"})
 	}
 	return c.JSON(fiber.Map{"ok": true})
@@ -167,7 +167,7 @@ func (h *Handler) handleChangePassword(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	user, err := model.GetUserByID(session.UserID)
+	user, err := h.Repos.Users.GetByID(session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
@@ -177,13 +177,13 @@ func (h *Handler) handleChangePassword(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "wrong_password"})
 	}
 
-	if err := model.UpdateUserPassword(user.ID, body.NewPassword); err != nil {
+	if err := h.Repos.Users.UpdatePassword(user.ID, body.NewPassword); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "update_password_failed"})
 	}
 
 	// Invalidate all other sessions, keep current one
 	currentSessionID := c.Locals("sessionID").(string)
-	h.Sessions.DeleteByUserIDExcept(user.ID, currentSessionID)
+	h.Repos.Sessions.DeleteByUserIDExcept(user.ID, currentSessionID)
 
 	return c.JSON(fiber.Map{"ok": true})
 }

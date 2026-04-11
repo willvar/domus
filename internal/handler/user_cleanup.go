@@ -7,7 +7,7 @@ import (
 )
 
 func (h *Handler) deleteUserCompletely(user *model.User) error {
-	if err := model.DeleteUserAndRelatedData(user.ID); err != nil {
+	if err := h.Repos.Cleanup.DeleteUserAndRelatedData(user.ID); err != nil {
 		return err
 	}
 

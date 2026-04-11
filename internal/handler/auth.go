@@ -24,7 +24,7 @@ func (h *Handler) issueSession(c *fiber.Ctx, user *model.User, method string) er
 	h.Challenges.ClearLoginAttempts(c.IP(), method, user.Username)
 	h.Audit.Log(user.ID, user.Username, c.IP(), "login", "", method, "success", 0)
 
-	sessionID, err := h.Sessions.Create(user.ID, user.Username, user.Role)
+	sessionID, err := h.Repos.Sessions.Create(user.ID, user.Username, user.Role)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "session_creation_failed"})
 	}
@@ -119,7 +119,7 @@ func (h *Handler) verifyPassword(c *fiber.Ctx, username, password string) error 
 		return err
 	}
 
-	user, err := model.GetUserByUsername(username)
+	user, err := h.Repos.Users.GetByUsername(username)
 	if err != nil || !model.CheckPassword(user.PasswordHash, password) {
 		return h.loginFail(c, "password", username)
 	}
@@ -144,7 +144,7 @@ func (h *Handler) verifyPassword(c *fiber.Ctx, username, password string) error 
 		methods = append(methods, "email")
 		emailCode = service.GenerateEmailCode()
 		go func() {
-			if err := service.SendVerificationEmail(h.Config.SMTP, user.Email, emailCode); err != nil {
+			if err := h.Email.SendVerification(user.Email, emailCode); err != nil {
 				log.Printf("[auth] failed to send 2FA email to %s: %v", user.Email, err)
 			}
 		}()
@@ -165,7 +165,7 @@ func (h *Handler) verifyOTP(c *fiber.Ctx, username, code string) error {
 		return err
 	}
 
-	user, err := model.GetUserByUsername(username)
+	user, err := h.Repos.Users.GetByUsername(username)
 	if err != nil || !user.TOTPEnabled {
 		return h.loginFail(c, "otp", username)
 	}
@@ -195,7 +195,7 @@ func (h *Handler) verifyEmailRequest(c *fiber.Ctx, username string) error {
 		return c.JSON(dummyResponse)
 	}
 
-	user, err := model.GetUserByUsername(username)
+	user, err := h.Repos.Users.GetByUsername(username)
 	if err != nil || user.Email == "" {
 		return c.JSON(dummyResponse)
 	}
@@ -207,7 +207,7 @@ func (h *Handler) verifyEmailRequest(c *fiber.Ctx, username string) error {
 	}
 
 	go func() {
-		if err := service.SendVerificationEmail(h.Config.SMTP, user.Email, emailCode); err != nil {
+		if err := h.Email.SendVerification(user.Email, emailCode); err != nil {
 			log.Printf("[auth] failed to send login email to %s: %v", user.Email, err)
 		}
 	}()
@@ -240,7 +240,7 @@ func (h *Handler) handleLogin(c *fiber.Ctx) error {
 			return c.Status(400).JSON(fiber.Map{"error": "code_not_expected"})
 		}
 		h.Challenges.DeleteLoginChallenge(body.Token)
-		user, err := model.GetUserByID(challenge.UserID)
+		user, err := h.Repos.Users.GetByID(challenge.UserID)
 		if err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 		}
@@ -269,7 +269,7 @@ func (h *Handler) handleLogin(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "method_not_available"})
 	}
 
-	user, err := model.GetUserByID(challenge.UserID)
+	user, err := h.Repos.Users.GetByID(challenge.UserID)
 	if err != nil {
 		h.Challenges.DeleteLoginChallenge(body.Token)
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
@@ -306,7 +306,7 @@ func (h *Handler) handleLogin(c *fiber.Ctx) error {
 
 func (h *Handler) handleAuthConfig(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
-		"smtp_enabled": service.SmtpConfigured(h.Config.SMTP),
+		"smtp_enabled": h.Email.Configured(),
 	})
 }
 
@@ -317,7 +317,7 @@ func (h *Handler) handleLogout(c *fiber.Ctx) error {
 	h.Audit.Log(session.UserID, session.Username, c.IP(), "logout", "", "", "success", 0)
 
 	sessionID := c.Locals("sessionID").(string)
-	h.Sessions.Delete(sessionID)
+	h.Repos.Sessions.Delete(sessionID)
 
 	secure := strings.EqualFold(c.Protocol(), "https")
 	c.Cookie(&fiber.Cookie{
@@ -337,7 +337,7 @@ func (h *Handler) handleLogout(c *fiber.Ctx) error {
 
 func (h *Handler) handleMe(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	user, err := model.GetUserByID(session.UserID)
+	user, err := h.Repos.Users.GetByID(session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
 	}
@@ -379,7 +379,7 @@ func (h *Handler) handlePublicAvatar(c *fiber.Ctx) error {
 // handleUploadAvatar receives an image, converts to webp via ffmpeg, stores to OSS.
 func (h *Handler) handleUploadAvatar(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	user, err := model.GetUserByID(session.UserID)
+	user, err := h.Repos.Users.GetByID(session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
 	}
@@ -400,7 +400,7 @@ func (h *Handler) handleUploadAvatar(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	ext := filepath.Ext(file.Filename)
 	if ext == "" {
@@ -436,7 +436,7 @@ func (h *Handler) handleUploadAvatar(c *fiber.Ctx) error {
 // handleUserStoreGet reads a file from {username}/.user/{path} in OSS.
 func (h *Handler) handleUserStoreGet(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	user, err := model.GetUserByID(session.UserID)
+	user, err := h.Repos.Users.GetByID(session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
 	}
@@ -449,7 +449,7 @@ func (h *Handler) handleUserStoreGet(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	data, err := io.ReadAll(reader)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "read_failed"})
@@ -464,7 +464,7 @@ func (h *Handler) handleUserStoreGet(c *fiber.Ctx) error {
 // handleUserStorePut writes a file to {username}/.user/{path} in OSS.
 func (h *Handler) handleUserStorePut(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	user, err := model.GetUserByID(session.UserID)
+	user, err := h.Repos.Users.GetByID(session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
 	}

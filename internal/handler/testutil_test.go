@@ -5,56 +5,25 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
-	gormlogger "gorm.io/gorm/logger"
 
 	"zephyr/config"
 	"zephyr/internal/auth"
 	"zephyr/internal/middleware"
 	"zephyr/internal/model"
+	"zephyr/internal/service"
 	"zephyr/internal/store"
 	"zephyr/internal/ws"
 )
 
-func setupTestDB(t *testing.T) *gorm.DB {
+func setupTestApp(t *testing.T) (*fiber.App, *model.Repos, func(username, password string) string) {
 	t.Helper()
-	dsn := os.Getenv("TEST_DATABASE_DSN")
-	if dsn == "" {
-		dsn = "host=localhost port=5432 user=postgres password= dbname=zephyr_test sslmode=disable"
-	}
-	testDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
-		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
-	})
-	if err != nil {
-		t.Skipf("skipping test: could not connect to PostgreSQL: %v", err)
-	}
-	if err := testDB.AutoMigrate(&model.User{}, &model.TrashItem{}, &model.FileRecord{}, &model.DBSession{}, &model.Job{}, &model.Task{}, &model.AuditLog{}, &model.WorkspaceState{}, &model.Share{}); err != nil {
-		t.Fatalf("failed to migrate: %v", err)
-	}
-	testDB.Exec("DELETE FROM users")
-	testDB.Exec("DELETE FROM trash")
-	testDB.Exec("DELETE FROM files")
-	testDB.Exec("DELETE FROM sessions")
-	testDB.Exec("DELETE FROM jobs")
-	testDB.Exec("DELETE FROM tasks")
-	testDB.Exec("DELETE FROM workspace_states")
-	testDB.Exec("DELETE FROM shares")
-	return testDB
-}
 
-func setupTestApp(t *testing.T) (*fiber.App, func(username, password string) string) {
-	t.Helper()
-	testDB := setupTestDB(t)
-
-	// Initialize model package's internal db
-	model.SetDB(testDB)
+	repos := model.NewMemRepos(nil)
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
@@ -67,20 +36,18 @@ func setupTestApp(t *testing.T) (*fiber.App, func(username, password string) str
 		},
 	}
 
-	sessions := model.NewSessionStore(testDB)
 	serverKey, _ := auth.ServerKeyFromSecret(cfg.Server.EncryptionSecret)
-	sessions.PopulateKEK = func(s *model.Session) {
-		wrappedHex, err := model.GetUserWrappedKEK(s.UserID)
+	repos.Sessions.SetPopulateKEK(func(s *model.Session) {
+		wrappedHex, err := repos.Users.GetWrappedKEK(s.UserID)
 		if err != nil || wrappedHex == "" {
 			return
 		}
 		wrappedBytes, _ := hex.DecodeString(wrappedHex)
 		s.KEK, _ = auth.UnwrapKEK(serverKey, wrappedBytes)
-	}
+	})
 	challenges := auth.NewChallengeManager()
-	audit := model.NewAuditWorker(testDB)
-	audit.Start()
-	mid := middleware.New(sessions, cfg.Server.SessionSecret)
+	audit := model.NewAuditWorker(nil) // don't call Start — entries buffer but never flush
+	mid := middleware.New(repos.Sessions, cfg.Server.SessionSecret)
 
 	mockStore := &MockFileStore{}
 
@@ -88,9 +55,9 @@ func setupTestApp(t *testing.T) (*fiber.App, func(username, password string) str
 
 	h := &Handler{
 		Config:     cfg,
-		DB:         testDB,
+		Repos:      repos,
 		Store:      mockStore,
-		Sessions:   sessions,
+		Email:      &service.MockEmailSender{},
 		Audit:      audit,
 		Challenges: challenges,
 		Mid:        mid,
@@ -102,20 +69,20 @@ func setupTestApp(t *testing.T) (*fiber.App, func(username, password string) str
 
 	loginAs := func(username, password string) string {
 		t.Helper()
-		user, err := model.GetUserByUsername(username)
+		user, err := repos.Users.GetByUsername(username)
 		if err != nil {
 			kek, _ := auth.GenerateKEK()
 			wrapped, _ := auth.WrapKEK(serverKey, kek)
-			user, _ = model.CreateUser(username, password, "root", hex.EncodeToString(wrapped))
+			user, _ = repos.Users.Create(username, password, "root", hex.EncodeToString(wrapped))
 		}
-		sessionID, err := sessions.Create(user.ID, username, "root")
+		sessionID, err := repos.Sessions.Create(user.ID, username, "root")
 		if err != nil {
 			t.Fatalf("failed to create session: %v", err)
 		}
 		return auth.SignCookie(sessionID, cfg.Server.SessionSecret)
 	}
 
-	return app, loginAs
+	return app, repos, loginAs
 }
 
 // MockFileStore implements store.FileStore for testing

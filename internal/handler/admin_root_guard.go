@@ -2,11 +2,11 @@ package handler
 
 import "zephyr/internal/model"
 
-func ensureNotDemotingLastRoot(user *model.User, newRole string) (blockedCode string, err error) {
+func ensureNotDemotingLastRoot(users model.UserRepo, user *model.User, newRole string) (blockedCode string, err error) {
 	if user.Role != "root" || newRole == "root" {
 		return "", nil
 	}
-	rootCount, err := model.CountUsersByRole("root")
+	rootCount, err := users.CountByRole("root")
 	if err != nil {
 		return "", err
 	}
@@ -16,11 +16,11 @@ func ensureNotDemotingLastRoot(user *model.User, newRole string) (blockedCode st
 	return "", nil
 }
 
-func ensureNotDeletingLastRoot(user *model.User) (blockedCode string, err error) {
+func ensureNotDeletingLastRoot(users model.UserRepo, user *model.User) (blockedCode string, err error) {
 	if user.Role != "root" {
 		return "", nil
 	}
-	rootCount, err := model.CountUsersByRole("root")
+	rootCount, err := users.CountByRole("root")
 	if err != nil {
 		return "", err
 	}

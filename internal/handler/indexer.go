@@ -5,8 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"zephyr/internal/model"
 )
 
 var textExtensions = map[string]bool{
@@ -38,12 +36,12 @@ func (h *Handler) indexFile(userID, ossKey, fileName, localFile string, indexCon
 			text = fileName + "\n" + string(content)
 		}
 	}
-	_ = model.UpdateFileSearchVector(userID, ossKey, text)
+	_ = h.Repos.Files.UpdateSearchVector(userID, ossKey, text)
 }
 
 // indexFileName updates the search vector with only the file name.
 func (h *Handler) indexFileName(userID, ossKey, fileName string) {
-	_ = model.UpdateFileSearchVector(userID, ossKey, fileName)
+	_ = h.Repos.Files.UpdateSearchVector(userID, ossKey, fileName)
 }
 
 // getUserIndexContentPref reads the user's preferences from OSS to check if content indexing is enabled.
@@ -53,7 +51,7 @@ func (h *Handler) getUserIndexContentPref(username string) bool {
 	if err != nil {
 		return false
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	var prefs struct {
 		IndexContent bool `json:"indexContent"`
 	}

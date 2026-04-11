@@ -50,7 +50,7 @@ func (h *Handler) handleJobDispatch(c *fiber.Ctx) error {
 
 func (h *Handler) handleListJobs(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	jobs, err := model.ListRecentJobs(session.UserID)
+	jobs, err := h.Repos.Jobs.ListRecent(session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "list_jobs_failed"})
 	}
@@ -63,7 +63,7 @@ func (h *Handler) handleListJobs(c *fiber.Ctx) error {
 
 func (h *Handler) handleClearJobs(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	if err := model.DeleteCompletedJobs(session.UserID); err != nil {
+	if err := h.Repos.Jobs.DeleteCompleted(session.UserID); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "clear_jobs_failed"})
 	}
 	return c.JSON(fiber.Map{"ok": true})
@@ -73,7 +73,7 @@ func (h *Handler) handleJobStatus(c *fiber.Ctx) error {
 	jobID := c.Params("id")
 	session := c.Locals("session").(*model.Session)
 
-	job, err := model.GetJobByJobID(jobID)
+	job, err := h.Repos.Jobs.GetByJobID(jobID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "job_not_found"})
 	}
@@ -88,7 +88,7 @@ func (h *Handler) handleJobStatus(c *fiber.Ctx) error {
 
 	c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
 		for {
-			j, err := model.GetJobByJobID(jobID)
+			j, err := h.Repos.Jobs.GetByJobID(jobID)
 			if err != nil {
 				return
 			}
@@ -122,7 +122,7 @@ func (h *Handler) handleCancelJob(c *fiber.Ctx) error {
 	jobID := c.Params("id")
 	session := c.Locals("session").(*model.Session)
 
-	job, err := model.GetJobByJobID(jobID)
+	job, err := h.Repos.Jobs.GetByJobID(jobID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "job_not_found"})
 	}
