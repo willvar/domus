@@ -368,39 +368,6 @@ export interface Upload {
   _file: File | null
 }
 
-/** Serialized interrupted upload state persisted to localStorage. */
-export interface InterruptedUpload {
-  fileName: string
-  fileSize: number
-  uploadId: string
-  taskId: string | null
-  progress: number
-  targetPath: string
-  parts: UploadPart[]
-}
-
-/** Response from POST /file/upload (init phase). */
-export interface UploadInitResponse {
-  upload_id: string
-  task_id?: string
-  chunk_size: number
-  total_parts: number
-  file_name?: string
-}
-
-/** Response from PUT /file/upload/part. */
-export interface UploadPartResponse {
-  part_number: number
-  size: number
-}
-
-/** Response from GET /file/upload (resume status query). */
-export interface UploadStatusResponse {
-  chunk_size: number
-  status: string
-  parts: Array<{ part_number: number }>
-}
-
 /** Conflict info returned during upload pre-check. */
 export interface ConflictInfo {
   name: string
@@ -453,7 +420,7 @@ export interface PendingOp {
 
 // --- User Preferences ---
 
-/** User preferences stored in /user/store/preferences.json. */
+/** User preferences stored as an encrypted file at /.user/preferences.json. */
 export interface UserPreferences {
   largeFileLimitMB: number
   alwaysCenter: boolean
