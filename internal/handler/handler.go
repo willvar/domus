@@ -90,6 +90,10 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	auditUser.Delete("/:id/otp", h.handleResetUserOTP)
 	auditUser.Delete("/:id/email", h.handleResetUserEmail)
 
+	// /admin (root only)
+	admin := authed.Group("/admin", middleware.RootRequired())
+	admin.Get("/oss/cors-check", h.handleCORSCheck)
+
 	// /file
 	file := authed.Group("/file")
 	file.Get("/", h.handleList)

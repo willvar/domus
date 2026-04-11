@@ -1,34 +1,10 @@
 <script setup lang="ts">
-import { ref } from 'vue'
 import { useUploadStore } from '../../../stores/upload'
 import { useI18n } from '../../../composables/useI18n'
 import { IconClose } from '../../../barrels/icons'
 
 const upload = useUploadStore()
 const { t, te } = useI18n()
-const fileInputRef = ref<HTMLInputElement | null>(null)
-let resumeTargetId: string | null = null
-
-function triggerResume(id: string) {
-  const entry = upload.uploads.find(u => u.id === id)
-  if (entry?._file) {
-    // Same session: File object still in memory, no need to re-select
-    upload.resumeInterrupted(id)
-    return
-  }
-  resumeTargetId = id
-  fileInputRef.value?.click()
-}
-
-function onFileSelected(e: Event) {
-  const file = (e.target as HTMLInputElement).files?.[0]
-  if (file && resumeTargetId) {
-    upload.resumeInterrupted(resumeTargetId, file)
-  }
-  resumeTargetId = null
-  ;(e.target as HTMLInputElement).value = ''
-}
-
 function formatSize(bytes: number) {
   if (!bytes) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
@@ -126,14 +102,6 @@ function processingText(u: any) {
                   {{ t('upload.cancel') }}
                 </button>
               </template>
-              <template v-if="u.status === 'interrupted'">
-                <button class="tray-btn tray-btn--accent" @click="triggerResume(u.id)">
-                  {{ u._file ? t('upload.resume') : t('upload.reselect_resume') }}
-                </button>
-                <button class="tray-btn" @click="upload.dismissInterrupted(u.id)">
-                  {{ t('upload.dismiss') }}
-                </button>
-              </template>
               <template v-if="u.status === 'failed' && u._file">
                 <button class="tray-btn tray-btn--accent" @click="upload.retryUpload(u.id)">
                   {{ t('upload.retry') }}
@@ -146,7 +114,6 @@ function processingText(u: any) {
       </div>
     </div>
   </Transition>
-  <input ref="fileInputRef" type="file" style="display:none" @change="onFileSelected">
 </template>
 
 <style lang="scss" scoped>

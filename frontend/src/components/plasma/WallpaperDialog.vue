@@ -93,9 +93,10 @@ async function loadCustomThumbs() {
     const path = `desktop/${name}`
     if (!blobCache.has(path)) {
       try {
-        const res = await api.get(`/user/store/${path}`, { responseType: 'blob' })
-        if (res.data?.size > 0) {
-          blobCache.set(path, URL.createObjectURL(res.data))
+        const { readEncryptedFile } = await import('../../composables/useCryptoUpload')
+        const buf = await readEncryptedFile(`/.user/${path}`, true)
+        if (buf.byteLength > 0) {
+          blobCache.set(path, URL.createObjectURL(new Blob([buf])))
         }
       } catch { /* skip missing files */ continue }
     }
@@ -129,9 +130,8 @@ async function onFileSelected(e: Event) {
   const path = `desktop/${name}`
 
   try {
-    await api.put(`/user/store/${path}`, file, {
-      headers: { 'Content-Type': file.type },
-    })
+    const { writeEncryptedFile } = await import('../../composables/useCryptoUpload')
+    await writeEncryptedFile(`/.user/${path}`, await file.arrayBuffer(), file.type)
 
     const blobUrl = URL.createObjectURL(file)
     blobCache.set(path, blobUrl)

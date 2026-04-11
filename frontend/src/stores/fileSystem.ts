@@ -423,6 +423,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const res = await ws.request<{ files?: FileListItem[] }>('file.list', { path })
     const list = res.files || []
     registerThumbnails(list)
+    await useServiceWorker().flush()
     return list
   }
 

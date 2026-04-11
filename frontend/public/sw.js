@@ -14,25 +14,12 @@ const TAG_SIZE = 16
 const CACHE_NAME = 'zephyr-decrypt'
 const CACHE_CLEANUP_DELAY = 5 * 60 * 1000 // 5 minutes
 
-// In development (localhost), rewrite cross-origin URLs to go through Vite proxy to avoid CORS.
-// In production, use the original URL directly (CDN handles CORS).
-function resolveFileUrl(url) {
-  if (self.location.hostname === 'localhost' || self.location.hostname === '127.0.0.1') {
-    try {
-      const parsed = new URL(url)
-      if (parsed.origin !== self.location.origin) {
-        return '/oss-proxy' + parsed.pathname + parsed.search
-      }
-    } catch { /* not a valid URL, return as-is */ }
-  }
-  return url
-}
 
 // --- State ---
 let kek = null // CryptoKey (AES-GCM) — user's KEK for unwrapping DEKs
 const registry = new Map() // id → { url, size, chunkSize, contentType, filename, download, wrappedDek, dek?, contentHash? }
 const cleanupTimers = new Map() // contentHash → timer id
-const inflight = new Map() // contentHash → Promise<Uint8Array> — deduplicates concurrent decrypts
+const chunkAccum = new Map() // contentHash → { chunks: Map<idx, Uint8Array>, totalChunks: number }
 
 // --- Lifecycle ---
 self.addEventListener('install', () => self.skipWaiting())
@@ -50,7 +37,7 @@ self.addEventListener('message', async (event) => {
     case 'clear-key':
       kek = null
       registry.clear()
-      inflight.clear()
+      chunkAccum.clear()
       // Clear all cleanup timers and purge cache immediately
       for (const timer of cleanupTimers.values()) clearTimeout(timer)
       cleanupTimers.clear()
@@ -80,6 +67,7 @@ self.addEventListener('message', async (event) => {
         }
         if (!stillUsed) {
           const hash = entry.contentHash
+          chunkAccum.delete(hash) // release in-memory chunks
           const timer = setTimeout(async () => {
             cleanupTimers.delete(hash)
             const cache = await caches.open(CACHE_NAME)
@@ -90,11 +78,39 @@ self.addEventListener('message', async (event) => {
       }
       break
     }
+    case 'flush':
+      if (event.ports[0]) event.ports[0].postMessage(null)
+      break
   }
 })
 
 function cacheKey(contentHash) {
   return new Request('/__cache__/' + contentHash)
+}
+
+// --- Chunk accumulator: collects decrypted chunks across multiple Range requests ---
+function getAccum(meta) {
+  if (!meta.contentHash || !meta.chunkSize) return null
+  let acc = chunkAccum.get(meta.contentHash)
+  if (!acc) {
+    acc = { chunks: new Map(), totalChunks: Math.ceil(meta.size / meta.chunkSize) }
+    chunkAccum.set(meta.contentHash, acc)
+  }
+  return acc
+}
+
+function tryFlushAccum(meta) {
+  const acc = chunkAccum.get(meta.contentHash)
+  if (!acc || acc.chunks.size < acc.totalChunks) return
+  const parts = []
+  for (let i = 0; i < acc.totalChunks; i++) parts.push(acc.chunks.get(i))
+  chunkAccum.delete(meta.contentHash)
+  const full = concatAll(parts)
+  const blob = new Blob([full], { type: meta.contentType || 'application/octet-stream' })
+  const cacheResp = new Response(blob, {
+    headers: { 'Content-Type': meta.contentType || 'application/octet-stream' },
+  })
+  caches.open(CACHE_NAME).then(c => c.put(cacheKey(meta.contentHash), cacheResp))
 }
 
 // --- Encryption geometry helpers ---
@@ -161,7 +177,7 @@ async function handleDecrypt(request, meta) {
     }
   }
 
-  // Range request without cache — fetch only needed encrypted chunks
+  // Range request without cache — stream-decrypt only the needed encrypted chunks
   if (rangeHeader && meta.size > 0 && meta.chunkSize > 0) {
     const { start, end } = parseRange(rangeHeader, meta.size)
     if (start === null) {
@@ -169,9 +185,7 @@ async function handleDecrypt(request, meta) {
         status: 416, headers: { 'Content-Range': `bytes */${meta.size}` }
       })
     }
-    const data = await decryptRange(meta, start, end)
-    if (!data) return new Response('Decrypt range failed', { status: 500 })
-    return serveRange(meta, rangeHeader, data, start, end)
+    return streamDecryptRange(meta, start, end)
   }
 
   // Full request — stream decrypt (边下边播) and cache in background
@@ -186,7 +200,7 @@ function streamDecryptResponse(meta) {
   const stream = new ReadableStream({
     async start(controller) {
       try {
-        const response = await fetch(resolveFileUrl(meta.url))
+        const response = await fetch(meta.url)
         if (!response.ok) {
           controller.error(new Error('fetch failed'))
           return
@@ -206,7 +220,7 @@ function streamDecryptResponse(meta) {
           return
         }
 
-        const chunkSize = new DataView(residual.buffer, residual.byteOffset).getUint32(1)
+        const chunkSize = new DataView(residual.buffer, residual.byteOffset).getUint32(1, false)
         const encChunk = encChunkSize(chunkSize)
         residual = residual.slice(HEADER_SIZE)
 
@@ -275,57 +289,133 @@ function streamDecryptResponse(meta) {
   return new Response(stream, { status: 200, headers })
 }
 
-// --- Decrypt only a specific plaintext range by fetching minimal encrypted data ---
-async function decryptRange(meta, pStart, pEnd) {
+// --- Stream-decrypt a specific plaintext range, fetching only the required encrypted chunks ---
+function streamDecryptRange(meta, pStart, pEnd) {
   const chunkSize = meta.chunkSize
-  if (!chunkSize || chunkSize <= 0) return null
-
-  const { startChunk, encStart, encEnd } = plaintextToEncRange(pStart, pEnd, chunkSize)
-
-  // Fetch only the required encrypted byte range from OSS
-  const url = resolveFileUrl(meta.url)
-  const resp = await fetch(url, {
-    headers: { 'Range': `bytes=${encStart}-${encEnd}` }
-  })
-  if (!resp.ok && resp.status !== 206) return null
-
-  const encData = new Uint8Array(await resp.arrayBuffer())
   const encChunk = encChunkSize(chunkSize)
+  const { startChunk, encStart, encEnd } = plaintextToEncRange(pStart, pEnd, chunkSize)
+  const totalPlain = pEnd - pStart + 1
+  const acc = getAccum(meta)
 
-  // Decrypt each chunk and collect plaintext
-  const parts = []
-  let offset = 0
-  let chunkIdx = startChunk
+  const ac = new AbortController()
 
-  while (offset < encData.length) {
-    const chunkLen = Math.min(encData.length - offset, encChunk)
-    if (chunkLen <= NONCE_SIZE) break
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        const resp = await fetch(meta.url, {
+          headers: { 'Range': `bytes=${encStart}-${encEnd}` },
+          signal: ac.signal,
+        })
+        if (!resp.ok && resp.status !== 206) {
+          controller.error(new Error('fetch failed'))
+          return
+        }
 
-    const nonce = encData.slice(offset, offset + NONCE_SIZE)
-    const ciphertext = encData.slice(offset + NONCE_SIZE, offset + chunkLen)
-    const aad = uint64BE(chunkIdx)
+        const reader = resp.body.getReader()
+        let residual = new Uint8Array(0)
+        let chunkIdx = startChunk
+        let emitted = 0
 
-    try {
-      const plaintext = new Uint8Array(await crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv: nonce, additionalData: aad },
-        meta.dek, ciphertext
-      ))
-      parts.push(plaintext)
-    } catch {
-      return null
-    }
+        while (emitted < totalPlain) {
+          // If this chunk is already in the accumulator, serve from memory
+          const cached = acc?.chunks.get(chunkIdx)
+          if (cached) {
+            let sliceStart = 0, sliceEnd = cached.length
+            if (chunkIdx === startChunk) sliceStart = pStart - startChunk * chunkSize
+            const remaining = totalPlain - emitted
+            if (sliceEnd - sliceStart > remaining) sliceEnd = sliceStart + remaining
+            controller.enqueue(cached.subarray(sliceStart, sliceEnd))
+            emitted += sliceEnd - sliceStart
+            chunkIdx++
 
-    offset += chunkLen
-    chunkIdx++
+            // Skip the corresponding encrypted chunk in the S3 stream
+            let toSkip = encChunk
+            while (toSkip > 0) {
+              if (residual.length >= toSkip) { residual = residual.slice(toSkip); break }
+              toSkip -= residual.length
+              residual = new Uint8Array(0)
+              const { value, done } = await reader.read()
+              if (done) break
+              residual = value
+            }
+            continue
+          }
+
+          while (residual.length < encChunk) {
+            const { value, done } = await reader.read()
+            if (done) break
+            residual = concat(residual, value)
+          }
+          if (residual.length === 0) break
+
+          const chunkLen = Math.min(residual.length, encChunk)
+          const encData = residual.slice(0, chunkLen)
+          residual = residual.slice(chunkLen)
+
+          const nonce = encData.slice(0, NONCE_SIZE)
+          const ciphertext = encData.slice(NONCE_SIZE)
+          const aad = uint64BE(chunkIdx)
+
+          const plain = new Uint8Array(await crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: nonce, additionalData: aad },
+            meta.dek, ciphertext,
+          ))
+
+          // Store full decrypted chunk in accumulator
+          if (acc) acc.chunks.set(chunkIdx, plain)
+
+          let sliceStart = 0, sliceEnd = plain.length
+          if (chunkIdx === startChunk) sliceStart = pStart - startChunk * chunkSize
+          const remaining = totalPlain - emitted
+          if (sliceEnd - sliceStart > remaining) sliceEnd = sliceStart + remaining
+
+          controller.enqueue(plain.subarray(sliceStart, sliceEnd))
+          emitted += sliceEnd - sliceStart
+          chunkIdx++
+
+          if (chunkLen < encChunk && residual.length === 0) break
+        }
+
+        controller.close()
+
+        // Try to assemble full plaintext from accumulated chunks → Cache API
+        if (acc) tryFlushAccum(meta)
+      } catch (err) {
+        if (err.name !== 'AbortError') {
+          try { controller.error(err) } catch { /* already closed */ }
+        }
+      }
+    },
+    cancel() {
+      ac.abort()
+    },
+  })
+
+  const total = meta.size
+  const contentType = meta.contentType || 'application/octet-stream'
+
+  // Full-file range → 200 (ensures <video> initialises its media source correctly)
+  if (pStart === 0 && pEnd >= meta.size - 1) {
+    return new Response(stream, {
+      status: 200,
+      headers: {
+        'Content-Type': contentType,
+        'Content-Length': String(total),
+        'Accept-Ranges': 'bytes',
+      },
+    })
   }
 
-  if (parts.length === 0) return null
-
-  // Concatenate and trim to exact plaintext range
-  const full = concatAll(parts)
-  const trimStart = pStart % chunkSize
-  const trimEnd = trimStart + (pEnd - pStart + 1)
-  return full.slice(trimStart, trimEnd)
+  // True partial range → 206
+  return new Response(stream, {
+    status: 206,
+    headers: {
+      'Content-Range': `bytes ${pStart}-${pEnd}/${total}`,
+      'Content-Length': String(totalPlain),
+      'Content-Type': contentType,
+      'Accept-Ranges': 'bytes',
+    },
+  })
 }
 
 // --- Serve a Range slice ---
@@ -422,8 +512,7 @@ function hexToBytes(hex) {
 function uint64BE(n) {
   const buf = new ArrayBuffer(8)
   const view = new DataView(buf)
-  view.setUint32(0, 0)
-  view.setUint32(4, n)
+  view.setBigUint64(0, BigInt(n), false)
   return new Uint8Array(buf)
 }
 

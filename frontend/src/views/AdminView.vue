@@ -5,6 +5,7 @@ import { useWebSocket } from '../composables/useWebSocket'
 import { useI18n } from '../composables/useI18n'
 import { useMessage } from '../composables/useMessage'
 import { showPrompt, showConfirm } from '../composables/useNativeDialog'
+import api from '../composables/useApi'
 import dayjs from 'dayjs'
 import { Button, Modal, Form, FormItem, Input, Select, DataTable } from '../barrels/breeze'
 
@@ -161,11 +162,34 @@ async function resetEmail(user: any) {
   }
 }
 
-onMounted(loadUsers)
+// ── CORS probe ──────────────────────────────────────────────────────────────
+const corsOk = ref(true) // assume ok until proven otherwise
+
+async function checkOSSCors() {
+  try {
+    const res = await api.get<{ put_url: string; delete_url: string }>('/admin/oss/cors-check')
+    const { put_url, delete_url } = res.data
+    await fetch(put_url, { method: 'PUT', body: new Blob(['1']) })
+    // Clean up probe object
+    fetch(delete_url, { method: 'DELETE' }).catch(() => {})
+    corsOk.value = true
+  } catch {
+    corsOk.value = false
+  }
+}
+
+onMounted(() => {
+  loadUsers()
+  checkOSSCors()
+})
 </script>
 
 <template>
   <div class="admin-view">
+    <div v-if="!corsOk" class="cors-warning">
+      <strong>{{ t('admin.cors_warning_title') }}</strong>
+      <p>{{ t('admin.cors_warning_body') }}</p>
+    </div>
     <div class="admin-header">
       <h1>{{ t('admin.title') }}</h1>
       <div style="display:flex;gap:8px">
@@ -244,5 +268,27 @@ onMounted(loadUsers)
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
+}
+
+.cors-warning {
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border-radius: 6px;
+  background: rgba(218, 68, 83, 0.12);
+  border: 1px solid var(--breeze-danger, #da4453);
+  color: var(--breeze-text);
+
+  strong {
+    display: block;
+    margin-bottom: 4px;
+    color: var(--breeze-danger, #da4453);
+  }
+
+  p {
+    margin: 0;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--breeze-text-secondary);
+  }
 }
 </style>

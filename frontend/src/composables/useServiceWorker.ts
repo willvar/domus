@@ -16,6 +16,7 @@ export function useServiceWorker(): {
   clearKey: () => void
   registerDecrypt: (metadata: DecryptMetadata) => string
   unregisterDecrypt: (url: string) => void
+  flush: () => Promise<void>
 } {
   async function register(): Promise<void> {
     if (!('serviceWorker' in navigator)) return
@@ -87,5 +88,15 @@ export function useServiceWorker(): {
     }
   }
 
-  return { swReady, register, sendKey, clearKey, registerDecrypt, unregisterDecrypt }
+  /** Wait until the SW has processed all prior postMessage calls (FIFO barrier). */
+  function flush(): Promise<void> {
+    if (!navigator.serviceWorker?.controller) return Promise.resolve()
+    return new Promise(resolve => {
+      const { port1, port2 } = new MessageChannel()
+      port1.onmessage = () => resolve()
+      navigator.serviceWorker.controller!.postMessage({ type: 'flush' }, [port2])
+    })
+  }
+
+  return { swReady, register, sendKey, clearKey, registerDecrypt, unregisterDecrypt, flush }
 }

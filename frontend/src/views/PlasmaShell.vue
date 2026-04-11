@@ -75,8 +75,8 @@ provide('pickWallpaper', () => { wallpaperDialogRef.value?.open() })
 
 // Initialize file system with workspace restore
 const workspace = useWorkspaceSync()
+useWindowHistory()
 
-uploadStore.checkInterrupted()
 pendingOpsStore.init(auth.username)
 
 ;(async () => {
@@ -111,8 +111,6 @@ pendingOpsStore.init(auth.username)
     // Fresh start
     fs.init()
   }
-
-  useWindowHistory()
 
   // Set up push event handler for cross-device sync
   workspace.setupPushHandler(wm, fs)
