@@ -25,7 +25,7 @@ type FileRepo interface {
 	SearchFiles(userID, query string, limit int) ([]SearchFileResult, error)
 	HasFullTextSearch() bool
 	// Upload-related
-	CreateUpload(userID, uploadID, taskID, path, name string, fileSize int64, chunkSize int) error
+	CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64) error
 	GetUpload(userID, uploadID string) (*FileRecord, error)
 	UpdateUploadParts(uploadID, completedParts string) error
 	UpdateStatus(uploadID, status string) error
@@ -202,17 +202,17 @@ func (r *gormFileRepo) SearchFiles(userID, query string, limit int) ([]SearchFil
 	return results, err
 }
 
-func (r *gormFileRepo) CreateUpload(userID, uploadID, taskID, path, name string, fileSize int64, chunkSize int) error {
+func (r *gormFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64) error {
 	return r.db.Create(&FileRecord{
-		UserID:    userID,
-		Path:      path,
-		Parent:    parentOf(path),
-		Name:      name,
-		Size:      fileSize,
-		Status:    "uploading",
-		UploadID:  uploadID,
-		TaskID:    taskID,
-		ChunkSize: chunkSize,
+		UserID:      userID,
+		Path:        path,
+		Parent:      parentOf(path),
+		Name:        name,
+		Size:        fileSize,
+		Status:      "uploading",
+		UploadID:    uploadID,
+		TaskID:      taskID,
+		OSSUploadID: ossUploadID,
 	}).Error
 }
 

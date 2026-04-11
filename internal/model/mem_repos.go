@@ -456,24 +456,24 @@ func (r *memFileRepo) SearchFiles(userID, query string, limit int) ([]SearchFile
 	return out, nil
 }
 
-func (r *memFileRepo) CreateUpload(userID, uploadID, taskID, path, name string, fileSize int64, chunkSize int) error {
+func (r *memFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := fileKey(userID, path)
 	now := time.Now()
 	rec := &FileRecord{
-		ID:        r.nextID,
-		UserID:    userID,
-		Path:      path,
-		Parent:    memParentOf(path),
-		Name:      name,
-		Size:      fileSize,
-		Status:    "uploading",
-		UploadID:  uploadID,
-		TaskID:    taskID,
-		ChunkSize: chunkSize,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:          r.nextID,
+		UserID:      userID,
+		Path:        path,
+		Parent:      memParentOf(path),
+		Name:        name,
+		Size:        fileSize,
+		Status:      "uploading",
+		UploadID:    uploadID,
+		TaskID:      taskID,
+		OSSUploadID: ossUploadID,
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	r.nextID++
 	r.data[key] = rec

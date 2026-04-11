@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"mime"
-	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,7 +14,6 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 
-	"zephyr/config"
 	"zephyr/internal/auth"
 	"zephyr/internal/middleware"
 	"zephyr/internal/model"
@@ -424,21 +422,18 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
 	isDir := strings.HasSuffix(path, "/")
 
-	// For non-ready files: cancel job, delete record, clean temp — no trash needed
+	// For non-ready files: abort multipart upload, delete OSS object, delete record — no trash needed
 	if !isDir {
 		fileRecord, err := h.Repos.Files.Get(session.UserID, resolvedPath)
 		if err != nil {
 			return c.Status(404).JSON(fiber.Map{"error": "not_found"})
 		}
 		if fileRecord.Status != "ready" {
-			// Cancel associated oss_upload job if any
-			if fileRecord.UploadID != "" {
-				if job, err := h.Repos.Jobs.FindActiveByParam("oss_upload", fileRecord.UploadID); err == nil {
-					h.Dispatcher.Cancel(job.JobID)
-				}
-				tempDir := filepath.Join(config.TempDir, "upload", fileRecord.UploadID)
-				_ = os.RemoveAll(tempDir)
+			// Abort multipart upload if still in progress
+			if fileRecord.OSSUploadID != "" {
+				_ = h.Store.AbortMultipartUpload(fileRecord.Path, fileRecord.OSSUploadID)
 			}
+			_ = h.Store.DeleteObject(fileRecord.Path)
 			_ = h.Repos.Files.Delete(session.UserID, resolvedPath)
 			_ = h.Repos.Shares.DeleteByPath(session.UserID, resolvedPath)
 			h.Audit.LogFromCtx(c, "file_delete", path, "", "success", 0)
@@ -569,6 +564,9 @@ func (h *Handler) handleFileAccess(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
 	fileRecord, err := h.Repos.Files.Get(session.UserID, resolvedPath)
 	if err != nil {
+		if c.Query("optional") == "true" {
+			return c.SendStatus(204)
+		}
 		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
 	}
 	if fileRecord.Status != "ready" {
@@ -671,21 +669,22 @@ func (h *Handler) handleOfficePreview(c *fiber.Ctx, path string) error {
 		return c.Status(500).JSON(fiber.Map{"error": "decrypt_failed"})
 	}
 
-	// Upload plaintext to a temporary key
+	// SECURITY NOTE: Office Online requires a publicly accessible plaintext URL.
+	// This is an inherent limitation — the temp file is plaintext on OSS for up to
+	// 2 minutes. The key is random and unguessable. This is the only exception to
+	// the "everything encrypted on OSS" model.
 	ext := filepath.Ext(resolvedPath)
 	tempKey := fmt.Sprintf("_tmp/preview/%s%s", uuid.New().String(), ext)
 	if err := h.Store.PutObjectBytes(tempKey, plainBuf.Bytes()); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "upload_temp_failed"})
 	}
 
-	// Generate a short-lived presigned URL
 	presignedURL, err := h.Store.GeneratePresignedURL(tempKey, 1*time.Minute)
 	if err != nil {
 		_ = h.Store.DeleteObject(tempKey)
 		return c.Status(500).JSON(fiber.Map{"error": "presign_failed"})
 	}
 
-	// Schedule cleanup of the temp file
 	go func() {
 		time.Sleep(2 * time.Minute)
 		_ = h.Store.DeleteObject(tempKey)

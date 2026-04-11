@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -349,7 +348,6 @@ func runServer(cfg *config.Config, configPath string) {
 	dispatcher := service.NewDispatcher(repos.Jobs)
 	dispatcher.Register("transcode", cfg.Jobs.TranscodeConcurrency, h.RunTranscodeJob)
 	dispatcher.Register("thumbnail", cfg.Jobs.ThumbnailConcurrency, h.RunThumbnailJob)
-	dispatcher.Register("oss_upload", cfg.Jobs.SystemConcurrency, h.RunOSSUploadJob)
 	dispatcher.Start()
 	defer dispatcher.Stop()
 	h.Dispatcher = dispatcher
@@ -412,6 +410,9 @@ func runServer(cfg *config.Config, configPath string) {
 
 	// Register all API routes
 	h.RegisterRoutes(app)
+
+	// Start background stale upload sweeper
+	h.StartUploadSweeper()
 
 	// 优雅关闭
 	quit := make(chan os.Signal, 1)
@@ -488,7 +489,7 @@ func generateRandomSecret(length int) string {
 	return hex.EncodeToString(b)[:length]
 }
 
-func cleanOrphanUploads(_ store.FileStore, repos *model.Repos) {
+func cleanOrphanUploads(s store.FileStore, repos *model.Repos) {
 	const staleThreshold = 24 * time.Hour
 
 	stale, err := repos.Files.GetStaleUploads(staleThreshold)
@@ -497,8 +498,12 @@ func cleanOrphanUploads(_ store.FileStore, repos *model.Repos) {
 		return
 	}
 	for _, r := range stale {
-		tempDir := filepath.Join(config.TempDir, "upload", r.UploadID)
-		_ = os.RemoveAll(tempDir)
+		if r.OSSUploadID != "" {
+			_ = s.AbortMultipartUpload(r.Path, r.OSSUploadID)
+		}
+		if _, err := s.HeadObject(r.Path); err == nil {
+			_ = s.DeleteObject(r.Path)
+		}
 		_ = repos.Files.Delete(r.UserID, r.Path)
 		logger.Info("[cleanup] Cleaned stale upload: %s (file: %s)", r.UploadID, r.Name)
 	}

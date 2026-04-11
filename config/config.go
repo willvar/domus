@@ -26,12 +26,14 @@ type Config struct {
 }
 
 type OSSConfig struct {
-	Endpoint        string `yaml:"endpoint"`
-	AccessKeyID     string `yaml:"access_key_id"`
-	AccessKeySecret string `yaml:"access_key_secret"`
-	Bucket          string `yaml:"bucket"`
-	Region          string `yaml:"region"`
-	CDNDomain       string `yaml:"cdn_domain"` // optional: CDN domain with private bucket origin-pull enabled
+	ServerEndpoint         string `yaml:"server_endpoint"`          // Server-side read/write (transcode, HeadObject, Delete); falls back to ClientUploadEndpoint
+	ClientUploadEndpoint   string `yaml:"client_upload_endpoint"`   // Public endpoint for browser direct upload (presigned PUT)
+	ClientDownloadEndpoint string `yaml:"client_download_endpoint"` // Browser download/preview (CDN or public endpoint)
+	AccessKeyID            string `yaml:"access_key_id"`
+	AccessKeySecret        string `yaml:"access_key_secret"`
+	Bucket                 string `yaml:"bucket"`
+	Region                 string `yaml:"region"`
+	MaxPresignBatch        int    `yaml:"max_presign_batch"` // Max presigned URLs per request; default 100
 }
 
 type ServerConfig struct {
@@ -85,8 +87,8 @@ type SMTPConfig struct {
 
 // Validate checks that required configuration fields are set.
 func (c *Config) Validate() error {
-	if c.OSS.Endpoint == "" {
-		return fmt.Errorf("config: oss.endpoint is required")
+	if c.OSS.ClientUploadEndpoint == "" {
+		return fmt.Errorf("config: oss.client_upload_endpoint is required")
 	}
 	if c.OSS.AccessKeyID == "" {
 		return fmt.Errorf("config: oss.access_key_id is required")
@@ -131,6 +133,14 @@ func Load(path string) (*Config, error) {
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
 		return nil, fmt.Errorf("parse config: %w", err)
+	}
+
+	// OSS defaults
+	if cfg.OSS.ServerEndpoint == "" {
+		cfg.OSS.ServerEndpoint = cfg.OSS.ClientUploadEndpoint
+	}
+	if cfg.OSS.MaxPresignBatch <= 0 {
+		cfg.OSS.MaxPresignBatch = 100
 	}
 
 	// Database defaults

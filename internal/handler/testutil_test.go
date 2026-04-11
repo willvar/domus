@@ -243,3 +243,27 @@ func (m *MockFileStore) GetObjectContentRange(key string, start, end int64) (io.
 	}
 	return io.NopCloser(strings.NewReader("")), nil
 }
+func (m *MockFileStore) PresignedPutObject(key string, expires time.Duration) (string, error) {
+	return fmt.Sprintf("https://mock-oss.example.com/%s?method=PUT&signed=true", key), nil
+}
+func (m *MockFileStore) PresignedDeleteObject(key string, expires time.Duration) (string, error) {
+	return fmt.Sprintf("https://mock-oss.example.com/%s?method=DELETE&signed=true", key), nil
+}
+func (m *MockFileStore) CreateMultipartUpload(key string) (string, error) {
+	return "mock-upload-id", nil
+}
+func (m *MockFileStore) PresignedUploadPart(key, uploadID string, partNumber int, expires time.Duration) (string, error) {
+	return fmt.Sprintf("https://mock-oss.example.com/%s?partNumber=%d&uploadId=%s&signed=true", key, partNumber, uploadID), nil
+}
+func (m *MockFileStore) CompleteMultipartUpload(key, uploadID string, parts []store.CompletePart) error {
+	return nil
+}
+func (m *MockFileStore) AbortMultipartUpload(key, uploadID string) error {
+	return nil
+}
+func (m *MockFileStore) ListParts(key, uploadID string) ([]store.PartInfo, error) {
+	return nil, nil
+}
+func (m *MockFileStore) HeadObject(key string) (*store.HeadResult, error) {
+	return &store.HeadResult{Size: 100, ETag: "\"mock-etag\""}, nil
+}

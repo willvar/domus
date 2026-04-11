@@ -81,7 +81,6 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	file.Get("/", h.handleList)
 	file.Get("/access", h.handleFileAccess)
 	file.Get("/preview", h.handlePreview)
-	file.Get("/thumbnail", h.handleThumbnail)
 	file.Put("/content/diff", h.handlePatchContent)
 	file.Post("/mkdir", h.handleMkdir)
 	file.Post("/rename", h.handleRename)
@@ -92,7 +91,7 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	fileUpload := file.Group("/upload")
 	fileUpload.Get("/", h.handleUploadStatus)
 	fileUpload.Post("/", h.handleUploadDispatch)
-	fileUpload.Put("/part", h.handleUploadPart)
+	fileUpload.Get("/presign", h.handleUploadPresign)
 	fileUpload.Delete("/", h.handleUploadAbort)
 
 	// /file/share (authenticated)

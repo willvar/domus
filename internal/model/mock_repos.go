@@ -140,7 +140,7 @@ type MockFileRepo struct {
 	RebuildAllSearchVectorsFn func() (int64, error)
 	SearchFilesFn             func(userID, query string, limit int) ([]SearchFileResult, error)
 	HasFullTextSearchFn       func() bool
-	CreateUploadFn            func(userID, uploadID, taskID, path, name string, fileSize int64, chunkSize int) error
+	CreateUploadFn            func(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64) error
 	GetUploadFn               func(userID, uploadID string) (*FileRecord, error)
 	UpdateUploadPartsFn       func(uploadID, completedParts string) error
 	UpdateStatusFn            func(uploadID, status string) error
@@ -237,9 +237,9 @@ func (m *MockFileRepo) HasFullTextSearch() bool {
 	}
 	return false
 }
-func (m *MockFileRepo) CreateUpload(userID, uploadID, taskID, path, name string, fileSize int64, chunkSize int) error {
+func (m *MockFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64) error {
 	if m.CreateUploadFn != nil {
-		return m.CreateUploadFn(userID, uploadID, taskID, path, name, fileSize, chunkSize)
+		return m.CreateUploadFn(userID, uploadID, taskID, ossUploadID, path, name, fileSize)
 	}
 	return nil
 }

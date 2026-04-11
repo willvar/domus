@@ -14,7 +14,10 @@ func (h *Handler) wsSessionOpen(conn *ws.Conn, _ string, data json.RawMessage) (
 	}
 	_ = json.Unmarshal(data, &req)
 
-	encKey, _ := h.getFileEncryptionKey(conn.Session)
+	encKey, err := h.getFileEncryptionKey(conn.Session)
+	if err != nil {
+		return nil, &wsError{Code: "encryption_key_unavailable"}
+	}
 
 	id, err := h.Vsh.Open(
 		conn.UserID,

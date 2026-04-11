@@ -10,10 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
-
 	"zephyr/internal/auth"
-	"zephyr/internal/middleware"
 	"zephyr/internal/model"
 	"zephyr/internal/service"
 )
@@ -282,46 +279,4 @@ func (h *Handler) encryptAndUploadThumbnail(userID, ossKey, localPath string) (s
 		return "", fmt.Errorf("wrap DEK: %w", err)
 	}
 	return hex.EncodeToString(wrapped), nil
-}
-
-// handleThumbnail serves a decrypted thumbnail for the requesting user's file.
-func (h *Handler) handleThumbnail(c *fiber.Ctx) error {
-	p := c.Query("path", "")
-	if p == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
-	}
-
-	resolvedPath, err := middleware.ResolvePath(c, p)
-	if err != nil {
-		return err
-	}
-
-	session := c.Locals("session").(*model.Session)
-	fileRecord, err := h.Repos.Files.Get(session.UserID, resolvedPath)
-	if err != nil || fileRecord.ThumbnailKey == "" || fileRecord.ThumbnailWrappedDEK == "" {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
-	}
-
-	kek, err := h.getFileEncryptionKey(session)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-	}
-	wrappedBytes, err := hex.DecodeString(fileRecord.ThumbnailWrappedDEK)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-	}
-	thumbDEK, err := auth.UnwrapDEK(kek, wrappedBytes)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "unwrap_failed"})
-	}
-
-	reader, err := h.Store.GetObjectContent(fileRecord.ThumbnailKey)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "read_failed"})
-	}
-	defer func() { _ = reader.Close() }()
-
-	c.Set("Content-Type", "image/webp")
-	c.Set("Cache-Control", "private, max-age=3600")
-	return auth.DecryptStream(thumbDEK, reader, c)
 }
