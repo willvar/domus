@@ -61,12 +61,15 @@ func AcquirePID(pidFile string) (*PIDLock, error) {
 	return &PIDLock{file: f, pidFile: pidFile}, nil
 }
 
-// Release 释放锁并关闭文件描述符（不删除锁文件）
+// Release 释放锁、关闭文件描述符并删除 PID 文件
 func (l *PIDLock) Release() {
 	if l.file != nil {
 		_ = unlockFile(l.file)
 		_ = l.file.Close()
 		l.file = nil
+	}
+	if l.pidFile != "" {
+		_ = os.Remove(l.pidFile)
 	}
 }
 

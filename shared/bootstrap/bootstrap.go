@@ -4,6 +4,7 @@ package bootstrap
 import (
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"zephyr/shared/daemon"
@@ -52,7 +53,7 @@ func (s *Service) Start() error {
 	return nil
 }
 
-// Stop 停止服务（关闭 stats socket，释放 PID 锁）
+// Stop 停止服务（关闭 stats socket，释放 PID 锁，清理残留文件）
 func (s *Service) Stop() {
 	if s.socketServer != nil {
 		_ = s.socketServer.Close()
@@ -60,6 +61,14 @@ func (s *Service) Stop() {
 	if s.pidLock != nil {
 		s.pidLock.Release()
 	}
+	// 确保 socket 文件也被清理
+	CleanupFiles(s.pidFile)
+}
+
+// CleanupFiles 清理 PID 文件和对应的 socket 文件（用于进程已退出但文件残留的情况）
+func CleanupFiles(pidFile string) {
+	_ = os.Remove(pidFile)
+	_ = os.Remove(daemon.GetSocketPath(pidFile))
 }
 
 // IsAlreadyRunning 判断错误是否为"服务已在运行"

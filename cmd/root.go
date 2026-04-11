@@ -135,6 +135,7 @@ func stop(configPath string) {
 	}
 
 	if bootstrap.WaitForStop(pid, 5*time.Second) {
+		bootstrap.CleanupFiles(cfg.Server.PidFile)
 		logger.Info("Service stopped")
 	} else {
 		logger.Info("Service stop timeout")
@@ -155,6 +156,7 @@ func restart(configPath string, daemonMode bool) {
 			logger.Info("Failed to stop process: %v", err)
 		}
 		bootstrap.WaitForStop(pid, 5*time.Second)
+		bootstrap.CleanupFiles(cfg.Server.PidFile)
 	}
 
 	logger.Info("Starting service...")
@@ -438,6 +440,7 @@ func runServer(cfg *config.Config, configPath string) {
 			logger.Info("Shutdown timeout")
 		}
 
+		svc.Stop()
 		os.Exit(0)
 	}()
 
