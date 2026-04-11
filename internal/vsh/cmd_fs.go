@@ -45,7 +45,7 @@ func cmdLs(s *Session, args []string, redirect string) (string, error) {
 		return "", err
 	}
 
-	records, err := model.ListDirectChildren(s.UserID, dirOSS)
+	records, err := s.repos.Files.ListDirectChildren(s.UserID, dirOSS)
 	if err != nil {
 		return "", fmt.Errorf("cannot list: %v", err)
 	}
@@ -70,7 +70,7 @@ func cmdLs(s *Session, args []string, redirect string) (string, error) {
 			if f.IsDir {
 				name = colorBlue + name + "/" + colorReset
 			}
-			b.WriteString(fmt.Sprintf("%s  %8s  %s  %s\r\n", perm, sizeStr, timeStr, name))
+			fmt.Fprintf(&b, "%s  %8s  %s  %s\r\n", perm, sizeStr, timeStr, name)
 		} else {
 			if f.IsDir {
 				b.WriteString(colorBlue + f.Name + "/" + colorReset + "  ")
@@ -108,12 +108,12 @@ func cmdCd(s *Session, args []string, redirect string) (string, error) {
 	// Verify it's a valid directory by checking DB
 	dirOSS := s.Username + appPath
 	if appPath != "/" {
-		records, err := model.ListDirectChildren(s.UserID, dirOSS)
+		records, err := s.repos.Files.ListDirectChildren(s.UserID, dirOSS)
 		if err != nil {
 			return "", fmt.Errorf("no such directory: %s", appPath)
 		}
 		// Also check if the directory object itself exists
-		_, getErr := model.GetFile(s.UserID, dirOSS)
+		_, getErr := s.repos.Files.Get(s.UserID, dirOSS)
 		if getErr != nil && len(records) == 0 {
 			return "", fmt.Errorf("no such directory: %s", strings.TrimSuffix(appPath, "/"))
 		}
@@ -156,7 +156,7 @@ func cmdMkdir(s *Session, args []string, redirect string) (string, error) {
 			return "", fmt.Errorf("cannot create %s: %v", dir, err)
 		}
 		name := path.Base(strings.TrimSuffix(ossPath, "/"))
-		_ = model.UpsertFile(s.UserID, ossPath, name, true, 0, "", "")
+		_ = s.repos.Files.Upsert(s.UserID, ossPath, name, true, 0, "", "")
 		s.notifyParentDir(ossPath, "created")
 	}
 	return "", nil
@@ -175,7 +175,7 @@ func cmdTouch(s *Session, args []string, redirect string) (string, error) {
 			return "", err
 		}
 		// Check if file already exists
-		if _, getErr := model.GetFile(s.UserID, ossPath); getErr == nil {
+		if _, getErr := s.repos.Files.Get(s.UserID, ossPath); getErr == nil {
 			continue // file exists, skip
 		}
 		wrappedDEK, err := s.WriteFileEncrypted(ossPath, []byte{})
@@ -184,7 +184,7 @@ func cmdTouch(s *Session, args []string, redirect string) (string, error) {
 		}
 		name := path.Base(ossPath)
 		ct := mime.TypeByExtension(filepath.Ext(name))
-		_ = model.UpsertFile(s.UserID, ossPath, name, false, 0, ct, "",
+		_ = s.repos.Files.Upsert(s.UserID, ossPath, name, false, 0, ct, "",
 			model.UpsertFileOpts{WrappedDEK: wrappedDEK})
 		s.notifyParentDir(ossPath, "created")
 	}
@@ -215,10 +215,10 @@ func cmdRm(s *Session, args []string, redirect string) (string, error) {
 		}
 
 		// Check if it's a directory
-		rec, recErr := model.GetFile(s.UserID, ossPath+"/")
+		rec, recErr := s.repos.Files.Get(s.UserID, ossPath+"/")
 		isDir := recErr == nil && rec.IsDir
 		if !isDir {
-			rec, recErr = model.GetFile(s.UserID, ossPath)
+			rec, recErr = s.repos.Files.Get(s.UserID, ossPath)
 		}
 
 		if isDir {
@@ -227,22 +227,22 @@ func cmdRm(s *Session, args []string, redirect string) (string, error) {
 			}
 			dirOSS := ossPath + "/"
 			trashKey := s.Username + "/.trash/" + rec.Path
-			size, _ := model.SumFileSizeByPrefix(s.UserID, dirOSS)
-			_ = model.CreateTrashRecord(s.UserID, appPath, trashKey, size, true)
+			size, _ := s.repos.Files.SumSizeByPrefix(s.UserID, dirOSS)
+			_ = s.repos.Trash.Create(s.UserID, appPath, trashKey, size, true)
 			if err := s.store.RecursiveMove(dirOSS, trashKey, nil); err != nil {
 				return "", fmt.Errorf("cannot remove %s: %v", t, err)
 			}
-			_ = model.DeleteFilesByPrefix(s.UserID, dirOSS)
+			_ = s.repos.Files.DeleteByPrefix(s.UserID, dirOSS)
 		} else {
 			if recErr != nil {
 				return "", fmt.Errorf("cannot remove '%s': No such file", t)
 			}
 			trashKey := s.Username + "/.trash/" + rec.Path
-			_ = model.CreateTrashRecord(s.UserID, appPath, trashKey, rec.Size, false)
+			_ = s.repos.Trash.Create(s.UserID, appPath, trashKey, rec.Size, false)
 			if err := s.store.MoveObject(ossPath, trashKey); err != nil {
 				return "", fmt.Errorf("cannot remove %s: %v", t, err)
 			}
-			_ = model.DeleteFile(s.UserID, ossPath)
+			_ = s.repos.Files.Delete(s.UserID, ossPath)
 		}
 		s.notifyParentDir(ossPath, "deleted")
 	}
@@ -275,7 +275,7 @@ func cmdCp(s *Session, args []string, redirect string) (string, error) {
 		return "", err
 	}
 
-	srcRec, srcErr := model.GetFile(s.UserID, srcOSS+"/")
+	srcRec, srcErr := s.repos.Files.Get(s.UserID, srcOSS+"/")
 	isDir := srcErr == nil && srcRec.IsDir
 
 	if isDir {
@@ -288,7 +288,7 @@ func cmdCp(s *Session, args []string, redirect string) (string, error) {
 		syncDirDB(s, dstOSS+"/")
 	} else {
 		if srcErr != nil {
-			if _, err2 := model.GetFile(s.UserID, srcOSS); err2 != nil {
+			if _, err2 := s.repos.Files.Get(s.UserID, srcOSS); err2 != nil {
 				return "", fmt.Errorf("cannot stat '%s': No such file", positional[0])
 			}
 		}
@@ -297,7 +297,7 @@ func cmdCp(s *Session, args []string, redirect string) (string, error) {
 		}
 		name := path.Base(dstOSS)
 		ct := mime.TypeByExtension(filepath.Ext(name))
-		srcFile, _ := model.GetFile(s.UserID, srcOSS)
+		srcFile, _ := s.repos.Files.Get(s.UserID, srcOSS)
 		size := int64(0)
 		var opts []model.UpsertFileOpts
 		if srcFile != nil {
@@ -306,7 +306,7 @@ func cmdCp(s *Session, args []string, redirect string) (string, error) {
 				opts = append(opts, model.UpsertFileOpts{WrappedDEK: srcFile.WrappedDEK})
 			}
 		}
-		_ = model.UpsertFile(s.UserID, dstOSS, name, false, size, ct, "", opts...)
+		_ = s.repos.Files.Upsert(s.UserID, dstOSS, name, false, size, ct, "", opts...)
 	}
 	s.notifyParentDir(dstOSS, "created")
 	return "", nil
@@ -335,23 +335,23 @@ func cmdMv(s *Session, args []string, redirect string) (string, error) {
 		return "", err
 	}
 
-	srcRec, srcErr := model.GetFile(s.UserID, srcOSS+"/")
+	srcRec, srcErr := s.repos.Files.Get(s.UserID, srcOSS+"/")
 	isDir := srcErr == nil && srcRec.IsDir
 
 	if isDir {
 		if err := s.store.RecursiveMove(srcOSS+"/", dstOSS+"/", nil); err != nil {
 			return "", fmt.Errorf("move failed: %v", err)
 		}
-		_ = model.MoveFilesByPrefix(s.UserID, srcOSS+"/", dstOSS+"/")
+		_ = s.repos.Files.MoveByPrefix(s.UserID, srcOSS+"/", dstOSS+"/")
 	} else {
-		if _, err2 := model.GetFile(s.UserID, srcOSS); err2 != nil {
+		if _, err2 := s.repos.Files.Get(s.UserID, srcOSS); err2 != nil {
 			return "", fmt.Errorf("cannot stat '%s': No such file", positional[0])
 		}
 		if err := s.store.MoveObject(srcOSS, dstOSS); err != nil {
 			return "", fmt.Errorf("move failed: %v", err)
 		}
 		name := path.Base(dstOSS)
-		_ = model.MoveFile(s.UserID, srcOSS, dstOSS, name)
+		_ = s.repos.Files.Move(s.UserID, srcOSS, dstOSS, name)
 	}
 	s.notifyParentDir(srcOSS, "deleted")
 	if s.parentOSSDir(srcOSS) != s.parentOSSDir(dstOSS) {
@@ -368,7 +368,7 @@ func cmdTree(s *Session, args []string, redirect string) (string, error) {
 	maxDepth := 3
 	for i := 0; i < len(args); i++ {
 		if (args[i] == "-L" || args[i] == "--level") && i+1 < len(args) {
-			fmt.Sscanf(args[i+1], "%d", &maxDepth)
+			_, _ = fmt.Sscanf(args[i+1], "%d", &maxDepth)
 			i++
 		} else if !strings.HasPrefix(args[i], "-") {
 			target = args[i]
@@ -384,7 +384,7 @@ func cmdTree(s *Session, args []string, redirect string) (string, error) {
 	b.WriteString(colorBlue + strings.TrimSuffix(appDir, "/") + colorReset + "\r\n")
 	dirs, files := 0, 0
 	treeWalk(s, ossDir, "", maxDepth, 0, &b, &dirs, &files)
-	b.WriteString(fmt.Sprintf("\r\n%d directories, %d files\r\n", dirs, files))
+	fmt.Fprintf(&b, "\r\n%d directories, %d files\r\n", dirs, files)
 	return b.String(), nil
 }
 
@@ -392,7 +392,7 @@ func treeWalk(s *Session, ossDir, prefix string, maxDepth, depth int, b *strings
 	if depth >= maxDepth {
 		return
 	}
-	records, err := model.ListDirectChildren(s.UserID, ossDir)
+	records, err := s.repos.Files.ListDirectChildren(s.UserID, ossDir)
 	if err != nil {
 		return
 	}

@@ -18,14 +18,16 @@ type jobTypeConfig struct {
 }
 
 type Dispatcher struct {
+	jobs    model.JobRepo
 	types   map[string]*jobTypeConfig
 	cancels sync.Map // jobID -> context.CancelFunc
 	stopCh  chan struct{}
 	wg      sync.WaitGroup
 }
 
-func NewDispatcher() *Dispatcher {
+func NewDispatcher(jobs model.JobRepo) *Dispatcher {
 	return &Dispatcher{
+		jobs:   jobs,
 		types:  make(map[string]*jobTypeConfig),
 		stopCh: make(chan struct{}),
 	}
@@ -41,7 +43,7 @@ func (d *Dispatcher) Register(jobType string, concurrency int, handler JobHandle
 
 func (d *Dispatcher) Start() {
 	// Reset any jobs that were running when the server stopped
-	if err := model.ResetRunningJobs(); err != nil {
+	if err := d.jobs.ResetRunning(); err != nil {
 		log.Printf("[dispatcher] failed to reset running jobs: %v", err)
 	}
 
@@ -69,7 +71,7 @@ func (d *Dispatcher) Cancel(jobID string) {
 			fn()
 		}
 	}
-	_ = model.UpdateJobStatus(jobID, "aborted")
+	_ = d.jobs.UpdateStatus(jobID, "aborted")
 }
 
 func (d *Dispatcher) poll() {
@@ -93,7 +95,7 @@ func (d *Dispatcher) tryDispatch() {
 		select {
 		case cfg.semaphore <- struct{}{}:
 			// Got a slot, try to claim a job
-			job, err := model.ClaimPendingJob(jobType)
+			job, err := d.jobs.ClaimPending(jobType)
 			if err != nil {
 				log.Printf("[dispatcher] claim error for %s: %v", jobType, err)
 				<-cfg.semaphore
@@ -119,10 +121,10 @@ func (d *Dispatcher) tryDispatch() {
 				if err := tc.handler(ctx, j); err != nil {
 					if ctx.Err() != nil {
 						log.Printf("[dispatcher] job %s cancelled", j.JobID)
-						_ = model.UpdateJobStatus(j.JobID, "aborted")
+						_ = d.jobs.UpdateStatus(j.JobID, "aborted")
 					} else {
 						log.Printf("[dispatcher] job %s failed: %v", j.JobID, err)
-						_ = model.UpdateJobError(j.JobID, err.Error())
+						_ = d.jobs.UpdateError(j.JobID, err.Error())
 					}
 				} else {
 					log.Printf("[dispatcher] job %s completed", j.JobID)

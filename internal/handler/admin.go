@@ -10,7 +10,7 @@ import (
 )
 
 func (h *Handler) handleListUsers(c *fiber.Ctx) error {
-	users, err := model.ListUsers()
+	users, err := h.Repos.Users.List()
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "list_users_failed"})
 	}
@@ -45,7 +45,7 @@ func (h *Handler) handleCreateUser(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "key_generation_failed"})
 	}
 
-	user, err := model.CreateUser(body.Username, body.Password, body.Role, wrappedKEKHex)
+	user, err := h.Repos.Users.Create(body.Username, body.Password, body.Role, wrappedKEKHex)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
 			return c.Status(409).JSON(fiber.Map{"error": "username_exists"})
@@ -57,8 +57,8 @@ func (h *Handler) handleCreateUser(c *fiber.Ctx) error {
 	_ = h.Store.CreateDirectory(user.Username + "/")
 	_ = h.Store.CreateDirectory(user.Username + "/home/")
 	_ = h.Store.CreateDirectory(user.Username + "/home/" + user.Username + "/")
-	_ = model.UpsertFile(user.ID, user.Username+"/home/", "home", true, 0, "", "")
-	_ = model.UpsertFile(user.ID, user.Username+"/home/"+user.Username+"/", user.Username, true, 0, "", "")
+	_ = h.Repos.Files.Upsert(user.ID, user.Username+"/home/", "home", true, 0, "", "")
+	_ = h.Repos.Files.Upsert(user.ID, user.Username+"/home/"+user.Username+"/", user.Username, true, 0, "", "")
 
 	h.Audit.LogFromCtx(c, "user_create", user.Username, body.Role, "success", 0)
 	return c.Status(201).JSON(user)
@@ -78,13 +78,13 @@ func (h *Handler) handleUpdateUser(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
 	}
 
-	user, err := model.GetUserByID(id)
+	user, err := h.Repos.Users.GetByID(id)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "user_not_found"})
 	}
 
 	if body.Password != "" {
-		if err := model.UpdateUserPassword(user.ID, body.Password); err != nil {
+		if err := h.Repos.Users.UpdatePassword(user.ID, body.Password); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "update_password_failed"})
 		}
 	}
@@ -94,7 +94,7 @@ func (h *Handler) handleUpdateUser(c *fiber.Ctx) error {
 		if !isValidUserRole(body.Role) {
 			return c.Status(400).JSON(fiber.Map{"error": "invalid_role"})
 		}
-		if code, guardErr := ensureNotDemotingLastRoot(user, body.Role); guardErr != nil {
+		if code, guardErr := ensureNotDemotingLastRoot(h.Repos.Users, user, body.Role); guardErr != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "update_user_failed"})
 		} else if code != "" {
 			return c.Status(400).JSON(fiber.Map{"error": code})
@@ -102,7 +102,7 @@ func (h *Handler) handleUpdateUser(c *fiber.Ctx) error {
 		role = body.Role
 	}
 
-	if err := model.UpdateUser(user.ID, role); err != nil {
+	if err := h.Repos.Users.UpdateRole(user.ID, role); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "update_user_failed"})
 	}
 
@@ -126,11 +126,11 @@ func (h *Handler) handleDeleteUser(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "cannot_delete_self"})
 	}
 
-	user, err := model.GetUserByID(id)
+	user, err := h.Repos.Users.GetByID(id)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "user_not_found"})
 	}
-	if code, guardErr := ensureNotDeletingLastRoot(user); guardErr != nil {
+	if code, guardErr := ensureNotDeletingLastRoot(h.Repos.Users, user); guardErr != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "delete_user_failed"})
 	} else if code != "" {
 		return c.Status(400).JSON(fiber.Map{"error": code})
@@ -146,10 +146,10 @@ func (h *Handler) handleDeleteUser(c *fiber.Ctx) error {
 
 func (h *Handler) handleResetUserOTP(c *fiber.Ctx) error {
 	id := c.Params("id")
-	if _, err := model.GetUserByID(id); err != nil {
+	if _, err := h.Repos.Users.GetByID(id); err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "user_not_found"})
 	}
-	if err := model.UpdateUserTOTP(id, "", false); err != nil {
+	if err := h.Repos.Users.UpdateTOTP(id, "", false); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "update_failed"})
 	}
 	h.revokeUserSessions(id)
@@ -159,10 +159,10 @@ func (h *Handler) handleResetUserOTP(c *fiber.Ctx) error {
 
 func (h *Handler) handleResetUserEmail(c *fiber.Ctx) error {
 	id := c.Params("id")
-	if _, err := model.GetUserByID(id); err != nil {
+	if _, err := h.Repos.Users.GetByID(id); err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "user_not_found"})
 	}
-	if err := model.UpdateUserEmail(id, ""); err != nil {
+	if err := h.Repos.Users.UpdateEmail(id, ""); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "update_failed"})
 	}
 	h.revokeUserSessions(id)
@@ -182,30 +182,27 @@ func (h *Handler) handleListAuditLogs(c *fiber.Ctx) error {
 		size = 50
 	}
 
-	q := h.DB.Model(&model.AuditLog{})
-
-	if user := c.Query("user"); user != "" {
-		q = q.Where("username = ?", user)
-	}
-	if action := c.Query("action"); action != "" {
-		q = q.Where("action = ?", action)
+	filter := model.AuditFilter{
+		User:   c.Query("user"),
+		Action: c.Query("action"),
+		Page:   page,
+		Size:   size,
 	}
 	if from := c.Query("from"); from != "" {
 		if t, err := time.Parse(time.RFC3339, from); err == nil {
-			q = q.Where("created_at >= ?", t)
+			filter.From = &t
 		}
 	}
 	if to := c.Query("to"); to != "" {
 		if t, err := time.Parse(time.RFC3339, to); err == nil {
-			q = q.Where("created_at <= ?", t)
+			filter.To = &t
 		}
 	}
 
-	var total int64
-	q.Count(&total)
-
-	var logs []model.AuditLog
-	q.Order("id DESC").Offset((page - 1) * size).Limit(size).Find(&logs)
+	logs, total, err := h.Repos.Audit.ListLogs(filter)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "list_audit_logs_failed"})
+	}
 
 	return c.JSON(fiber.Map{
 		"total": total,

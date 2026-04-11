@@ -17,11 +17,12 @@ import (
 	"zephyr/internal/auth"
 	"zephyr/internal/middleware"
 	"zephyr/internal/model"
+	"zephyr/internal/service"
 )
 
 func TestLogin_Success(t *testing.T) {
-	app, _ := setupTestApp(t)
-	_, _ = model.CreateUser("testuser", "testpass", "root", "")
+	app, repos, _ := setupTestApp(t)
+	_, _ = repos.Users.Create("testuser", "testpass", "root", "")
 
 	verifyBody := `{"username":"testuser","password":"testpass"}`
 	req := httptest.NewRequest("POST", "/auth/verify", strings.NewReader(verifyBody))
@@ -68,8 +69,8 @@ func TestLogin_Success(t *testing.T) {
 }
 
 func TestLogin_BadPassword(t *testing.T) {
-	app, _ := setupTestApp(t)
-	_, _ = model.CreateUser("testuser", "testpass", "root", "")
+	app, repos, _ := setupTestApp(t)
+	_, _ = repos.Users.Create("testuser", "testpass", "root", "")
 
 	body := `{"username":"testuser","password":"wrongpass"}`
 	req := httptest.NewRequest("POST", "/auth/verify", strings.NewReader(body))
@@ -82,7 +83,7 @@ func TestLogin_BadPassword(t *testing.T) {
 }
 
 func TestLogin_NonexistentUser(t *testing.T) {
-	app, _ := setupTestApp(t)
+	app, _, _ := setupTestApp(t)
 
 	body := `{"username":"ghost","password":"pass"}`
 	req := httptest.NewRequest("POST", "/auth/verify", strings.NewReader(body))
@@ -95,7 +96,7 @@ func TestLogin_NonexistentUser(t *testing.T) {
 }
 
 func TestMe(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, _, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 
 	req := httptest.NewRequest("GET", "/user/", nil)
@@ -117,7 +118,7 @@ func TestMe(t *testing.T) {
 }
 
 func TestLogout(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, _, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 
 	req := httptest.NewRequest("DELETE", "/auth", nil)
@@ -137,7 +138,7 @@ func TestLogout(t *testing.T) {
 }
 
 func TestListUsers_AsAdmin(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, _, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 
 	req := httptest.NewRequest("GET", "/audit/user/", nil)
@@ -150,12 +151,12 @@ func TestListUsers_AsAdmin(t *testing.T) {
 }
 
 func TestHandleList(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 
-	adminUser, _ := model.GetUserByUsername("root")
-	_ = model.UpsertFile(adminUser.ID, "root/test.txt", "test.txt", false, 100, "", "")
-	_ = model.UpsertFile(adminUser.ID, "root/docs/", "docs", true, 0, "", "")
+	adminUser, _ := repos.Users.GetByUsername("root")
+	_ = repos.Files.Upsert(adminUser.ID, "root/test.txt", "test.txt", false, 100, "", "")
+	_ = repos.Files.Upsert(adminUser.ID, "root/docs/", "docs", true, 0, "", "")
 
 	req := httptest.NewRequest("GET", "/file/?path=", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
@@ -177,10 +178,10 @@ func TestHandleList(t *testing.T) {
 }
 
 func TestHandleDownload(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 
-	user, _ := model.GetUserByUsername("root")
+	user, _ := repos.Users.GetByUsername("root")
 	serverKey, _ := auth.ServerKeyFromSecret("0000000000000000000000000000000000000000000000000000000000000000")
 	wrappedKEKBytes, _ := hex.DecodeString(user.WrappedKEK)
 	kek, _ := auth.UnwrapKEK(serverKey, wrappedKEKBytes)
@@ -188,7 +189,7 @@ func TestHandleDownload(t *testing.T) {
 	wrappedDEK, _ := auth.WrapDEK(kek, dek)
 
 	ossPath := user.Username + "/test.txt"
-	_ = model.UpsertFile(user.ID, ossPath, "test.txt", false, 100, "text/plain", "abc123",
+	_ = repos.Files.Upsert(user.ID, ossPath, "test.txt", false, 100, "text/plain", "abc123",
 		model.UpsertFileOpts{WrappedDEK: hex.EncodeToString(wrappedDEK)})
 
 	req := httptest.NewRequest("GET", "/file/access?path=/test.txt", nil)
@@ -211,8 +212,7 @@ func TestHandleDownload(t *testing.T) {
 }
 
 func TestRegisterRoutes_WithNilHub(t *testing.T) {
-	testDB := setupTestDB(t)
-	model.SetDB(testDB)
+	repos := model.NewMemRepos(nil)
 
 	cfg := &config.Config{
 		Server: config.ServerConfig{
@@ -221,14 +221,13 @@ func TestRegisterRoutes_WithNilHub(t *testing.T) {
 			EncryptionSecret: "0000000000000000000000000000000000000000000000000000000000000000",
 		},
 	}
-	sessions := model.NewSessionStore(testDB)
 	challenges := auth.NewChallengeManager()
-	auditWorker := model.NewAuditWorker(testDB)
-	auditWorker.Start()
-	mid := middleware.New(sessions, cfg.Server.SessionSecret)
+	auditWorker := model.NewAuditWorker(nil)
+	mid := middleware.New(repos.Sessions, cfg.Server.SessionSecret)
 
 	h := &Handler{
-		Config: cfg, DB: testDB, Store: &MockFileStore{}, Sessions: sessions,
+		Config: cfg, Repos: repos, Store: &MockFileStore{},
+		Email: &service.MockEmailSender{},
 		Audit: auditWorker, Challenges: challenges, Mid: mid,
 	}
 
@@ -245,11 +244,11 @@ func TestRegisterRoutes_WithNilHub(t *testing.T) {
 	}
 }
 
-// TestParseRange removed — parseRange was deleted as part of the SW decryption migration.
+// TestParseRange removed -- parseRange was deleted as part of the SW decryption migration.
 // Range parsing is now handled in the frontend Service Worker (sw.js).
 
 func TestHandleMeExcludesEncryptionKey(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, _, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 
 	req := httptest.NewRequest("GET", "/user/", nil)
@@ -273,10 +272,10 @@ func TestHandleMeExcludesEncryptionKey(t *testing.T) {
 }
 
 func TestHandleFileAccessReturnsDEK(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
 
-	user, _ := model.GetUserByUsername("root")
+	user, _ := repos.Users.GetByUsername("root")
 
 	// Derive the user's KEK and generate a wrapped DEK for the test file
 	serverKey, _ := auth.ServerKeyFromSecret("0000000000000000000000000000000000000000000000000000000000000000")
@@ -286,7 +285,7 @@ func TestHandleFileAccessReturnsDEK(t *testing.T) {
 	wrappedDEK, _ := auth.WrapDEK(kek, dek)
 
 	ossPath := user.Username + "/home/root/test.txt"
-	_ = model.UpsertFile(user.ID, ossPath, "test.txt", false, 100, "text/plain", "abc123",
+	_ = repos.Files.Upsert(user.ID, ossPath, "test.txt", false, 100, "text/plain", "abc123",
 		model.UpsertFileOpts{WrappedDEK: hex.EncodeToString(wrappedDEK)})
 
 	req := httptest.NewRequest("GET", "/file/access?path=/home/root/test.txt", nil)
@@ -322,7 +321,7 @@ func TestHandleFileAccessReturnsDEK(t *testing.T) {
 }
 
 func TestUnauthenticatedAccess(t *testing.T) {
-	app, _ := setupTestApp(t)
+	app, _, _ := setupTestApp(t)
 
 	endpoints := []struct {
 		method string

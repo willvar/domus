@@ -102,9 +102,3 @@ func (s *SessionStore) DeleteByUserID(userID string) {
 func (s *SessionStore) DeleteByUserIDExcept(userID string, exceptSessionID string) {
 	s.DB.Where("user_id = ? AND id != ?", userID, exceptSessionID).Delete(&DBSession{})
 }
-
-// CleanExpiredSessions removes all expired sessions from the database.
-// It uses the package-level db variable.
-func CleanExpiredSessions() {
-	db.Where("expires_at < ?", time.Now()).Delete(&DBSession{})
-}

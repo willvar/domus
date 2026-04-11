@@ -19,9 +19,8 @@ import (
 
 const (
 	historyFileName = ".bash_history"
-	maxHistorySize = 500
+	maxHistorySize  = 500
 )
-
 
 // DirNotifyFunc is called when a command modifies a directory.
 type DirNotifyFunc func(resolvedPath, appPath, changeType string)
@@ -49,16 +48,17 @@ type Session struct {
 	Rows      int    // last known terminal height
 	EncKey    []byte // per-user KEK (Key Encryption Key) for wrapping/unwrapping per-file DEKs
 	store     store.FileStore
+	repos     *model.Repos
 	dirNotify DirNotifyFunc
-	pushOut   PushFunc  // push output to frontend
-	pushDone  PushFunc  // push "command done" to frontend (vsh mode)
-	pushExit  PushFunc  // push "session exit" to frontend
+	pushOut   PushFunc // push output to frontend
+	pushDone  PushFunc // push "command done" to frontend (vsh mode)
+	pushExit  PushFunc // push "session exit" to frontend
 
 	// SSH fields (set when Mode == "ssh")
 	sshCleanup func()         // cleanup function to close SSH resources
 	sshStdin   io.WriteCloser // remote stdin pipe
 	sshSesh    sshSession     // remote session (for resize)
-	authCh     chan string     // channel for interactive auth prompts
+	authCh     chan string    // channel for interactive auth prompts
 
 	mgr *ShellManager // back-reference for push events
 }
@@ -94,6 +94,7 @@ func (s *Session) notifyParentDir(ossPath, changeType string) {
 type ShellManager struct {
 	sessions   sync.Map // sessionID → *Session
 	store      store.FileStore
+	repos      *model.Repos
 	maxPerUser int
 	DirNotify  DirNotifyFunc
 	// Hub push functions — set externally by cmd/root.go
@@ -103,9 +104,10 @@ type ShellManager struct {
 	OnPushSSH    func(connID, sessionID, status string)
 }
 
-func NewShellManager(s store.FileStore) *ShellManager {
+func NewShellManager(s store.FileStore, repos *model.Repos) *ShellManager {
 	return &ShellManager{
 		store:      s,
+		repos:      repos,
 		maxPerUser: 5,
 	}
 }
@@ -137,6 +139,7 @@ func (m *ShellManager) Open(userID, username, connID string, cwd string, encKey 
 		Mode:      "vsh",
 		EncKey:    encKey,
 		store:     m.store,
+		repos:     m.repos,
 		dirNotify: m.DirNotify,
 		pushOut: func(sid, data string) {
 			if m.OnPushOutput != nil {
@@ -223,7 +226,7 @@ func (m *ShellManager) AppendHistory(s *Session, cmd string) {
 	}
 	wrappedDEK, err := s.WriteFileEncrypted(key, []byte(strings.Join(lines, "\n")))
 	if err == nil && wrappedDEK != "" {
-		_ = model.UpsertFile(s.UserID, key, historyFileName, false, 0, "", "",
+		_ = s.repos.Files.Upsert(s.UserID, key, historyFileName, false, 0, "", "",
 			model.UpsertFileOpts{WrappedDEK: wrappedDEK})
 	}
 }
@@ -253,7 +256,7 @@ func (m *ShellManager) Input(sessionID, data string) {
 
 	if s.Mode == "ssh" {
 		if s.sshStdin != nil {
-			s.sshStdin.Write([]byte(data))
+			_, _ = s.sshStdin.Write([]byte(data))
 		}
 		return
 	}
@@ -398,7 +401,7 @@ func (s *Session) completeFiles(partial string) []string {
 		return nil
 	}
 
-	records, err := model.ListDirectChildren(s.UserID, ossDir)
+	records, err := s.repos.Files.ListDirectChildren(s.UserID, ossDir)
 	if err != nil {
 		return nil
 	}
@@ -458,14 +461,13 @@ func historyKey(username string) string {
 	return username + "/home/" + username + "/" + historyFileName
 }
 
-
 // ReadFileDecrypted reads a file from OSS and decrypts it using the file's per-file DEK.
 func (s *Session) ReadFileDecrypted(ossKey string) ([]byte, error) {
 	rc, err := s.store.GetObjectContent(ossKey)
 	if err != nil {
 		return nil, err
 	}
-	defer rc.Close()
+	defer func() { _ = rc.Close() }()
 
 	if len(s.EncKey) == 0 {
 		// No encryption key — read raw
@@ -517,7 +519,7 @@ func (s *Session) WriteFileEncrypted(ossKey string, plaintext []byte) (string, e
 
 // unwrapFileDEK retrieves and unwraps the per-file DEK for the given OSS key.
 func (s *Session) unwrapFileDEK(ossKey string) ([]byte, error) {
-	rec, err := model.GetFile(s.UserID, ossKey)
+	rec, err := s.repos.Files.Get(s.UserID, ossKey)
 	if err != nil {
 		return nil, fmt.Errorf("get file record: %w", err)
 	}

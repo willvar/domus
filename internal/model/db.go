@@ -10,18 +10,6 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-var db *gorm.DB
-
-// hasFTS indicates whether pg_jieba full-text search is available.
-// When false, search falls back to ILIKE with pg_trgm index.
-var hasFTS bool
-
-// SetDB sets the package-level db variable. This is intended for use in tests
-// where the caller manages the database connection directly.
-func SetDB(d *gorm.DB) {
-	db = d
-}
-
 func ensureDatabase(cfg config.DatabaseConfig) error {
 	// Connect to default "postgres" database to check/create target database
 	adminCfg := cfg
@@ -47,24 +35,23 @@ func ensureDatabase(cfg config.DatabaseConfig) error {
 	return nil
 }
 
-// InitDB initializes the database connection, runs migrations, and returns the
-// underlying *gorm.DB so that callers (e.g. cmd/root.go) can pass it to other
-// components that need their own reference.
-func InitDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
+// InitDB initializes the database connection, runs migrations, and returns:
+//   - the *gorm.DB handle
+//   - whether pg_jieba full-text search is available
+func InitDB(cfg config.DatabaseConfig) (*gorm.DB, bool, error) {
 	if err := ensureDatabase(cfg); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 
-	var err error
-	db, err = gorm.Open(postgres.Open(cfg.DSN()), &gorm.Config{
+	db, err := gorm.Open(postgres.Open(cfg.DSN()), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
+		return nil, false, fmt.Errorf("open db: %w", err)
 	}
 
 	if err := db.AutoMigrate(&User{}, &TrashItem{}, &FileRecord{}, &DBSession{}, &Job{}, &Task{}, &AuditLog{}, &WorkspaceState{}, &Share{}); err != nil {
-		return nil, fmt.Errorf("auto migrate: %w", err)
+		return nil, false, fmt.Errorf("auto migrate: %w", err)
 	}
 
 	// One-time migration: drop legacy uploads table (merged into files)
@@ -76,8 +63,9 @@ func InitDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	// Full-text search: prefer pg_jieba for Chinese segmentation
 	db.Exec("CREATE EXTENSION IF NOT EXISTS pg_jieba")
 	var ftsConf string
+	fts := false
 	if err := db.Raw("SELECT cfgname FROM pg_ts_config WHERE cfgname = 'jiebacfg' LIMIT 1").Scan(&ftsConf).Error; err == nil && ftsConf == "jiebacfg" {
-		hasFTS = true
+		fts = true
 		db.Exec("CREATE INDEX IF NOT EXISTS idx_fts ON files USING gin(search_vector)")
 	}
 
@@ -85,5 +73,5 @@ func InitDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	db.Exec("CREATE EXTENSION IF NOT EXISTS pg_trgm")
 	db.Exec("CREATE INDEX IF NOT EXISTS idx_files_name_trgm ON files USING gin(name gin_trgm_ops)")
 
-	return db, nil
+	return db, fts, nil
 }

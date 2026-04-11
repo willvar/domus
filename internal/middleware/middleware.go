@@ -15,12 +15,12 @@ const SessionCookieName = "zephyr_session"
 
 // Middleware holds dependencies for HTTP middleware.
 type Middleware struct {
-	Sessions      *model.SessionStore
+	Sessions      model.SessionRepo
 	SessionSecret string
 }
 
 // New creates a new Middleware instance.
-func New(sessions *model.SessionStore, sessionSecret string) *Middleware {
+func New(sessions model.SessionRepo, sessionSecret string) *Middleware {
 	return &Middleware{
 		Sessions:      sessions,
 		SessionSecret: sessionSecret,

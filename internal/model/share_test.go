@@ -5,18 +5,19 @@ import (
 	"time"
 )
 
-func setupShareTestDB(t *testing.T) {
+func setupShareTestDB(t *testing.T) *Repos {
 	t.Helper()
-	setupTestDB(t)
-	if err := db.AutoMigrate(&Share{}); err != nil {
+	testDB, repos := setupTestDB(t)
+	if err := testDB.AutoMigrate(&Share{}); err != nil {
 		t.Fatalf("failed to migrate Share: %v", err)
 	}
-	db.Exec("ALTER TABLE shares DROP COLUMN IF EXISTS share_type")
-	db.Exec("DELETE FROM shares")
+	testDB.Exec("ALTER TABLE shares DROP COLUMN IF EXISTS share_type")
+	testDB.Exec("DELETE FROM shares")
+	return repos
 }
 
 func TestCreateShare(t *testing.T) {
-	setupShareTestDB(t)
+	repos := setupShareTestDB(t)
 
 	share := &Share{
 		ShareID:      "share-uuid-1",
@@ -28,7 +29,7 @@ func TestCreateShare(t *testing.T) {
 		WrappedDEK:   "aabbccdd",
 		Permission:   "read",
 	}
-	if err := CreateShare(share); err != nil {
+	if err := repos.Shares.Create(share); err != nil {
 		t.Fatalf("CreateShare: %v", err)
 	}
 	if share.ID == 0 {
@@ -37,7 +38,7 @@ func TestCreateShare(t *testing.T) {
 }
 
 func TestGetShareByID(t *testing.T) {
-	setupShareTestDB(t)
+	repos := setupShareTestDB(t)
 
 	share := &Share{
 		ShareID:      "share-uuid-2",
@@ -49,11 +50,11 @@ func TestGetShareByID(t *testing.T) {
 		WrappedDEK:   "aabbccdd",
 		Permission:   "read",
 	}
-	if err := CreateShare(share); err != nil {
+	if err := repos.Shares.Create(share); err != nil {
 		t.Fatalf("CreateShare: %v", err)
 	}
 
-	got, err := GetShareByID("share-uuid-2")
+	got, err := repos.Shares.GetByID("share-uuid-2")
 	if err != nil {
 		t.Fatalf("GetShareByID: %v", err)
 	}
@@ -66,16 +67,16 @@ func TestGetShareByID(t *testing.T) {
 }
 
 func TestGetShareByID_NotFound(t *testing.T) {
-	setupShareTestDB(t)
+	repos := setupShareTestDB(t)
 
-	_, err := GetShareByID("nonexistent")
+	_, err := repos.Shares.GetByID("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for nonexistent share")
 	}
 }
 
 func TestListSharesForFile(t *testing.T) {
-	setupShareTestDB(t)
+	repos := setupShareTestDB(t)
 
 	shares := []Share{
 		{ShareID: "s1", OwnerID: "owner-1", FilePath: "owner1/file.txt", FileName: "file.txt", TargetUserID: "user-1", WrappedDEK: "aa", Permission: "read"},
@@ -83,12 +84,12 @@ func TestListSharesForFile(t *testing.T) {
 		{ShareID: "s3", OwnerID: "owner-1", FilePath: "owner1/other.txt", FileName: "other.txt", TargetUserID: "user-3", WrappedDEK: "cc", Permission: "read"},
 	}
 	for i := range shares {
-		if err := CreateShare(&shares[i]); err != nil {
+		if err := repos.Shares.Create(&shares[i]); err != nil {
 			t.Fatalf("CreateShare[%d]: %v", i, err)
 		}
 	}
 
-	got, err := ListSharesForFile("owner-1", "owner1/file.txt")
+	got, err := repos.Shares.ListForFile("owner-1", "owner1/file.txt")
 	if err != nil {
 		t.Fatalf("ListSharesForFile: %v", err)
 	}
@@ -98,7 +99,7 @@ func TestListSharesForFile(t *testing.T) {
 }
 
 func TestListSharesForUser(t *testing.T) {
-	setupShareTestDB(t)
+	repos := setupShareTestDB(t)
 
 	shares := []Share{
 		{ShareID: "u1", OwnerID: "owner-1", FilePath: "owner1/a.txt", FileName: "a.txt", TargetUserID: "target-1", WrappedDEK: "aa", Permission: "read"},
@@ -106,12 +107,12 @@ func TestListSharesForUser(t *testing.T) {
 		{ShareID: "u4", OwnerID: "owner-1", FilePath: "owner1/d.txt", FileName: "d.txt", TargetUserID: "target-2", WrappedDEK: "dd", Permission: "read"},
 	}
 	for i := range shares {
-		if err := CreateShare(&shares[i]); err != nil {
+		if err := repos.Shares.Create(&shares[i]); err != nil {
 			t.Fatalf("CreateShare[%d]: %v", i, err)
 		}
 	}
 
-	got, err := ListSharesForUser("target-1")
+	got, err := repos.Shares.ListForUser("target-1")
 	if err != nil {
 		t.Fatalf("ListSharesForUser: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestListSharesForUser(t *testing.T) {
 }
 
 func TestListSharesForUserFiltersExpired(t *testing.T) {
-	setupShareTestDB(t)
+	repos := setupShareTestDB(t)
 
 	pastTime := time.Now().Add(-1 * time.Hour)
 	futureTime := time.Now().Add(24 * time.Hour)
@@ -131,12 +132,12 @@ func TestListSharesForUserFiltersExpired(t *testing.T) {
 		{ShareID: "exp3", OwnerID: "owner-1", FilePath: "owner1/c.txt", FileName: "c.txt", TargetUserID: "target-1", WrappedDEK: "cc", Permission: "read"},
 	}
 	for i := range shares {
-		if err := CreateShare(&shares[i]); err != nil {
+		if err := repos.Shares.Create(&shares[i]); err != nil {
 			t.Fatalf("CreateShare[%d]: %v", i, err)
 		}
 	}
 
-	got, err := ListSharesForUser("target-1")
+	got, err := repos.Shares.ListForUser("target-1")
 	if err != nil {
 		t.Fatalf("ListSharesForUser: %v", err)
 	}
@@ -146,7 +147,7 @@ func TestListSharesForUserFiltersExpired(t *testing.T) {
 }
 
 func TestDeleteShare(t *testing.T) {
-	setupShareTestDB(t)
+	repos := setupShareTestDB(t)
 
 	share := &Share{
 		ShareID:      "del-1",
@@ -157,11 +158,11 @@ func TestDeleteShare(t *testing.T) {
 		WrappedDEK:   "aa",
 		Permission:   "read",
 	}
-	if err := CreateShare(share); err != nil {
+	if err := repos.Shares.Create(share); err != nil {
 		t.Fatalf("CreateShare: %v", err)
 	}
 
-	deleted, err := DeleteShare(share.ID, "owner-1")
+	deleted, err := repos.Shares.Delete(share.ID, "owner-1")
 	if err != nil {
 		t.Fatalf("DeleteShare: %v", err)
 	}
@@ -169,14 +170,14 @@ func TestDeleteShare(t *testing.T) {
 		t.Fatal("expected share to be deleted")
 	}
 
-	_, err = GetShareByID("del-1")
+	_, err = repos.Shares.GetByID("del-1")
 	if err == nil {
 		t.Fatal("expected error after deletion")
 	}
 }
 
 func TestDeleteShare_TargetUserCanDelete(t *testing.T) {
-	setupShareTestDB(t)
+	repos := setupShareTestDB(t)
 
 	share := &Share{
 		ShareID:      "del-target-1",
@@ -187,11 +188,11 @@ func TestDeleteShare_TargetUserCanDelete(t *testing.T) {
 		WrappedDEK:   "aa",
 		Permission:   "read",
 	}
-	if err := CreateShare(share); err != nil {
+	if err := repos.Shares.Create(share); err != nil {
 		t.Fatalf("CreateShare: %v", err)
 	}
 
-	deleted, err := DeleteShare(share.ID, "target-1")
+	deleted, err := repos.Shares.Delete(share.ID, "target-1")
 	if err != nil {
 		t.Fatalf("DeleteShare: %v", err)
 	}
@@ -199,14 +200,14 @@ func TestDeleteShare_TargetUserCanDelete(t *testing.T) {
 		t.Fatal("expected target user to be able to delete share")
 	}
 
-	_, err = GetShareByID("del-target-1")
+	_, err = repos.Shares.GetByID("del-target-1")
 	if err == nil {
 		t.Fatal("expected error after deletion")
 	}
 }
 
 func TestDeleteShare_UnrelatedUser(t *testing.T) {
-	setupShareTestDB(t)
+	repos := setupShareTestDB(t)
 
 	share := &Share{
 		ShareID:      "del-2",
@@ -217,11 +218,11 @@ func TestDeleteShare_UnrelatedUser(t *testing.T) {
 		WrappedDEK:   "aa",
 		Permission:   "read",
 	}
-	if err := CreateShare(share); err != nil {
+	if err := repos.Shares.Create(share); err != nil {
 		t.Fatalf("CreateShare: %v", err)
 	}
 
-	deleted, err := DeleteShare(share.ID, "unrelated-user")
+	deleted, err := repos.Shares.Delete(share.ID, "unrelated-user")
 	if err != nil {
 		t.Fatalf("DeleteShare: %v", err)
 	}
@@ -229,7 +230,7 @@ func TestDeleteShare_UnrelatedUser(t *testing.T) {
 		t.Fatal("expected no delete for unrelated user")
 	}
 
-	got, err := GetShareByID("del-2")
+	got, err := repos.Shares.GetByID("del-2")
 	if err != nil {
 		t.Fatalf("share should still exist: %v", err)
 	}
@@ -239,7 +240,7 @@ func TestDeleteShare_UnrelatedUser(t *testing.T) {
 }
 
 func TestExpiredShare(t *testing.T) {
-	setupShareTestDB(t)
+	repos := setupShareTestDB(t)
 
 	pastTime := time.Now().Add(-1 * time.Hour)
 	share := &Share{
@@ -252,11 +253,11 @@ func TestExpiredShare(t *testing.T) {
 		Permission:   "read",
 		ExpiresAt:    &pastTime,
 	}
-	if err := CreateShare(share); err != nil {
+	if err := repos.Shares.Create(share); err != nil {
 		t.Fatalf("CreateShare: %v", err)
 	}
 
-	got, err := GetShareByID("expired-1")
+	got, err := repos.Shares.GetByID("expired-1")
 	if err != nil {
 		t.Fatalf("GetShareByID: %v", err)
 	}
@@ -269,7 +270,7 @@ func TestExpiredShare(t *testing.T) {
 }
 
 func TestDeleteSharesByPrefix(t *testing.T) {
-	setupShareTestDB(t)
+	repos := setupShareTestDB(t)
 
 	shares := []Share{
 		{ShareID: "p1", OwnerID: "owner-1", FilePath: "owner1/docs/a.txt", FileName: "a.txt", TargetUserID: "t1", WrappedDEK: "aa", Permission: "read"},
@@ -277,28 +278,28 @@ func TestDeleteSharesByPrefix(t *testing.T) {
 		{ShareID: "p3", OwnerID: "owner-1", FilePath: "owner1/other/c.txt", FileName: "c.txt", TargetUserID: "t3", WrappedDEK: "cc", Permission: "read"},
 	}
 	for i := range shares {
-		if err := CreateShare(&shares[i]); err != nil {
+		if err := repos.Shares.Create(&shares[i]); err != nil {
 			t.Fatalf("CreateShare[%d]: %v", i, err)
 		}
 	}
 
-	if err := DeleteSharesByPrefix("owner-1", "owner1/docs/"); err != nil {
+	if err := repos.Shares.DeleteByPrefix("owner-1", "owner1/docs/"); err != nil {
 		t.Fatalf("DeleteSharesByPrefix: %v", err)
 	}
 
-	if _, err := GetShareByID("p1"); err == nil {
+	if _, err := repos.Shares.GetByID("p1"); err == nil {
 		t.Fatal("expected p1 to be deleted")
 	}
-	if _, err := GetShareByID("p2"); err == nil {
+	if _, err := repos.Shares.GetByID("p2"); err == nil {
 		t.Fatal("expected p2 to be deleted")
 	}
-	if _, err := GetShareByID("p3"); err != nil {
+	if _, err := repos.Shares.GetByID("p3"); err != nil {
 		t.Fatalf("expected p3 to remain, got err: %v", err)
 	}
 }
 
 func TestMoveSharesByPath(t *testing.T) {
-	setupShareTestDB(t)
+	repos := setupShareTestDB(t)
 
 	share := &Share{
 		ShareID:      "m1",
@@ -309,15 +310,15 @@ func TestMoveSharesByPath(t *testing.T) {
 		WrappedDEK:   "aa",
 		Permission:   "read",
 	}
-	if err := CreateShare(share); err != nil {
+	if err := repos.Shares.Create(share); err != nil {
 		t.Fatalf("CreateShare: %v", err)
 	}
 
-	if err := MoveSharesByPath("owner-1", "owner1/old/file.txt", "owner1/new/renamed.txt"); err != nil {
+	if err := repos.Shares.MoveByPath("owner-1", "owner1/old/file.txt", "owner1/new/renamed.txt"); err != nil {
 		t.Fatalf("MoveSharesByPath: %v", err)
 	}
 
-	got, err := GetShareByID("m1")
+	got, err := repos.Shares.GetByID("m1")
 	if err != nil {
 		t.Fatalf("GetShareByID: %v", err)
 	}
@@ -330,7 +331,7 @@ func TestMoveSharesByPath(t *testing.T) {
 }
 
 func TestMoveSharesByPrefix(t *testing.T) {
-	setupShareTestDB(t)
+	repos := setupShareTestDB(t)
 
 	shares := []Share{
 		{ShareID: "mp1", OwnerID: "owner-1", FilePath: "owner1/docs/a.txt", FileName: "a.txt", TargetUserID: "t1", WrappedDEK: "aa", Permission: "read"},
@@ -338,30 +339,30 @@ func TestMoveSharesByPrefix(t *testing.T) {
 		{ShareID: "mp3", OwnerID: "owner-1", FilePath: "owner1/other/c.txt", FileName: "c.txt", TargetUserID: "t3", WrappedDEK: "cc", Permission: "read"},
 	}
 	for i := range shares {
-		if err := CreateShare(&shares[i]); err != nil {
+		if err := repos.Shares.Create(&shares[i]); err != nil {
 			t.Fatalf("CreateShare[%d]: %v", i, err)
 		}
 	}
 
-	if err := MoveSharesByPrefix("owner-1", "owner1/docs/", "owner1/archive/docs/"); err != nil {
+	if err := repos.Shares.MoveByPrefix("owner-1", "owner1/docs/", "owner1/archive/docs/"); err != nil {
 		t.Fatalf("MoveSharesByPrefix: %v", err)
 	}
 
-	got1, err := GetShareByID("mp1")
+	got1, err := repos.Shares.GetByID("mp1")
 	if err != nil {
 		t.Fatalf("GetShareByID mp1: %v", err)
 	}
 	if got1.FilePath != "owner1/archive/docs/a.txt" {
 		t.Fatalf("unexpected mp1 path: %s", got1.FilePath)
 	}
-	got2, err := GetShareByID("mp2")
+	got2, err := repos.Shares.GetByID("mp2")
 	if err != nil {
 		t.Fatalf("GetShareByID mp2: %v", err)
 	}
 	if got2.FilePath != "owner1/archive/docs/sub/b.txt" {
 		t.Fatalf("unexpected mp2 path: %s", got2.FilePath)
 	}
-	got3, err := GetShareByID("mp3")
+	got3, err := repos.Shares.GetByID("mp3")
 	if err != nil {
 		t.Fatalf("GetShareByID mp3: %v", err)
 	}
@@ -371,7 +372,7 @@ func TestMoveSharesByPrefix(t *testing.T) {
 }
 
 func TestUpdateShareFileSize(t *testing.T) {
-	setupShareTestDB(t)
+	repos := setupShareTestDB(t)
 
 	share := &Share{
 		ShareID:      "size-1",
@@ -383,15 +384,15 @@ func TestUpdateShareFileSize(t *testing.T) {
 		WrappedDEK:   "aa",
 		Permission:   "write",
 	}
-	if err := CreateShare(share); err != nil {
+	if err := repos.Shares.Create(share); err != nil {
 		t.Fatalf("CreateShare: %v", err)
 	}
 
-	if err := UpdateShareFileSize("size-1", 2048); err != nil {
+	if err := repos.Shares.UpdateFileSize("size-1", 2048); err != nil {
 		t.Fatalf("UpdateShareFileSize: %v", err)
 	}
 
-	got, err := GetShareByID("size-1")
+	got, err := repos.Shares.GetByID("size-1")
 	if err != nil {
 		t.Fatalf("GetShareByID: %v", err)
 	}

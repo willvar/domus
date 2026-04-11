@@ -13,11 +13,11 @@ import (
 )
 
 func TestAdminUpdateUserRoleChangeRevokesSessionsHTTP(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 
 	adminCookie := loginAs("root", "pass")
 	victimCookie := loginAs("victim-role-http", "pass")
-	victim, _ := model.GetUserByUsername("victim-role-http")
+	victim, _ := repos.Users.GetByUsername("victim-role-http")
 
 	body, _ := json.Marshal(map[string]string{"role": "user"})
 	req := httptest.NewRequest("PUT", "/audit/user/"+victim.ID, bytes.NewReader(body))
@@ -41,7 +41,7 @@ func TestAdminUpdateUserRoleChangeRevokesSessionsHTTP(t *testing.T) {
 		t.Fatalf("expected victim session to be revoked, got %d", meResp.StatusCode)
 	}
 
-	updated, err := model.GetUserByID(victim.ID)
+	updated, err := repos.Users.GetByID(victim.ID)
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
@@ -51,11 +51,11 @@ func TestAdminUpdateUserRoleChangeRevokesSessionsHTTP(t *testing.T) {
 }
 
 func TestAdminUpdateUserRejectsInvalidRoleHTTP(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 
 	adminCookie := loginAs("root", "pass")
 	victimCookie := loginAs("victim-invalid-role-http", "pass")
-	victim, _ := model.GetUserByUsername("victim-invalid-role-http")
+	victim, _ := repos.Users.GetByUsername("victim-invalid-role-http")
 	originalRole := victim.Role
 
 	body, _ := json.Marshal(map[string]string{"role": "super-admin"})
@@ -85,7 +85,7 @@ func TestAdminUpdateUserRejectsInvalidRoleHTTP(t *testing.T) {
 		t.Fatalf("expected victim session to stay valid, got %d", meResp.StatusCode)
 	}
 
-	updated, err := model.GetUserByID(victim.ID)
+	updated, err := repos.Users.GetByID(victim.ID)
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
@@ -95,10 +95,10 @@ func TestAdminUpdateUserRejectsInvalidRoleHTTP(t *testing.T) {
 }
 
 func TestAdminUpdateUserRejectsDemotingLastRootHTTP(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 
 	rootCookie := loginAs("root", "pass")
-	rootUser, _ := model.GetUserByUsername("root")
+	rootUser, _ := repos.Users.GetByUsername("root")
 
 	body, _ := json.Marshal(map[string]string{"role": "user"})
 	req := httptest.NewRequest("PUT", "/audit/user/"+rootUser.ID, bytes.NewReader(body))
@@ -127,7 +127,7 @@ func TestAdminUpdateUserRejectsDemotingLastRootHTTP(t *testing.T) {
 		t.Fatalf("expected root session to stay valid, got %d", meResp.StatusCode)
 	}
 
-	updated, err := model.GetUserByID(rootUser.ID)
+	updated, err := repos.Users.GetByID(rootUser.ID)
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
@@ -137,12 +137,12 @@ func TestAdminUpdateUserRejectsDemotingLastRootHTTP(t *testing.T) {
 }
 
 func TestAdminResetUserOTPRevokesSessionsHTTP(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 
 	adminCookie := loginAs("root", "pass")
 	victimCookie := loginAs("victim-otp-http", "pass")
-	victim, _ := model.GetUserByUsername("victim-otp-http")
-	if err := model.UpdateUserTOTP(victim.ID, "otp-secret", true); err != nil {
+	victim, _ := repos.Users.GetByUsername("victim-otp-http")
+	if err := repos.Users.UpdateTOTP(victim.ID, "otp-secret", true); err != nil {
 		t.Fatalf("seed otp: %v", err)
 	}
 
@@ -166,7 +166,7 @@ func TestAdminResetUserOTPRevokesSessionsHTTP(t *testing.T) {
 		t.Fatalf("expected victim session to be revoked, got %d", meResp.StatusCode)
 	}
 
-	updated, err := model.GetUserByID(victim.ID)
+	updated, err := repos.Users.GetByID(victim.ID)
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
@@ -179,12 +179,12 @@ func TestAdminResetUserOTPRevokesSessionsHTTP(t *testing.T) {
 }
 
 func TestAdminResetUserEmailRevokesSessionsHTTP(t *testing.T) {
-	app, loginAs := setupTestApp(t)
+	app, repos, loginAs := setupTestApp(t)
 
 	adminCookie := loginAs("root", "pass")
 	victimCookie := loginAs("victim-email-http", "pass")
-	victim, _ := model.GetUserByUsername("victim-email-http")
-	if err := model.UpdateUserEmail(victim.ID, "victim@example.com"); err != nil {
+	victim, _ := repos.Users.GetByUsername("victim-email-http")
+	if err := repos.Users.UpdateEmail(victim.ID, "victim@example.com"); err != nil {
 		t.Fatalf("seed email: %v", err)
 	}
 
@@ -208,7 +208,7 @@ func TestAdminResetUserEmailRevokesSessionsHTTP(t *testing.T) {
 		t.Fatalf("expected victim session to be revoked, got %d", meResp.StatusCode)
 	}
 
-	updated, err := model.GetUserByID(victim.ID)
+	updated, err := repos.Users.GetByID(victim.ID)
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
@@ -218,23 +218,19 @@ func TestAdminResetUserEmailRevokesSessionsHTTP(t *testing.T) {
 }
 
 func TestAdminUpdateUserRoleChangeRevokesSessionsWS(t *testing.T) {
-	testDB := setupTestDB(t)
-	model.SetDB(testDB)
+	repos := model.NewMemRepos(nil)
 
-	sessions := model.NewSessionStore(testDB)
-	audit := model.NewAuditWorker(testDB)
-	audit.Start()
+	audit := model.NewAuditWorker(nil)
 	h := &Handler{
-		DB:       testDB,
-		Sessions: sessions,
-		Audit:    audit,
-		Hub:      ws.NewHub(),
-		Store:    &MockFileStore{},
+		Repos: repos,
+		Audit: audit,
+		Hub:   ws.NewHub(),
+		Store: &MockFileStore{},
 	}
 
-	admin, _ := model.CreateUser("admin-role-ws", "pass", "root", "")
-	victim, _ := model.CreateUser("victim-role-ws", "pass", "user", "")
-	victimSessionID, err := sessions.Create(victim.ID, victim.Username, victim.Role)
+	admin, _ := repos.Users.Create("admin-role-ws", "pass", "root", "")
+	victim, _ := repos.Users.Create("victim-role-ws", "pass", "user", "")
+	victimSessionID, err := repos.Sessions.Create(victim.ID, victim.Username, victim.Role)
 	if err != nil {
 		t.Fatalf("create victim session: %v", err)
 	}
@@ -251,29 +247,25 @@ func TestAdminUpdateUserRoleChangeRevokesSessionsWS(t *testing.T) {
 	if !ok || resultMap["ok"] != true {
 		t.Fatalf("expected ok response, got %#v", result)
 	}
-	if sessions.Get(victimSessionID) != nil {
+	if repos.Sessions.Get(victimSessionID) != nil {
 		t.Fatal("expected victim session to be revoked")
 	}
 }
 
 func TestAdminUpdateUserRejectsInvalidRoleWS(t *testing.T) {
-	testDB := setupTestDB(t)
-	model.SetDB(testDB)
+	repos := model.NewMemRepos(nil)
 
-	sessions := model.NewSessionStore(testDB)
-	audit := model.NewAuditWorker(testDB)
-	audit.Start()
+	audit := model.NewAuditWorker(nil)
 	h := &Handler{
-		DB:       testDB,
-		Sessions: sessions,
-		Audit:    audit,
-		Hub:      ws.NewHub(),
-		Store:    &MockFileStore{},
+		Repos: repos,
+		Audit: audit,
+		Hub:   ws.NewHub(),
+		Store: &MockFileStore{},
 	}
 
-	admin, _ := model.CreateUser("admin-invalid-role-ws", "pass", "root", "")
-	victim, _ := model.CreateUser("victim-invalid-role-ws", "pass", "user", "")
-	victimSessionID, err := sessions.Create(victim.ID, victim.Username, victim.Role)
+	admin, _ := repos.Users.Create("admin-invalid-role-ws", "pass", "root", "")
+	victim, _ := repos.Users.Create("victim-invalid-role-ws", "pass", "user", "")
+	victimSessionID, err := repos.Sessions.Create(victim.ID, victim.Username, victim.Role)
 	if err != nil {
 		t.Fatalf("create victim session: %v", err)
 	}
@@ -293,11 +285,11 @@ func TestAdminUpdateUserRejectsInvalidRoleWS(t *testing.T) {
 	if wsErr.Code != "invalid_role" {
 		t.Fatalf("expected invalid_role, got %s", wsErr.Code)
 	}
-	if sessions.Get(victimSessionID) == nil {
+	if repos.Sessions.Get(victimSessionID) == nil {
 		t.Fatal("expected victim session to remain valid")
 	}
 
-	updated, err := model.GetUserByID(victim.ID)
+	updated, err := repos.Users.GetByID(victim.ID)
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
@@ -307,22 +299,18 @@ func TestAdminUpdateUserRejectsInvalidRoleWS(t *testing.T) {
 }
 
 func TestAdminUpdateUserRejectsDemotingLastRootWS(t *testing.T) {
-	testDB := setupTestDB(t)
-	model.SetDB(testDB)
+	repos := model.NewMemRepos(nil)
 
-	sessions := model.NewSessionStore(testDB)
-	audit := model.NewAuditWorker(testDB)
-	audit.Start()
+	audit := model.NewAuditWorker(nil)
 	h := &Handler{
-		DB:       testDB,
-		Sessions: sessions,
-		Audit:    audit,
-		Hub:      ws.NewHub(),
-		Store:    &MockFileStore{},
+		Repos: repos,
+		Audit: audit,
+		Hub:   ws.NewHub(),
+		Store: &MockFileStore{},
 	}
 
-	root, _ := model.CreateUser("root-last-ws", "pass", "root", "")
-	rootSessionID, err := sessions.Create(root.ID, root.Username, root.Role)
+	root, _ := repos.Users.Create("root-last-ws", "pass", "root", "")
+	rootSessionID, err := repos.Sessions.Create(root.ID, root.Username, root.Role)
 	if err != nil {
 		t.Fatalf("create root session: %v", err)
 	}
@@ -342,11 +330,11 @@ func TestAdminUpdateUserRejectsDemotingLastRootWS(t *testing.T) {
 	if wsErr.Code != "cannot_demote_last_root" {
 		t.Fatalf("expected cannot_demote_last_root, got %s", wsErr.Code)
 	}
-	if sessions.Get(rootSessionID) == nil {
+	if repos.Sessions.Get(rootSessionID) == nil {
 		t.Fatal("expected root session to remain valid")
 	}
 
-	updated, err := model.GetUserByID(root.ID)
+	updated, err := repos.Users.GetByID(root.ID)
 	if err != nil {
 		t.Fatalf("get user: %v", err)
 	}
@@ -356,24 +344,20 @@ func TestAdminUpdateUserRejectsDemotingLastRootWS(t *testing.T) {
 }
 
 func TestAdminResetUserOTPRevokesSessionsWS(t *testing.T) {
-	testDB := setupTestDB(t)
-	model.SetDB(testDB)
+	repos := model.NewMemRepos(nil)
 
-	sessions := model.NewSessionStore(testDB)
-	audit := model.NewAuditWorker(testDB)
-	audit.Start()
+	audit := model.NewAuditWorker(nil)
 	h := &Handler{
-		DB:       testDB,
-		Sessions: sessions,
-		Audit:    audit,
-		Hub:      ws.NewHub(),
-		Store:    &MockFileStore{},
+		Repos: repos,
+		Audit: audit,
+		Hub:   ws.NewHub(),
+		Store: &MockFileStore{},
 	}
 
-	admin, _ := model.CreateUser("admin-otp-ws", "pass", "root", "")
-	victim, _ := model.CreateUser("victim-otp-ws", "pass", "user", "")
-	_ = model.UpdateUserTOTP(victim.ID, "otp-secret", true)
-	victimSessionID, err := sessions.Create(victim.ID, victim.Username, victim.Role)
+	admin, _ := repos.Users.Create("admin-otp-ws", "pass", "root", "")
+	victim, _ := repos.Users.Create("victim-otp-ws", "pass", "user", "")
+	_ = repos.Users.UpdateTOTP(victim.ID, "otp-secret", true)
+	victimSessionID, err := repos.Sessions.Create(victim.ID, victim.Username, victim.Role)
 	if err != nil {
 		t.Fatalf("create victim session: %v", err)
 	}
@@ -390,30 +374,26 @@ func TestAdminResetUserOTPRevokesSessionsWS(t *testing.T) {
 	if !ok || resultMap["ok"] != true {
 		t.Fatalf("expected ok response, got %#v", result)
 	}
-	if sessions.Get(victimSessionID) != nil {
+	if repos.Sessions.Get(victimSessionID) != nil {
 		t.Fatal("expected victim session to be revoked")
 	}
 }
 
 func TestAdminResetUserEmailRevokesSessionsWS(t *testing.T) {
-	testDB := setupTestDB(t)
-	model.SetDB(testDB)
+	repos := model.NewMemRepos(nil)
 
-	sessions := model.NewSessionStore(testDB)
-	audit := model.NewAuditWorker(testDB)
-	audit.Start()
+	audit := model.NewAuditWorker(nil)
 	h := &Handler{
-		DB:       testDB,
-		Sessions: sessions,
-		Audit:    audit,
-		Hub:      ws.NewHub(),
-		Store:    &MockFileStore{},
+		Repos: repos,
+		Audit: audit,
+		Hub:   ws.NewHub(),
+		Store: &MockFileStore{},
 	}
 
-	admin, _ := model.CreateUser("admin-email-ws", "pass", "root", "")
-	victim, _ := model.CreateUser("victim-email-ws", "pass", "user", "")
-	_ = model.UpdateUserEmail(victim.ID, "victim@example.com")
-	victimSessionID, err := sessions.Create(victim.ID, victim.Username, victim.Role)
+	admin, _ := repos.Users.Create("admin-email-ws", "pass", "root", "")
+	victim, _ := repos.Users.Create("victim-email-ws", "pass", "user", "")
+	_ = repos.Users.UpdateEmail(victim.ID, "victim@example.com")
+	victimSessionID, err := repos.Sessions.Create(victim.ID, victim.Username, victim.Role)
 	if err != nil {
 		t.Fatalf("create victim session: %v", err)
 	}
@@ -430,7 +410,7 @@ func TestAdminResetUserEmailRevokesSessionsWS(t *testing.T) {
 	if !ok || resultMap["ok"] != true {
 		t.Fatalf("expected ok response, got %#v", result)
 	}
-	if sessions.Get(victimSessionID) != nil {
+	if repos.Sessions.Get(victimSessionID) != nil {
 		t.Fatal("expected victim session to be revoked")
 	}
 }

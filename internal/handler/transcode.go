@@ -60,7 +60,7 @@ func (h *Handler) handleTranscodeStart(c *fiber.Ctx) error {
 	}
 
 	// Verify file exists in DB
-	fileRecord, err := model.GetFile(session.UserID, resolvedPath)
+	fileRecord, err := h.Repos.Files.Get(session.UserID, resolvedPath)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "file_not_found"})
 	}
@@ -117,10 +117,10 @@ func (h *Handler) handleTranscodeStart(c *fiber.Ctx) error {
 
 	// Create user-facing task
 	taskID := uuid.New().String()
-	_ = model.CreateTask(session.UserID, taskID, "transcode", originalName)
+	_ = h.Repos.Tasks.Create(session.UserID, taskID, "transcode", originalName)
 
 	// Create dispatcher job linked to the task
-	_ = model.CreateJobDirect(&model.Job{
+	_ = h.Repos.Jobs.CreateDirect(&model.Job{
 		UserID: session.UserID,
 		JobID:  jobID,
 		TaskID: taskID,
@@ -151,7 +151,7 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 	outputPath := filepath.Join(params.TempDir, "output"+outputExt)
 
 	// Phase 1: Download and decrypt
-	_ = model.UpdateJobProgress(job.JobID, 0.0, "downloading")
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.0, "downloading")
 	if err := h.Store.DownloadToFile(params.SourceKey, inputPath); err != nil {
 		return fmt.Errorf("download: %w", err)
 	}
@@ -162,7 +162,7 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 	}
 
 	// Unwrap source file's DEK
-	srcRecord, err := model.GetFile(job.UserID, params.SourceKey)
+	srcRecord, err := h.Repos.Files.Get(job.UserID, params.SourceKey)
 	if err != nil {
 		return fmt.Errorf("get source file record: %w", err)
 	}
@@ -189,7 +189,7 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 	}
 
 	// Phase 2: Probe + Transcode
-	_ = model.UpdateJobProgress(job.JobID, 0.1, "transcoding")
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.1, "transcoding")
 	transcoder := service.NewTranscoder(h.Config.Transcode)
 
 	probe, err := transcoder.Probe(ctx, inputPath)
@@ -200,7 +200,7 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 	err = transcoder.Run(ctx, inputPath, outputPath, params.MediaType, params.Preset, params.OutputFormat, probe, func(pct float64) {
 		// Map 0~1 to 0.1~0.8
 		progress := 0.1 + pct*0.7
-		_ = model.UpdateJobProgress(job.JobID, progress, "transcoding")
+		_ = h.Repos.Jobs.UpdateProgress(job.JobID, progress, "transcoding")
 	})
 	if err != nil {
 		return fmt.Errorf("transcode: %w", err)
@@ -211,7 +211,7 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 	}
 
 	// Phase 3: Upload to OSS
-	_ = model.UpdateJobProgress(job.JobID, 0.85, "uploading_oss")
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.85, "uploading_oss")
 
 	// If replacing and format changed, delete old file first
 	if params.Replace && params.TargetKey != params.SourceKey {
@@ -246,12 +246,12 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 		return fmt.Errorf("wrap output DEK: %w", err)
 	}
 	ct := mime.TypeByExtension(outputExt)
-	_ = model.UpsertFile(job.UserID, params.TargetKey, params.OutputName, false, outputSize, ct, "",
+	_ = h.Repos.Files.Upsert(job.UserID, params.TargetKey, params.OutputName, false, outputSize, ct, "",
 		model.UpsertFileOpts{WrappedDEK: hex.EncodeToString(wrappedOut)})
 
 	// If replacing with different extension, delete old file record and OSS object
 	if params.Replace && params.TargetKey != params.SourceKey {
-		_ = model.DeleteFile(job.UserID, params.SourceKey)
+		_ = h.Repos.Files.Delete(job.UserID, params.SourceKey)
 	}
 
 	result := TranscodeResult{
@@ -259,7 +259,7 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 		DurationMs: probeDurationMs(probe),
 	}
 	resultJSON, _ := json.Marshal(result)
-	_ = model.UpdateJobResult(job.JobID, string(resultJSON))
+	_ = h.Repos.Jobs.UpdateResult(job.JobID, string(resultJSON))
 
 	// Notify directory subscribers about the transcoded file
 	if h.Hub != nil {

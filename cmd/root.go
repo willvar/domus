@@ -247,7 +247,7 @@ func runServer(cfg *config.Config, configPath string) {
 	defer close(stopQPS)
 
 	// Initialize database
-	db, err := model.InitDB(cfg.Database)
+	db, hasFTS, err := model.InitDB(cfg.Database)
 	if err != nil {
 		logger.Fatal("Failed to init database: %v", err)
 	}
@@ -256,13 +256,39 @@ func runServer(cfg *config.Config, configPath string) {
 	audit := model.NewAuditWorker(db)
 	audit.Start()
 
+	// Initialize WebSocket hub (needed for task update callback)
+	hub := ws.NewHub()
+
+	// Build repository layer
+	onTaskUpdate := model.TaskUpdateFunc(func(userID, taskID, taskType, name, status string, progress float64, phase string) {
+		hub.PushTaskUpdate(userID, taskID, taskType, name, status, progress, phase)
+	})
+	repos := model.NewRepos(db, hasFTS, onTaskUpdate)
+
+	// Wire session KEK population
+	serverKey, err := auth.ServerKeyFromSecret(cfg.Server.EncryptionSecret)
+	if err != nil {
+		logger.Fatal("Invalid encryption secret: %v", err)
+	}
+	repos.Sessions.SetPopulateKEK(func(s *model.Session) {
+		wrappedHex, err := repos.Users.GetWrappedKEK(s.UserID)
+		if err != nil || wrappedHex == "" {
+			return
+		}
+		wrappedBytes, err := hex.DecodeString(wrappedHex)
+		if err != nil {
+			return
+		}
+		s.KEK, _ = auth.UnwrapKEK(serverKey, wrappedBytes)
+	})
+
 	// Clean expired sessions and challenge stores periodically
 	challenges := auth.NewChallengeManager()
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
 		defer ticker.Stop()
 		for range ticker.C {
-			model.CleanExpiredSessions()
+			repos.Sessions.CleanExpired()
 			challenges.CleanAllExpiredEntries()
 		}
 	}()
@@ -279,35 +305,11 @@ func runServer(cfg *config.Config, configPath string) {
 	}
 
 	// Initialize services
-	sessions := model.NewSessionStore(db)
-	serverKey, err := auth.ServerKeyFromSecret(cfg.Server.EncryptionSecret)
-	if err != nil {
-		logger.Fatal("Invalid encryption secret: %v", err)
-	}
-	sessions.PopulateKEK = func(s *model.Session) {
-		wrappedHex, err := model.GetUserWrappedKEK(s.UserID)
-		if err != nil || wrappedHex == "" {
-			return
-		}
-		wrappedBytes, err := hex.DecodeString(wrappedHex)
-		if err != nil {
-			return
-		}
-		s.KEK, _ = auth.UnwrapKEK(serverKey, wrappedBytes)
-	}
 	transcoder := service.NewTranscoder(cfg.Transcode)
-	mid := middleware.New(sessions, cfg.Server.SessionSecret)
-
-	// Initialize WebSocket hub
-	hub := ws.NewHub()
-
-	// Wire task update notifications to WebSocket push
-	model.OnTaskUpdate = func(userID, taskID, taskType, name, status string, progress float64, phase string) {
-		hub.PushTaskUpdate(userID, taskID, taskType, name, status, progress, phase)
-	}
+	mid := middleware.New(repos.Sessions, cfg.Server.SessionSecret)
 
 	// Initialize virtual shell manager
-	shellMgr := vsh.NewShellManager(fileStore)
+	shellMgr := vsh.NewShellManager(fileStore, repos)
 	shellMgr.DirNotify = func(resolvedPath, appPath, changeType string) {
 		hub.PushDirChanged(resolvedPath, appPath, changeType)
 	}
@@ -330,10 +332,9 @@ func runServer(cfg *config.Config, configPath string) {
 	// Initialize handler
 	h := &handler.Handler{
 		Config:     cfg,
-		DB:         db,
+		Repos:      repos,
 		Store:      fileStore,
-		Sessions:   sessions,
-		Dispatcher: nil,
+		Email:      service.NewSMTPEmailSender(cfg.SMTP),
 		Transcoder: transcoder,
 		Audit:      audit,
 		Challenges: challenges,
@@ -343,7 +344,7 @@ func runServer(cfg *config.Config, configPath string) {
 	}
 
 	// Initialize and start job dispatcher
-	dispatcher := service.NewDispatcher()
+	dispatcher := service.NewDispatcher(repos.Jobs)
 	dispatcher.Register("transcode", cfg.Jobs.TranscodeConcurrency, h.RunTranscodeJob)
 	dispatcher.Register("thumbnail", cfg.Jobs.ThumbnailConcurrency, h.RunThumbnailJob)
 	dispatcher.Register("oss_upload", cfg.Jobs.SystemConcurrency, h.RunOSSUploadJob)
@@ -353,22 +354,22 @@ func runServer(cfg *config.Config, configPath string) {
 
 	// Clean orphan uploads at startup, then periodically
 	go func() {
-		cleanOrphanUploads(fileStore)
+		cleanOrphanUploads(fileStore, repos)
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			cleanOrphanUploads(fileStore)
+			cleanOrphanUploads(fileStore, repos)
 		}
 	}()
 
 	// Auto-create root user if no users exist
-	if count, err := model.UserCount(); err == nil && count == 0 {
+	if count, err := repos.Users.Count(); err == nil && count == 0 {
 		password := generateRandomPassword()
 		wrappedKEKHex, err := generateWrappedKEKForUser(cfg.Server.EncryptionSecret)
 		if err != nil {
 			logger.Fatal("Failed to generate KEK for root user: %v", err)
 		}
-		user, err := model.CreateUser("root", password, "root", wrappedKEKHex)
+		user, err := repos.Users.Create("root", password, "root", wrappedKEKHex)
 		if err != nil {
 			logger.Fatal("Failed to create root user: %v", err)
 		}
@@ -376,8 +377,8 @@ func runServer(cfg *config.Config, configPath string) {
 		_ = fileStore.CreateDirectory("root/")
 		_ = fileStore.CreateDirectory("root/home/")
 		_ = fileStore.CreateDirectory("root/home/root/")
-		_ = model.UpsertFile(user.ID, "root/home/", "home", true, 0, "", "")
-		_ = model.UpsertFile(user.ID, "root/home/root/", "root", true, 0, "", "")
+		_ = repos.Files.Upsert(user.ID, "root/home/", "home", true, 0, "", "")
+		_ = repos.Files.Upsert(user.ID, "root/home/root/", "root", true, 0, "", "")
 		fmt.Println("========================================")
 		fmt.Println("  Root user created automatically")
 		fmt.Printf("  Username: root\n")
@@ -484,10 +485,10 @@ func generateRandomSecret(length int) string {
 	return hex.EncodeToString(b)[:length]
 }
 
-func cleanOrphanUploads(_ store.FileStore) {
+func cleanOrphanUploads(_ store.FileStore, repos *model.Repos) {
 	const staleThreshold = 24 * time.Hour
 
-	stale, err := model.GetStaleUploadFiles(staleThreshold)
+	stale, err := repos.Files.GetStaleUploads(staleThreshold)
 	if err != nil {
 		logger.Error("[cleanup] Failed to query stale uploads: %v", err)
 		return
@@ -495,7 +496,7 @@ func cleanOrphanUploads(_ store.FileStore) {
 	for _, r := range stale {
 		tempDir := filepath.Join(config.TempDir, "upload", r.UploadID)
 		_ = os.RemoveAll(tempDir)
-		_ = model.DeleteFile(r.UserID, r.Path)
+		_ = repos.Files.Delete(r.UserID, r.Path)
 		logger.Info("[cleanup] Cleaned stale upload: %s (file: %s)", r.UploadID, r.Name)
 	}
 }

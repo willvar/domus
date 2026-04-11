@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"strconv"
 	"strings"
 
 	ssh_config "github.com/kevinburke/ssh_config"
@@ -81,7 +80,7 @@ func startSSH(s *Session, args []string) error {
 
 	session, err := client.NewSession()
 	if err != nil {
-		client.Close()
+		_ = client.Close()
 		return fmt.Errorf("session failed: %v", err)
 	}
 
@@ -99,30 +98,30 @@ func startSSH(s *Session, args []string) error {
 		ssh.TTY_OP_OSPEED: 14400,
 	}
 	if err := session.RequestPty("xterm-256color", rows, cols, modes); err != nil {
-		session.Close()
-		client.Close()
+		_ = session.Close()
+		_ = client.Close()
 		return fmt.Errorf("PTY request failed: %v", err)
 	}
 
 	// Set up I/O pipes
 	stdin, err := session.StdinPipe()
 	if err != nil {
-		session.Close()
-		client.Close()
+		_ = session.Close()
+		_ = client.Close()
 		return fmt.Errorf("stdin pipe failed: %v", err)
 	}
 
 	stdout, err := session.StdoutPipe()
 	if err != nil {
-		session.Close()
-		client.Close()
+		_ = session.Close()
+		_ = client.Close()
 		return fmt.Errorf("stdout pipe failed: %v", err)
 	}
 
 	// Start shell
 	if err := session.Shell(); err != nil {
-		session.Close()
-		client.Close()
+		_ = session.Close()
+		_ = client.Close()
 		return fmt.Errorf("shell start failed: %v", err)
 	}
 
@@ -131,8 +130,8 @@ func startSSH(s *Session, args []string) error {
 	s.sshStdin = stdin
 	s.sshSesh = session
 	s.sshCleanup = func() {
-		session.Close()
-		client.Close()
+		_ = session.Close()
+		_ = client.Close()
 	}
 
 	// Notify frontend about SSH mode
@@ -347,13 +346,13 @@ func buildHostKeyCallback(s *Session) ssh.HostKeyCallback {
 	if err == nil && len(data) > 0 {
 		tmp, tmpErr := os.CreateTemp("", "zephyr-known-hosts-*")
 		if tmpErr == nil {
-			tmp.Write(data)
+			_, _ = tmp.Write(data)
 			tmpPath := tmp.Name()
-			tmp.Close()
+			_ = tmp.Close()
 			if cb, parseErr := knownhosts.New(tmpPath); parseErr == nil {
 				knownCb = cb
 			}
-			os.Remove(tmpPath)
+			_ = os.Remove(tmpPath)
 		}
 	}
 
@@ -397,9 +396,9 @@ func buildHostKeyCallback(s *Session) ssh.HostKeyCallback {
 
 		// Ensure .ssh directory exists (same as cmdMkdir)
 		sshDirOSS := s.Username + "/home/" + s.Username + "/.ssh/"
-		if _, dirErr := model.GetFile(s.UserID, sshDirOSS); dirErr != nil {
+		if _, dirErr := s.repos.Files.Get(s.UserID, sshDirOSS); dirErr != nil {
 			_ = s.store.CreateDirectory(sshDirOSS)
-			_ = model.UpsertFile(s.UserID, sshDirOSS, ".ssh", true, 0, "", "")
+			_ = s.repos.Files.Upsert(s.UserID, sshDirOSS, ".ssh", true, 0, "", "")
 			s.notifyParentDir(sshDirOSS, "created")
 		}
 
@@ -419,7 +418,7 @@ func buildHostKeyCallback(s *Session) ssh.HostKeyCallback {
 		if wrappedDEK != "" {
 			khOpts = append(khOpts, model.UpsertFileOpts{WrappedDEK: wrappedDEK})
 		}
-		_ = model.UpsertFile(s.UserID, knownHostsKey, "known_hosts", false, int64(len(content)), "text/plain", "", khOpts...)
+		_ = s.repos.Files.Upsert(s.UserID, knownHostsKey, "known_hosts", false, int64(len(content)), "text/plain", "", khOpts...)
 		s.notifyParentDir(knownHostsKey, "modified")
 
 		s.pushOut(s.ID, "\033[2mWarning: Permanently added '"+hostname+"' to the list of known hosts.\033[0m\r\n")
@@ -433,16 +432,4 @@ func buildHostKeyCallback(s *Session) ssh.HostKeyCallback {
 // getManager retrieves the ShellManager from the session.
 func (s *Session) getManager() *ShellManager {
 	return s.mgr
-}
-
-// portToInt converts a port string to int, defaulting to 22.
-func portToInt(port string) int {
-	if port == "" {
-		return 22
-	}
-	p, err := strconv.Atoi(port)
-	if err != nil {
-		return 22
-	}
-	return p
 }
