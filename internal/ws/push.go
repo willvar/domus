@@ -3,16 +3,17 @@ package ws
 // Push event helpers — all send to specific targets via the Hub.
 
 // PushTaskUpdate sends a task progress/status update to all connections of a user.
-func (h *Hub) PushTaskUpdate(userID, taskID, taskType, name, status string, progress float64, phase string) {
+func (h *Hub) PushTaskUpdate(userID, taskID, taskType, name, status, clientInstanceID string, progress float64, phase string) {
 	h.SendToUser(userID, map[string]any{
 		"event": "task.update",
 		"data": map[string]any{
-			"task_id":  taskID,
-			"type":     taskType,
-			"name":     name,
-			"status":   status,
-			"progress": progress,
-			"phase":    phase,
+			"task_id":            taskID,
+			"type":               taskType,
+			"name":               name,
+			"status":             status,
+			"progress":           progress,
+			"phase":              phase,
+			"client_instance_id": clientInstanceID,
 		},
 	})
 }
