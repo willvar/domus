@@ -141,10 +141,9 @@ function scheduleReconnect(): void {
 }
 
 /**
- * Send a request and wait for the response.
- * @param action - The action name (e.g. 'file.list')
- * @param data - The request data
- * @returns The response data
+ * Send a realtime/session request and wait for the response.
+ * Query/command style application APIs should prefer HTTP; this helper is kept
+ * for terminal control, subscriptions, workspace events, and upload task reporting.
  */
 function request<T = any>(action: string, data: Record<string, unknown> = {}): Promise<T> {
   return new Promise((resolve, reject) => {
