@@ -1,5 +1,6 @@
 config.json
 config.yaml
+config.dev.yaml
 tmp/
 dist/
 zephyr.db
