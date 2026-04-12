@@ -1,12 +1,12 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import type { Ref, ComputedRef } from 'vue'
+import api from '../composables/useApi'
 import { useWebSocket } from '../composables/useWebSocket'
 import type { Task, TaskUpdateEvent } from '../types'
 
-export const useJobsStore = defineStore('jobs', () => {
+export const useTasksStore = defineStore('tasks', () => {
   const tasks: Ref<Task[]> = ref([])
-  const panelOpen: Ref<boolean> = ref(false)
   const error: Ref<string | null> = ref(null)
   const ws = useWebSocket()
 
@@ -22,48 +22,40 @@ export const useJobsStore = defineStore('jobs', () => {
 
   const hasCompletedTasks: ComputedRef<boolean> = computed(() => completedTasks.value.length > 0)
 
-  function togglePanel(): void {
-    panelOpen.value = !panelOpen.value
-  }
-
-  function closePanel(): void {
-    panelOpen.value = false
+  function upsertTask(task: Task): void {
+    const idx = tasks.value.findIndex(t => t.task_id === task.task_id)
+    if (idx >= 0) {
+      tasks.value[idx] = { ...tasks.value[idx], ...task }
+      return
+    }
+    tasks.value.unshift(task)
   }
 
   async function fetchTasks(): Promise<void> {
     try {
-      const data = await ws.request<Task[]>('task.list')
+      const { data } = await api.get<Task[]>('/task/')
       tasks.value = Array.isArray(data) ? data : []
     } catch {
       tasks.value = []
     }
   }
 
-  function addTask(task: Task): void {
-    tasks.value.unshift(task)
-  }
-
   async function cancelTask(taskId: string): Promise<void> {
-    await ws.request('task.cancel', { task_id: taskId })
+    await api.delete('/task/' + encodeURIComponent(taskId))
     const idx = tasks.value.findIndex(t => t.task_id === taskId)
     if (idx >= 0) {
       tasks.value[idx].status = 'cancelled'
+      tasks.value[idx].updated_at = new Date().toISOString()
     }
   }
 
   async function clearCompleted(): Promise<void> {
-    await ws.request('task.clearDone')
+    await api.delete('/task/done')
     await fetchTasks()
   }
 
-  // Listen for task push events
   ws.on('task.update', (data: TaskUpdateEvent) => {
-    const idx = tasks.value.findIndex(t => t.task_id === data.task_id)
-    if (idx >= 0) {
-      tasks.value[idx] = { ...tasks.value[idx], ...data } as Task
-    } else {
-      tasks.value.push(data as unknown as Task)
-    }
+    upsertTask(data as Task)
   })
 
   function cleanup(): void {}
@@ -74,14 +66,11 @@ export const useJobsStore = defineStore('jobs', () => {
     hasActiveTasks,
     completedTasks,
     hasCompletedTasks,
-    panelOpen,
     error,
-    togglePanel,
-    closePanel,
     fetchTasks,
     cancelTask,
-    addTask,
     clearCompleted,
+    upsertTask,
     cleanup,
   }
 })
