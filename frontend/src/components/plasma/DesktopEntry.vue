@@ -91,14 +91,14 @@ function handleClick(e: MouseEvent) {
 
 function handleDblClick() {
   if (fs.selectMode) return
-  if (fs.isTrash) return
   if (isNotReady.value) return
+  const fileName = props.file._originalName || props.file.name
   if (props.file.is_dir) {
     fs.navigate(props.file.path)
-  } else if (fs.getViewerType(props.file.name)) {
+  } else if (fs.getViewerType(fileName)) {
     fs.openViewer(props.file)
   } else {
-    fs.downloadFile(props.file.path)
+    fs.downloadFile(props.file._shareId ? props.file : props.file.path)
   }
 }
 

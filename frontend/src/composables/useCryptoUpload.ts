@@ -34,6 +34,15 @@ export async function hashFile(file: File): Promise<string> {
   return hasher.digest('hex')
 }
 
+/** Compute SHA-256 hex digest of the first `maxBytes` of a File. */
+export async function hashFilePrefix(file: File, maxBytes = 4 * 1024 * 1024): Promise<string> {
+  const hasher = await createSHA256()
+  hasher.init()
+  const chunk = new Uint8Array(await file.slice(0, Math.max(0, maxBytes)).arrayBuffer())
+  hasher.update(chunk)
+  return hasher.digest('hex')
+}
+
 // ── DEK generation ──────────────────────────────────────────────────────────
 
 export interface DEKBundle {
@@ -100,12 +109,20 @@ export interface ThumbnailResult {
 }
 
 const THUMB_MAX_WIDTH = 480
+const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v'])
+
+function isVideoFile(file: File): boolean {
+  if (file.type.startsWith('video/')) return true
+  const dot = file.name.lastIndexOf('.')
+  if (dot <= 0) return false
+  return VIDEO_EXTENSIONS.has(file.name.substring(dot + 1).toLowerCase())
+}
 
 export async function generateThumbnail(file: File): Promise<ThumbnailResult | null> {
   if (file.type.startsWith('image/')) {
     return generateImageThumbnail(file)
   }
-  if (file.type.startsWith('video/')) {
+  if (isVideoFile(file)) {
     return generateVideoThumbnail(file)
   }
   return null
@@ -321,7 +338,7 @@ function bytesToHex(bytes: Uint8Array): string {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
-export function hexToBytes(hex: string): Uint8Array {
+function hexToBytes(hex: string): Uint8Array {
   const bytes = new Uint8Array(hex.length / 2)
   for (let i = 0; i < hex.length; i += 2) {
     bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16)
@@ -335,4 +352,3 @@ function uint64BE(n: number): Uint8Array {
   return buf
 }
 
-export { CHUNK_SIZE, NONCE_SIZE, TAG_SIZE, CRYPTO_VERSION }

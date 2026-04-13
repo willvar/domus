@@ -22,11 +22,11 @@ func setupTestDB(t *testing.T) (*gorm.DB, *Repos) {
 	if err != nil {
 		t.Skipf("skipping test: could not connect to PostgreSQL: %v", err)
 	}
-	if err := testDB.AutoMigrate(&User{}, &TrashItem{}, &FileRecord{}, &DBSession{}, &Job{}, &Task{}, &AuditLog{}, &WorkspaceState{}, &Share{}); err != nil {
+	if err := testDB.AutoMigrate(&User{}, &FileRecord{}, &DBSession{}, &Job{}, &Task{}, &AuditLog{}, &WorkspaceState{}, &Share{}); err != nil {
 		t.Fatalf("failed to migrate: %v", err)
 	}
+	testDB.Exec("ALTER TABLE shares DROP COLUMN IF EXISTS share_type")
 	testDB.Exec("DELETE FROM users")
-	testDB.Exec("DELETE FROM trash")
 	testDB.Exec("DELETE FROM files")
 	testDB.Exec("DELETE FROM sessions")
 	testDB.Exec("DELETE FROM jobs")
@@ -161,11 +161,12 @@ func TestDeleteUserAndRelatedData(t *testing.T) {
 	}
 
 	filePath := owner.Username + "/home/" + owner.Username + "/doc.txt"
+	trashPath := owner.Username + "/__trash__/home/" + owner.Username + "/doc.txt"
 	if err := repos.Files.Upsert(owner.ID, filePath, "doc.txt", false, 123, "text/plain", "hash"); err != nil {
 		t.Fatalf("upsert file: %v", err)
 	}
-	if err := repos.Trash.Create(owner.ID, filePath, owner.Username+"/.trash/doc.txt", 123, false); err != nil {
-		t.Fatalf("create trash record: %v", err)
+	if err := repos.Files.Upsert(owner.ID, trashPath, "doc.txt", false, 123, "text/plain", "hash"); err != nil {
+		t.Fatalf("upsert trash file: %v", err)
 	}
 	if _, err := repos.Jobs.Create(owner.ID, "job-clean-owner", "transcode", "{}"); err != nil {
 		t.Fatalf("create job: %v", err)
@@ -230,12 +231,8 @@ func TestDeleteUserAndRelatedData(t *testing.T) {
 	if _, err := repos.Files.Get(owner.ID, filePath); err == nil {
 		t.Fatal("expected owner file to be deleted")
 	}
-	trash, err := repos.Trash.List(owner.ID)
-	if err != nil {
-		t.Fatalf("list trash: %v", err)
-	}
-	if len(trash) != 0 {
-		t.Fatalf("expected no trash records, got %d", len(trash))
+	if _, err := repos.Files.Get(owner.ID, trashPath); err == nil {
+		t.Fatal("expected trash file record to be deleted")
 	}
 	jobs, err := repos.Jobs.ListActive(owner.ID)
 	if err != nil {

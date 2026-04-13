@@ -38,7 +38,11 @@ self.onmessage = async (e: MessageEvent) => {
       paused = false
       urlQueue = msg.partUrls || []
       try {
-        await encryptAndUpload(msg.file as File, msg.dekRaw as ArrayBuffer, msg.partSize as number)
+        await encryptAndUpload(
+          msg.file as File,
+          msg.dekRaw as ArrayBuffer,
+          msg.partSize as number,
+        )
       } catch (err: any) {
         if (!cancelled) {
           self.postMessage({ type: 'error', message: err.message || String(err) })
@@ -82,7 +86,11 @@ function uint64BE(n: number): Uint8Array {
   return buf
 }
 
-async function encryptAndUpload(file: File, dekRaw: ArrayBuffer, partSize: number) {
+async function encryptAndUpload(
+  file: File,
+  dekRaw: ArrayBuffer,
+  partSize: number,
+) {
   const { createSHA256 } = await import('hash-wasm')
   const hasher = await createSHA256()
   hasher.init()
@@ -119,16 +127,18 @@ async function encryptAndUpload(file: File, dekRaw: ArrayBuffer, partSize: numbe
 
     // Get presigned URL — request more if needed
     while (urlQueue.length === 0 && !cancelled) {
-      self.postMessage({ type: 'need-urls', from: partNumber, count: Math.min(100, totalParts - partNumber + 1) })
-      // Wait for add-urls message
+      const count = Math.min(100, totalParts - partNumber + 1)
+      if (count <= 0) {
+        throw new Error(`No presigned URLs available for part ${partNumber}`)
+      }
+      self.postMessage({ type: 'need-urls', from: partNumber, count })
       await new Promise<void>((resolve) => {
         const handler = (ev: MessageEvent) => {
-          if (ev.data.type === 'add-urls') {
-            urlQueue.push(...(ev.data.partUrls || []))
+          if (ev.data.type === 'add-urls' || ev.data.type === 'cancel') {
+            if (ev.data.type === 'cancel') {
+              cancelled = true
+            }
             self.removeEventListener('message', handler)
-            resolve()
-          } else if (ev.data.type === 'cancel') {
-            cancelled = true
             resolve()
           }
         }
@@ -144,9 +154,8 @@ async function encryptAndUpload(file: File, dekRaw: ArrayBuffer, partSize: numbe
     }
     const etag = resp.headers.get('ETag') || ''
     completedParts.push({ part_number: partNumber, etag })
-    self.postMessage({ type: 'part', partNumber, etag })
-
     uploaded += data.length
+    self.postMessage({ type: 'part', partNumber, etag, size: data.length })
     self.postMessage({ type: 'progress', uploaded, total: encryptedSize })
 
     partNumber++

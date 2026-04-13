@@ -2,7 +2,7 @@ import axios from 'axios'
 import type { AxiosInstance, AxiosResponse, AxiosError } from 'axios'
 import axiosRetry from 'axios-retry'
 
-export const API_BASE: string = import.meta.env.VITE_API_BASE || ''
+const API_BASE: string = import.meta.env.VITE_API_BASE || ''
 
 const api: AxiosInstance = axios.create({
   baseURL: API_BASE,

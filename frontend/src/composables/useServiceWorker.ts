@@ -14,7 +14,8 @@ export function useServiceWorker(): {
   register: () => Promise<void>
   sendKey: (hex: string) => void
   clearKey: () => void
-  registerDecrypt: (metadata: DecryptMetadata) => string
+  canDecrypt: () => boolean
+  registerDecrypt: (metadata: DecryptMetadata) => string | null
   unregisterDecrypt: (url: string) => void
   flush: () => Promise<void>
 } {
@@ -61,18 +62,21 @@ export function useServiceWorker(): {
     }
   }
 
+  function canDecrypt(): boolean {
+    return !!navigator.serviceWorker?.controller
+  }
+
   /**
    * Register a file for decryption through the SW.
    * @param metadata - { url, size, chunkSize, contentType, filename, wrappedDek, download? }
-   * @returns The decrypt URL: /__decrypt__/{id}
+   * @returns The decrypt URL: /__decrypt__/{id}, or null if SW decryption is unavailable.
    */
-  function registerDecrypt(metadata: DecryptMetadata): string {
+  function registerDecrypt(metadata: DecryptMetadata): string | null {
+    if (!canDecrypt()) return null
     const id: string = crypto.randomUUID()
-    if (navigator.serviceWorker?.controller) {
-      navigator.serviceWorker.controller.postMessage({
-        type: 'register', id, metadata,
-      })
-    }
+    navigator.serviceWorker.controller!.postMessage({
+      type: 'register', id, metadata,
+    })
     return '/__decrypt__/' + id
   }
 
@@ -98,5 +102,5 @@ export function useServiceWorker(): {
     })
   }
 
-  return { swReady, register, sendKey, clearKey, registerDecrypt, unregisterDecrypt, flush }
+  return { swReady, register, sendKey, clearKey, canDecrypt, registerDecrypt, unregisterDecrypt, flush }
 }

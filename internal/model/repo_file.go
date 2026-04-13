@@ -25,10 +25,13 @@ type FileRepo interface {
 	SearchFiles(userID, query string, limit int) ([]SearchFileResult, error)
 	HasFullTextSearch() bool
 	// Upload-related
-	CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64) error
+	CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, clientInstanceID string) error
 	GetUpload(userID, uploadID string) (*FileRecord, error)
 	UpdateUploadParts(uploadID, completedParts string) error
 	UpdateStatus(uploadID, status string) error
+	TouchUpload(uploadID string, seenAt time.Time) error
+	ListActiveUploads(userID string) ([]FileRecord, error)
+	CancelUploadsForOtherInstances(userID, clientInstanceID string, cutoff time.Time) ([]FileRecord, error)
 	GetStaleUploads(staleAfter time.Duration) ([]FileRecord, error)
 }
 
@@ -182,6 +185,7 @@ func (r *gormFileRepo) SearchFiles(userID, query string, limit int) ([]SearchFil
 			  AND f.status = 'ready'
 			  AND f.search_vector @@ q
 			  AND f.name NOT LIKE '.%'
+			  AND f.path NOT LIKE '%/__trash__/%'
 			ORDER BY rank DESC
 			LIMIT ?
 		`, query, userID, limit).Scan(&results).Error
@@ -196,23 +200,29 @@ func (r *gormFileRepo) SearchFiles(userID, query string, limit int) ([]SearchFil
 		  AND status = 'ready'
 		  AND name ILIKE ?
 		  AND name NOT LIKE '.%'
+		  AND path NOT LIKE '%/__trash__/%'
 		ORDER BY rank DESC
 		LIMIT ?
 	`, query, userID, pattern, limit).Scan(&results).Error
 	return results, err
 }
 
-func (r *gormFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64) error {
+func (r *gormFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, clientInstanceID string) error {
+	now := time.Now()
 	return r.db.Create(&FileRecord{
-		UserID:      userID,
-		Path:        path,
-		Parent:      parentOf(path),
-		Name:        name,
-		Size:        fileSize,
-		Status:      "uploading",
-		UploadID:    uploadID,
-		TaskID:      taskID,
-		OSSUploadID: ossUploadID,
+		UserID:           userID,
+		Path:             path,
+		Parent:           parentOf(path),
+		Name:             name,
+		Size:             fileSize,
+		Status:           "uploading",
+		UploadID:         uploadID,
+		TaskID:           taskID,
+		OSSUploadID:      ossUploadID,
+		ClientInstanceID: clientInstanceID,
+		LastSeenAt:       now,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}).Error
 }
 
@@ -236,6 +246,46 @@ func (r *gormFileRepo) UpdateStatus(uploadID, status string) error {
 		"status":     status,
 		"updated_at": time.Now(),
 	}).Error
+}
+
+func (r *gormFileRepo) TouchUpload(uploadID string, seenAt time.Time) error {
+	return r.db.Model(&FileRecord{}).Where("upload_id = ?", uploadID).Updates(map[string]interface{}{
+		"last_seen_at": seenAt,
+		"updated_at":   seenAt,
+	}).Error
+}
+
+func (r *gormFileRepo) ListActiveUploads(userID string) ([]FileRecord, error) {
+	var records []FileRecord
+	if err := r.db.Where("user_id = ? AND status = ?", userID, "uploading").Find(&records).Error; err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
+func (r *gormFileRepo) CancelUploadsForOtherInstances(userID, clientInstanceID string, cutoff time.Time) ([]FileRecord, error) {
+	var records []FileRecord
+	q := r.db.Where("user_id = ? AND status = ? AND last_seen_at < ?", userID, "uploading", cutoff)
+	if clientInstanceID != "" {
+		q = q.Where("client_instance_id <> ?", clientInstanceID)
+	}
+	if err := q.Find(&records).Error; err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return records, nil
+	}
+	ids := make([]string, 0, len(records))
+	for _, rec := range records {
+		ids = append(ids, rec.UploadID)
+	}
+	if err := r.db.Model(&FileRecord{}).Where("upload_id IN ?", ids).Updates(map[string]interface{}{
+		"status":     "cancelled",
+		"updated_at": time.Now(),
+	}).Error; err != nil {
+		return nil, err
+	}
+	return records, nil
 }
 
 func (r *gormFileRepo) GetStaleUploads(staleAfter time.Duration) ([]FileRecord, error) {

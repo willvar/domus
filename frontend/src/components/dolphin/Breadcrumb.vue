@@ -1,11 +1,9 @@
 <script setup lang="ts">
 import { ref, watch, nextTick, onUnmounted } from 'vue'
 import { useFileSystemStore } from '../../stores/fileSystem'
-import { useWebSocket } from '../../composables/useWebSocket'
 import { useI18n } from '../../composables/useI18n'
 
 const fs = useFileSystemStore()
-const ws = useWebSocket()
 const { t } = useI18n()
 const editing = ref(false)
 const editPath = ref('')
@@ -27,7 +25,7 @@ watch(() => fs.focusPathBar, (val) => {
 
 function startEdit() {
   editing.value = true
-  editPath.value = '/' + (fs.currentPath || '')
+  editPath.value = fs.currentPath?.startsWith('/') ? fs.currentPath : '/' + (fs.currentPath || '')
   nextTick(() => inputRef.value?.focus())
 }
 
@@ -45,8 +43,7 @@ function cancelEdit() {
 
 async function loadSubDirs(parentPath: string) {
   try {
-    const res = await ws.request('file.list', { path: parentPath })
-    const dirs = (res.files || []).filter((f: any) => f.is_dir)
+    const dirs = (await fs.listFilesAtPath(parentPath)).filter((f: any) => f.is_dir)
     subDirs.value = dirs.map((d: any) => ({ name: d.name, path: d.path }))
   } catch {
     subDirs.value = []
@@ -111,17 +108,6 @@ onUnmounted(() => {
         @keyup.escape="cancelEdit"
         @blur="commitEdit"
       />
-    </template>
-    <template v-else-if="fs.isTrash">
-      <div class="breadcrumb-segments">
-        <span class="breadcrumb-segment" @click.stop="fs.navigate('/')">
-          /
-        </span>
-        <span class="breadcrumb-sep">›</span>
-        <span class="breadcrumb-segment active">
-          {{ t('places.trash') }}
-        </span>
-      </div>
     </template>
     <template v-else>
       <div class="breadcrumb-segments">

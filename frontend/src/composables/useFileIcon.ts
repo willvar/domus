@@ -93,10 +93,4 @@ export function getFileIcon(fileName: string, isDir: boolean): FunctionalCompone
   return ICONS[iconType] || ICONS.file
 }
 
-export function getFileIconType(fileName: string, isDir: boolean): IconType {
-  if (isDir) return 'folder'
-  const ext: string = fileName.split('.').pop()?.toLowerCase() || ''
-  return EXT_MAP[ext] || 'file'
-}
-
 export { ICONS }

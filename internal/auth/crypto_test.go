@@ -235,10 +235,11 @@ func TestEnvelopeEncryption_EndToEnd(t *testing.T) {
 
 	// 2. Encrypt data with the DEK
 	original := []byte("the quick brown fox jumps over the lazy dog")
-	ciphertext, err := EncryptBytes(dek, original)
-	if err != nil {
-		t.Fatalf("EncryptBytes: %v", err)
+	var cipherBuf bytes.Buffer
+	if err := EncryptStream(dek, bytes.NewReader(original), &cipherBuf); err != nil {
+		t.Fatalf("EncryptStream: %v", err)
 	}
+	ciphertext := cipherBuf.Bytes()
 
 	// 3. Wrap the DEK with a KEK
 	kek := make([]byte, 32)
@@ -256,10 +257,11 @@ func TestEnvelopeEncryption_EndToEnd(t *testing.T) {
 	}
 
 	// 5. Decrypt data with the unwrapped DEK
-	plaintext, err := DecryptBytes(unwrapped, ciphertext)
-	if err != nil {
-		t.Fatalf("DecryptBytes: %v", err)
+	var plainBuf bytes.Buffer
+	if err := DecryptStream(unwrapped, bytes.NewReader(ciphertext), &plainBuf); err != nil {
+		t.Fatalf("DecryptStream: %v", err)
 	}
+	plaintext := plainBuf.Bytes()
 
 	if !bytes.Equal(original, plaintext) {
 		t.Fatalf("end-to-end mismatch: got %q, want %q", plaintext, original)

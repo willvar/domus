@@ -13,6 +13,69 @@ import (
 	"zephyr/internal/model"
 )
 
+const trashRootPath = "/__trash__/"
+
+func isTrashAppPath(appPath string) bool {
+	return appPath == "/__trash__" || appPath == trashRootPath || strings.HasPrefix(appPath, trashRootPath)
+}
+
+func trashAppPath(appPath string, isDir bool) string {
+	appPath = "/" + strings.TrimPrefix(appPath, "/")
+	if appPath == "/" {
+		return trashRootPath
+	}
+	dst := trashRootPath + strings.TrimPrefix(appPath, "/")
+	if isDir && !strings.HasSuffix(dst, "/") {
+		dst += "/"
+	}
+	return dst
+}
+
+func (s *Session) ensureParentDirRecords(appPath string) error {
+	trimmed := strings.Trim(strings.TrimPrefix(appPath, "/"), "/")
+	if trimmed == "" {
+		return nil
+	}
+
+	parts := strings.Split(trimmed, "/")
+	for i := 0; i < len(parts)-1; i++ {
+		current := "/" + strings.Join(parts[:i+1], "/") + "/"
+		if i == 0 && parts[i] == "__trash__" {
+			continue
+		}
+		ossPath := s.Username + current
+		if err := s.repos.Files.Upsert(s.UserID, ossPath, parts[i], true, 0, "", ""); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Session) permanentlyDelete(ossPath string, isDir bool) error {
+	if isDir {
+		if err := s.store.RecursiveDelete(ossPath, nil); err != nil {
+			return err
+		}
+		_ = s.repos.Files.DeleteByPrefix(s.UserID, ossPath)
+		_ = s.repos.Shares.DeleteByPrefix(s.UserID, ossPath)
+		return nil
+	}
+
+	rec, err := s.repos.Files.Get(s.UserID, ossPath)
+	if err != nil {
+		return nil
+	}
+	if rec.Status != "ready" && rec.OSSUploadID != "" {
+		_ = s.store.AbortMultipartUpload(ossPath, rec.OSSUploadID)
+	}
+	if err := s.store.DeleteObject(ossPath); err != nil {
+		return err
+	}
+	_ = s.repos.Files.Delete(s.UserID, ossPath)
+	_ = s.repos.Shares.DeleteByPath(s.UserID, ossPath)
+	return nil
+}
+
 // --- ls ---
 
 func cmdLs(s *Session, args []string, redirect string) (string, error) {
@@ -221,30 +284,58 @@ func cmdRm(s *Session, args []string, redirect string) (string, error) {
 			rec, recErr = s.repos.Files.Get(s.UserID, ossPath)
 		}
 
+		if isTrashAppPath(appPath) {
+			targetOSS := ossPath
+			if isDir {
+				targetOSS += "/"
+			}
+			if err := s.permanentlyDelete(targetOSS, isDir); err != nil {
+				return "", fmt.Errorf("cannot remove %s: %v", t, err)
+			}
+			s.notifyParentDir(targetOSS, "deleted")
+			continue
+		}
+
 		if isDir {
 			if !recursive {
 				return "", fmt.Errorf("cannot remove '%s': Is a directory (use -r)", t)
 			}
 			dirOSS := ossPath + "/"
-			trashKey := s.Username + "/.trash/" + rec.Path
-			size, _ := s.repos.Files.SumSizeByPrefix(s.UserID, dirOSS)
-			_ = s.repos.Trash.Create(s.UserID, appPath, trashKey, size, true)
-			if err := s.store.RecursiveMove(dirOSS, trashKey, nil); err != nil {
+			dstApp := trashAppPath(appPath, true)
+			dstOSS := s.Username + dstApp
+			if err := s.ensureParentDirRecords(dstApp); err != nil {
 				return "", fmt.Errorf("cannot remove %s: %v", t, err)
 			}
-			_ = s.repos.Files.DeleteByPrefix(s.UserID, dirOSS)
+			if err := s.permanentlyDelete(dstOSS, true); err != nil {
+				return "", fmt.Errorf("cannot remove %s: %v", t, err)
+			}
+			if err := s.store.RecursiveMove(dirOSS, dstOSS, nil); err != nil {
+				return "", fmt.Errorf("cannot remove %s: %v", t, err)
+			}
+			_ = s.repos.Files.MoveByPrefix(s.UserID, dirOSS, dstOSS)
+			_ = s.repos.Shares.DeleteByPrefix(s.UserID, dirOSS)
+			s.notifyParentDir(ossPath, "deleted")
+			s.notifyParentDir(dstOSS, "created")
 		} else {
 			if recErr != nil {
 				return "", fmt.Errorf("cannot remove '%s': No such file", t)
 			}
-			trashKey := s.Username + "/.trash/" + rec.Path
-			_ = s.repos.Trash.Create(s.UserID, appPath, trashKey, rec.Size, false)
-			if err := s.store.MoveObject(ossPath, trashKey); err != nil {
+			dstApp := trashAppPath(appPath, false)
+			dstOSS := s.Username + dstApp
+			if err := s.ensureParentDirRecords(dstApp); err != nil {
 				return "", fmt.Errorf("cannot remove %s: %v", t, err)
 			}
-			_ = s.repos.Files.Delete(s.UserID, ossPath)
+			if err := s.permanentlyDelete(dstOSS, false); err != nil {
+				return "", fmt.Errorf("cannot remove %s: %v", t, err)
+			}
+			if err := s.store.MoveObject(ossPath, dstOSS); err != nil {
+				return "", fmt.Errorf("cannot remove %s: %v", t, err)
+			}
+			_ = s.repos.Files.Move(s.UserID, ossPath, dstOSS, path.Base(dstOSS))
+			_ = s.repos.Shares.DeleteByPath(s.UserID, ossPath)
+			s.notifyParentDir(ossPath, "deleted")
+			s.notifyParentDir(dstOSS, "created")
 		}
-		s.notifyParentDir(ossPath, "deleted")
 	}
 	return "", nil
 }

@@ -99,6 +99,7 @@ function triggerUpload() {
 }
 
 function handleFileSelect(e: Event) {
+  if (fs.isTrash) return
   const input = e.target as HTMLInputElement
   const files = input.files
   if (files && files.length > 0) {
@@ -189,6 +190,7 @@ function handleSearchKeydown(e: KeyboardEvent) {
         <button
           class="nav-btn"
           :title="t('toolbar.upload')"
+          :disabled="fs.isTrash"
           @click="triggerUpload"
         >
           <IconUpload width="16" height="16" />

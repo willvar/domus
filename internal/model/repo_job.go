@@ -12,7 +12,6 @@ type JobRepo interface {
 	CreateDirect(job *Job) error
 	GetByJobID(jobID string) (*Job, error)
 	ListActive(userID string) ([]Job, error)
-	ListActiveUploads(userID string) ([]Job, error)
 	ListRecent(userID string) ([]Job, error)
 	DeleteCompleted(userID string) error
 	UpdateStatus(jobID, status string) error
@@ -83,18 +82,9 @@ func (r *gormJobRepo) ListActive(userID string) ([]Job, error) {
 	return jobs, nil
 }
 
-func (r *gormJobRepo) ListActiveUploads(userID string) ([]Job, error) {
-	var jobs []Job
-	if err := r.db.Where("user_id = ? AND type IN ? AND status IN ?", userID, []string{"oss_upload", "upload"}, []string{"uploading", "pending", "running"}).
-		Find(&jobs).Error; err != nil {
-		return nil, err
-	}
-	return jobs, nil
-}
-
 func (r *gormJobRepo) ListRecent(userID string) ([]Job, error) {
 	var jobs []Job
-	if err := r.db.Where("user_id = ? AND type IN ?", userID, []string{"transcode", "oss_upload", "upload"}).
+	if err := r.db.Where("user_id = ? AND type IN ?", userID, []string{"transcode"}).
 		Order("created_at DESC").Limit(50).Find(&jobs).Error; err != nil {
 		return nil, err
 	}

@@ -1,19 +1,15 @@
 package auth
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
-
-	"golang.org/x/crypto/hkdf"
 )
 
 const (
@@ -112,24 +108,6 @@ func ServerKeyFromSecret(encryptionSecret string) ([]byte, error) {
 		return nil, fmt.Errorf("server key too short: need 32 bytes, got %d", len(raw))
 	}
 	return raw[:32], nil
-}
-
-// Deprecated: DeriveKey derives a per-user KEK from a global secret. Use per-user random KEKs instead.
-func DeriveKey(encryptionSecret, userID string) ([]byte, error) {
-	ikm, err := hex.DecodeString(encryptionSecret)
-	if err != nil {
-		return nil, fmt.Errorf("decode encryption secret: %w", err)
-	}
-
-	salt := []byte(userID)
-	info := []byte("zephyr-file-encryption")
-	hkdfReader := hkdf.New(sha256.New, ikm, salt, info)
-
-	key := make([]byte, 32) // AES-256
-	if _, err := io.ReadFull(hkdfReader, key); err != nil {
-		return nil, fmt.Errorf("derive key: %w", err)
-	}
-	return key, nil
 }
 
 // EncryptStream encrypts data from r and writes ciphertext to w using chunked AES-256-GCM.
@@ -295,24 +273,6 @@ func DecryptFile(key []byte, inputPath, outputPath string) (retErr error) {
 	defer func() { retErr = errors.Join(retErr, out.Close()) }()
 
 	return DecryptStream(key, in, out)
-}
-
-// EncryptBytes encrypts plaintext in memory.
-func EncryptBytes(key, plaintext []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := EncryptStream(key, bytes.NewReader(plaintext), &buf); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
-}
-
-// DecryptBytes decrypts ciphertext in memory.
-func DecryptBytes(key, ciphertext []byte) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := DecryptStream(key, bytes.NewReader(ciphertext), &buf); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
 }
 
 // DecryptRange decrypts a subset of encrypted chunks from r and writes the plaintext

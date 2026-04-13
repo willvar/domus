@@ -14,7 +14,7 @@ watchEffect(() => {
 
 onMounted(async () => {
   document.addEventListener('contextmenu', (e) => e.preventDefault())
-  await auth.checkAuth()
+  await auth.ensureAuthInitialized()
 })
 </script>
 

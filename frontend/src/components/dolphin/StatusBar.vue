@@ -1,10 +1,12 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import { useFileSystemStore } from '../../stores/fileSystem'
+import { useActivityStore } from '../../stores/activity'
 import { useUploadStore } from '../../stores/upload'
 import { useI18n } from '../../composables/useI18n'
 
 const fs = useFileSystemStore()
+const activity = useActivityStore()
 const upload = useUploadStore()
 const { t } = useI18n()
 
@@ -34,7 +36,7 @@ const selectionInfo = computed(() => {
       <span
         v-if="upload.hasActive"
         class="upload-indicator"
-        @click="upload.showPanel = true"
+        @click="activity.show()"
       >
         {{ t('status.uploading', { n: upload.activeUploads.length }) }}
       </span>
@@ -101,22 +103,35 @@ const selectionInfo = computed(() => {
 /* ─── Breeze-style range slider ─── */
 .zoom-slider {
   width: 100px;
-  height: 4px;
+  height: 16px;
   -webkit-appearance: none;
   appearance: none;
-  background: var(--breeze-border, #3b4045);
-  border-radius: 2px;
+  background: transparent;
   outline: none;
-  cursor: default;
+  padding: 0;
+  cursor: pointer;
+
+  &::-webkit-slider-runnable-track {
+    height: 4px;
+    background: var(--breeze-border, #3b4045);
+    border-radius: 999px;
+  }
+
+  &::-moz-range-track {
+    height: 4px;
+    background: var(--breeze-border, #3b4045);
+    border-radius: 999px;
+  }
 
   &::-webkit-slider-thumb {
     -webkit-appearance: none;
     width: 12px;
     height: 12px;
+    margin-top: -3px;
     border-radius: 50%;
     background: var(--breeze-accent, #3daee9);
     border: none;
-    cursor: default;
+    cursor: pointer;
   }
 
   &::-moz-range-thumb {
@@ -125,7 +140,7 @@ const selectionInfo = computed(() => {
     border-radius: 50%;
     background: var(--breeze-accent, #3daee9);
     border: none;
-    cursor: default;
+    cursor: pointer;
   }
 }
 </style>

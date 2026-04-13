@@ -21,7 +21,11 @@ const mode = ref('table')
 const sortKey = ref<string | null>(null)
 const sortAsc = ref(true)
 const csvHeader = ref<string[] | null>(null)
-const canEdit = computed(() => !props.state.chunked || props.state.isFullyLoaded)
+const canEdit = computed(() => {
+  if (props.state.file?.path?.startsWith('/__trash__/')) return false
+  if (props.state.file?._shareId && props.state.file?._permission !== 'write') return false
+  return !props.state.chunked || props.state.isFullyLoaded
+})
 
 // Cache header row from first page
 watch(() => props.state.content, (content) => {

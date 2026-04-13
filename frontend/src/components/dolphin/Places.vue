@@ -21,7 +21,7 @@ function handleSelect(key: string) {
   if (key === 'home') {
     fs.navigate(`/home/${auth.username}/`)
   } else if (key === 'trash') {
-    fs.navigate('__trash__')
+    fs.navigate('/__trash__/')
   } else if (key === 'shared') {
     fs.navigate('__shared__')
   }

@@ -17,9 +17,6 @@ func (r *gormUserCleanupRepo) DeleteUserAndRelatedData(userID string) error {
 		if err := tx.Where("user_id = ?", userID).Delete(&FileRecord{}).Error; err != nil {
 			return err
 		}
-		if err := tx.Where("user_id = ?", userID).Delete(&TrashItem{}).Error; err != nil {
-			return err
-		}
 		if err := tx.Where("user_id = ?", userID).Delete(&Job{}).Error; err != nil {
 			return err
 		}

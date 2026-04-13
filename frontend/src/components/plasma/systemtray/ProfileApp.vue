@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { useWebSocket } from '../../../composables/useWebSocket'
 import { useI18n } from '../../../composables/useI18n'
 import { useMessage } from '../../../composables/useMessage'
 import { showConfirm } from '../../../composables/useNativeDialog'
@@ -13,7 +12,6 @@ import { Tabs, TabPane, Card, Form, FormItem, Input, Button, Tag } from '../../.
 
 const WINDOW_ID = 'profile'
 
-const ws = useWebSocket()
 const { t, te } = useI18n()
 const message = useMessage()
 const wm = useWindowManagerStore()
@@ -46,7 +44,7 @@ const avatarColor = computed(() => {
 
 async function loadProfile() {
   try {
-    const data = await ws.request('user.me')
+    const { data } = await api.get('/user/')
     displayName.value = data.display_name || ''
     avatarUrl.value = data.avatar_url || ''
   } catch { /* ignore */ }
@@ -55,7 +53,7 @@ async function loadProfile() {
 async function loadStorage() {
   storageLoading.value = true
   try {
-    const data = await ws.request('user.storageUsage')
+    const { data } = await api.get('/user/storage')
     storageSize.value = data.size
     storageCount.value = data.count
   } catch { /* ignore */ }
@@ -66,7 +64,8 @@ async function saveDisplayName() {
   if (!displayName.value.trim()) return
   nameLoading.value = true
   try {
-    await ws.request('user.updateDisplayName', { display_name: displayName.value.trim() })
+    await api.put('/user/display-name', { display_name: displayName.value.trim() })
+    if (auth.user) auth.user.display_name = displayName.value.trim()
     message.success(t('profile.name_updated'))
     editingName.value = false
   } catch (e: any) {
@@ -149,7 +148,8 @@ const otpLoading = ref(false)
 
 async function loadStatus() {
   try {
-    status.value = await ws.request('user.security')
+    const { data } = await api.get('/user/security')
+    status.value = data
   } catch (e: any) {
     message.error(te(e, 'account.load_failed'))
   }
@@ -169,7 +169,7 @@ async function changePassword() {
   if (!oldPwd.value || !newPwd.value) return
   pwdLoading.value = true
   try {
-    await ws.request('user.changePassword', { old_password: oldPwd.value, new_password: newPwd.value })
+    await api.put('/user/security/password', { old_password: oldPwd.value, new_password: newPwd.value })
     message.success(t('account.password_changed'))
     oldPwd.value = ''
     newPwd.value = ''
@@ -184,7 +184,7 @@ async function sendBindCode() {
   if (!bindEmail.value) return
   emailLoading.value = true
   try {
-    await ws.request('user.bindEmail', { email: bindEmail.value })
+    await api.post('/user/security/email/bind', { email: bindEmail.value })
     emailStep.value = 'code_sent'
     message.success(t('login.code_sent'))
   } catch (e: any) {
@@ -198,7 +198,7 @@ async function verifyBindCode() {
   if (!bindCode.value) return
   emailLoading.value = true
   try {
-    await ws.request('user.verifyBindEmail', { email: bindEmail.value, code: bindCode.value })
+    await api.post('/user/security/email/verify', { email: bindEmail.value, code: bindCode.value })
     message.success(t('account.email_bound'))
     emailStep.value = 'idle'
     bindEmail.value = ''
@@ -214,7 +214,7 @@ async function verifyBindCode() {
 async function unbindEmail() {
   if (!await showConfirm(t('account.email_unbind') + '?')) return
   try {
-    await ws.request('user.unbindEmail')
+    await api.delete('/user/security/email')
     message.success(t('account.email_unbound'))
     await loadStatus()
   } catch (e: any) {
@@ -225,7 +225,7 @@ async function unbindEmail() {
 async function setupOTP() {
   otpLoading.value = true
   try {
-    const data = await ws.request('user.otpSetup')
+    const { data } = await api.post('/user/security/otp/setup')
     otpSecret.value = data.secret
     otpQR.value = await QRCode.toDataURL(data.uri, { width: 200, margin: 2 })
     otpStep.value = 'setup'
@@ -241,7 +241,7 @@ async function enableOTP() {
   if (!otpCode.value) return
   otpLoading.value = true
   try {
-    await ws.request('user.otpEnable', { code: otpCode.value })
+    await api.post('/user/security/otp/enable', { code: otpCode.value })
     message.success(t('account.otp_enabled'))
     otpStep.value = 'idle'
     otpSecret.value = ''
@@ -258,7 +258,7 @@ async function enableOTP() {
 async function disableOTP() {
   if (!await showConfirm(t('account.otp_confirm_disable'))) return
   try {
-    await ws.request('user.otpDisable')
+    await api.delete('/user/security/otp')
     message.success(t('account.otp_disabled'))
     await loadStatus()
   } catch (e: any) {

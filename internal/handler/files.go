@@ -41,6 +41,35 @@ func (h *Handler) fillThumbnail(fi *store.FileInfo, r *model.FileRecord, kek []b
 	fi.ThumbnailDEK = hex.EncodeToString(thumbDEK)
 }
 
+type uploadTaskInfo struct {
+	TaskID   string
+	Progress float64
+	Phase    string
+}
+
+// activeUploadTasksByID returns recent running upload tasks keyed by task_id.
+func (h *Handler) activeUploadTasksByID(userID string) map[string]uploadTaskInfo {
+	out := make(map[string]uploadTaskInfo)
+	tasks, err := h.Repos.Tasks.ListRecent(userID)
+	if err != nil {
+		return out
+	}
+	for _, task := range tasks {
+		if task.Type != "upload" {
+			continue
+		}
+		if task.Status != "running" && task.Status != "pending" {
+			continue
+		}
+		out[task.TaskID] = uploadTaskInfo{
+			TaskID:   task.TaskID,
+			Progress: task.Progress,
+			Phase:    task.Phase,
+		}
+	}
+	return out
+}
+
 func (h *Handler) handleList(c *fiber.Ctx) error {
 	path := c.Query("path", "")
 
@@ -55,28 +84,7 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "list_failed"})
 	}
 
-	// Build uploadID -> task info map for processing files
-	type taskInfo struct {
-		TaskID   string
-		Progress float64
-		Phase    string
-	}
-	uploadTasks := make(map[string]taskInfo)
-	if jobs, err := h.Repos.Jobs.ListActiveUploads(session.UserID); err == nil {
-		for _, j := range jobs {
-			if j.TaskID == "" {
-				continue
-			}
-			var p struct {
-				UploadID string `json:"upload_id"`
-			}
-			if json.Unmarshal([]byte(j.Params), &p) == nil && p.UploadID != "" {
-				if task, err := h.Repos.Tasks.Get(j.TaskID); err == nil {
-					uploadTasks[p.UploadID] = taskInfo{TaskID: task.TaskID, Progress: task.Progress, Phase: task.Phase}
-				}
-			}
-		}
-	}
+	uploadTasks := h.activeUploadTasksByID(session.UserID)
 
 	kek, _ := h.getFileEncryptionKey(session)
 
@@ -95,11 +103,11 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 			MediaDuration: r.MediaDuration,
 			Status:        r.Status,
 		}
-		if r.Status == "processing" && r.UploadID != "" {
-			if ti, ok := uploadTasks[r.UploadID]; ok {
-				fi.JobID = ti.TaskID
-				fi.JobProgress = ti.Progress
-				fi.JobPhase = ti.Phase
+		if r.Status != "ready" && r.TaskID != "" {
+			if ti, ok := uploadTasks[r.TaskID]; ok {
+				fi.TaskID = ti.TaskID
+				fi.TaskProgress = ti.Progress
+				fi.TaskPhase = ti.Phase
 			}
 		}
 		h.fillThumbnail(&fi, &r, kek)
@@ -107,6 +115,39 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{"files": files})
+}
+
+func (h *Handler) handleSearch(c *fiber.Ctx) error {
+	query := strings.TrimSpace(c.Query("query", ""))
+	if query == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "query_required"})
+	}
+
+	limit := c.QueryInt("limit", 100)
+	if limit <= 0 {
+		limit = 100
+	}
+
+	session := c.Locals("session").(*model.Session)
+	results, err := h.Repos.Files.SearchFiles(session.UserID, query, limit)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "search_failed"})
+	}
+
+	items := make([]fiber.Map, 0, len(results))
+	for _, r := range results {
+		items = append(items, fiber.Map{
+			"path":         middleware.ToAppPath(r.Path, session.Username),
+			"parent":       middleware.ToAppPath(r.Parent, session.Username),
+			"name":         r.Name,
+			"is_dir":       r.IsDir,
+			"size":         r.Size,
+			"content_type": r.ContentType,
+			"rank":         r.Rank,
+		})
+	}
+
+	return c.JSON(fiber.Map{"results": items})
 }
 
 func (h *Handler) handleMkdir(c *fiber.Ctx) error {
@@ -335,6 +376,16 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 		return err
 	}
 
+	session := c.Locals("session").(*model.Session)
+	if err := h.ensureParentDirRecords(session.UserID, session.Username, body.DstPath, body.IsDir); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "move_failed"})
+	}
+	if isTrashAppPath(body.DstPath) {
+		if err := h.permanentlyDeletePath(session.UserID, dstResolved, body.IsDir); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "move_failed"})
+		}
+	}
+
 	if c.Get("Accept") == "text/event-stream" {
 		c.Set("Content-Type", "text/event-stream")
 		c.Set("Cache-Control", "no-cache")
@@ -348,28 +399,13 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 			}
 
 			var moveErr error
-			if body.IsDir {
-				moveErr = h.Store.RecursiveMove(srcResolved, dstResolved, progress)
-			} else {
-				moveErr = h.Store.MoveObject(srcResolved, dstResolved)
-				if moveErr == nil {
-					progress(1, 1, srcResolved)
-				}
-			}
+			moveErr = movePathViaStore(h, srcResolved, dstResolved, body.IsDir, progress)
 
 			if moveErr != nil {
 				data, _ := json.Marshal(fiber.Map{"error": moveErr.Error()})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			} else {
-				session := c.Locals("session").(*model.Session)
-				if body.IsDir {
-					_ = h.Repos.Files.MoveByPrefix(session.UserID, srcResolved, dstResolved)
-					_ = h.Repos.Shares.MoveByPrefix(session.UserID, srcResolved, dstResolved)
-				} else {
-					newName := filepath.Base(dstResolved)
-					_ = h.Repos.Files.Move(session.UserID, srcResolved, dstResolved, newName)
-					_ = h.Repos.Shares.MoveByPath(session.UserID, srcResolved, dstResolved)
-				}
+				syncMovedFileRecords(h, session.UserID, srcResolved, dstResolved, body.SrcPath, body.DstPath, body.IsDir)
 				data, _ := json.Marshal(fiber.Map{"done": true})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			}
@@ -378,21 +414,10 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 		return nil
 	}
 
-	session := c.Locals("session").(*model.Session)
-	if body.IsDir {
-		if err := h.Store.RecursiveMove(srcResolved, dstResolved, nil); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "move_failed"})
-		}
-		_ = h.Repos.Files.MoveByPrefix(session.UserID, srcResolved, dstResolved)
-		_ = h.Repos.Shares.MoveByPrefix(session.UserID, srcResolved, dstResolved)
-	} else {
-		if err := h.Store.MoveObject(srcResolved, dstResolved); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "move_failed"})
-		}
-		newName := filepath.Base(dstResolved)
-		_ = h.Repos.Files.Move(session.UserID, srcResolved, dstResolved, newName)
-		_ = h.Repos.Shares.MoveByPath(session.UserID, srcResolved, dstResolved)
+	if err := movePathViaStore(h, srcResolved, dstResolved, body.IsDir, nil); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "move_failed"})
 	}
+	syncMovedFileRecords(h, session.UserID, srcResolved, dstResolved, body.SrcPath, body.DstPath, body.IsDir)
 
 	// Notify WebSocket subscribers of both source and destination parent directories
 	if parent := parentDirOf(srcResolved); parent != "" {
@@ -413,6 +438,7 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 	if path == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
 	}
+	permanent := c.Query("permanent") == "1" || strings.EqualFold(c.Query("permanent"), "true")
 
 	resolvedPath, err := middleware.ResolvePath(c, path)
 	if err != nil {
@@ -421,6 +447,7 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 
 	session := c.Locals("session").(*model.Session)
 	isDir := strings.HasSuffix(path, "/")
+	inTrash := isTrashAppPath(path)
 
 	// For non-ready files: abort multipart upload, delete OSS object, delete record — no trash needed
 	if !isDir {
@@ -441,51 +468,22 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 		}
 	}
 
-	// Calculate size from DB for quota update
-	var totalSize int64
-	if isDir {
-		size, err := h.Repos.Files.SumSizeByPrefix(session.UserID, resolvedPath)
-		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-		}
-		totalSize = size
-	} else {
-		fileRecord, err := h.Repos.Files.Get(session.UserID, resolvedPath)
-		if err != nil {
-			return c.Status(404).JSON(fiber.Map{"error": "not_found"})
-		}
-		totalSize = fileRecord.Size
-	}
-
-	// Move to trash instead of permanent delete
-	trashUUID := uuid.New().String()
-	trashKey := session.Username + "/.trash/" + trashUUID
-
-	if isDir {
-		if !strings.HasSuffix(resolvedPath, "/") {
-			resolvedPath += "/"
-		}
-		trashKey += "/"
-
-		if c.Get("Accept") == "text/event-stream" {
+	if permanent || inTrash {
+		if c.Get("Accept") == "text/event-stream" && isDir {
 			c.Set("Content-Type", "text/event-stream")
 			c.Set("Cache-Control", "no-cache")
 			c.Set("Connection", "keep-alive")
-
 			c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
 				progress := func(done, total int, current string) {
 					data, _ := json.Marshal(fiber.Map{"done": done, "total": total, "current": current})
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 					_ = w.Flush()
 				}
-
-				moveErr := h.Store.RecursiveMove(resolvedPath, trashKey, progress)
-				if moveErr != nil {
-					data, _ := json.Marshal(fiber.Map{"error": moveErr.Error()})
+				if err := h.Store.RecursiveDelete(resolvedPath, progress); err != nil {
+					data, _ := json.Marshal(fiber.Map{"error": err.Error()})
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 				} else {
-					_ = h.Repos.Trash.Create(session.UserID, path, trashKey, totalSize, true)
-					_ = h.Repos.Files.MoveByPrefix(session.UserID, resolvedPath, trashKey)
+					_ = h.Repos.Files.DeleteByPrefix(session.UserID, resolvedPath)
 					_ = h.Repos.Shares.DeleteByPrefix(session.UserID, resolvedPath)
 					data, _ := json.Marshal(fiber.Map{"done": true})
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
@@ -495,55 +493,67 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 			return nil
 		}
 
-		if err := h.Store.RecursiveMove(resolvedPath, trashKey, nil); err != nil {
+		if err := h.permanentlyDeletePath(session.UserID, resolvedPath, isDir); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
 		}
-	} else {
-		if c.Get("Accept") == "text/event-stream" {
-			c.Set("Content-Type", "text/event-stream")
-			c.Set("Cache-Control", "no-cache")
-			c.Set("Connection", "keep-alive")
+		if path == trashRootPath {
+			h.Hub.PushDirChanged(resolvedPath, trashRootPath, "refresh")
+		} else if parent := parentDirOf(resolvedPath); parent != "" {
+			appPath := toAppPath(parent, session.Username)
+			h.Hub.PushDirChanged(parent, appPath, "refresh")
+		}
+		h.Audit.LogFromCtx(c, "file_delete", path, "", "success", 0)
+		return c.JSON(fiber.Map{"ok": true})
+	}
 
-			c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
-				data, _ := json.Marshal(fiber.Map{"done": 0, "total": 1, "current": resolvedPath})
+	dstAppPath := trashAppPath(path)
+	dstResolved, err := middleware.ResolvePath(c, dstAppPath)
+	if err != nil {
+		return err
+	}
+	if err := h.ensureParentDirRecords(session.UserID, session.Username, dstAppPath, isDir); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
+	}
+	if err := h.permanentlyDeletePath(session.UserID, dstResolved, isDir); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
+	}
+
+	if c.Get("Accept") == "text/event-stream" {
+		c.Set("Content-Type", "text/event-stream")
+		c.Set("Cache-Control", "no-cache")
+		c.Set("Connection", "keep-alive")
+		c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
+			progress := func(done, total int, current string) {
+				data, _ := json.Marshal(fiber.Map{"done": done, "total": total, "current": current})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 				_ = w.Flush()
-
-				moveErr := h.Store.MoveObject(resolvedPath, trashKey)
-				if moveErr != nil {
-					data, _ := json.Marshal(fiber.Map{"error": moveErr.Error()})
-					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-				} else {
-					_ = h.Repos.Trash.Create(session.UserID, path, trashKey, totalSize, false)
-					_ = h.Repos.Files.Move(session.UserID, resolvedPath, trashKey, filepath.Base(trashKey))
-					_ = h.Repos.Shares.DeleteByPath(session.UserID, resolvedPath)
-					data, _ = json.Marshal(fiber.Map{"done": 1, "total": 1, "current": resolvedPath})
-					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-					data, _ = json.Marshal(fiber.Map{"done": true})
-					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-				}
-				_ = w.Flush()
-			})
-			return nil
-		}
-
-		if err := h.Store.MoveObject(resolvedPath, trashKey); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
-		}
+			}
+			moveErr := movePathViaStore(h, resolvedPath, dstResolved, isDir, progress)
+			if moveErr != nil {
+				data, _ := json.Marshal(fiber.Map{"error": moveErr.Error()})
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+			} else {
+				syncMovedFileRecords(h, session.UserID, resolvedPath, dstResolved, path, dstAppPath, isDir)
+				data, _ := json.Marshal(fiber.Map{"done": true})
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+			}
+			_ = w.Flush()
+		})
+		return nil
 	}
 
-	// Record in trash table
-	_ = h.Repos.Trash.Create(session.UserID, path, trashKey, totalSize, isDir)
-
-	// Move file records to trash paths (preserves WrappedDEK and metadata)
-	if isDir {
-		_ = h.Repos.Files.MoveByPrefix(session.UserID, resolvedPath, trashKey)
-		_ = h.Repos.Shares.DeleteByPrefix(session.UserID, resolvedPath)
-	} else {
-		_ = h.Repos.Files.Move(session.UserID, resolvedPath, trashKey, filepath.Base(trashKey))
-		_ = h.Repos.Shares.DeleteByPath(session.UserID, resolvedPath)
+	if err := movePathViaStore(h, resolvedPath, dstResolved, isDir, nil); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
 	}
-
+	syncMovedFileRecords(h, session.UserID, resolvedPath, dstResolved, path, dstAppPath, isDir)
+	if parent := parentDirOf(resolvedPath); parent != "" {
+		appPath := toAppPath(parent, session.Username)
+		h.Hub.PushDirChanged(parent, appPath, "refresh")
+	}
+	if parent := parentDirOf(dstResolved); parent != "" {
+		appPath := toAppPath(parent, session.Username)
+		h.Hub.PushDirChanged(parent, appPath, "refresh")
+	}
 	h.Audit.LogFromCtx(c, "file_delete", path, "", "success", 0)
 	return c.JSON(fiber.Map{"ok": true})
 }

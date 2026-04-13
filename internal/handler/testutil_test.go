@@ -82,6 +82,10 @@ func setupTestApp(t *testing.T) (*fiber.App, *model.Repos, func(username, passwo
 		return auth.SignCookie(sessionID, cfg.Server.SessionSecret)
 	}
 
+	mockStore.HeadObjectFn = func(key string) (*store.HeadResult, error) {
+		return &store.HeadResult{Size: 43, ETag: "\"mock-etag\""}, nil
+	}
+
 	return app, repos, loginAs
 }
 
@@ -109,6 +113,7 @@ type MockFileStore struct {
 	UploadFromFileCtxProgressFn func(ctx context.Context, key, localPath string, fn store.ProgressFn) error
 	PutObjectBytesFn            func(key string, data []byte) error
 	GetObjectContentRangeFn     func(key string, start, end int64) (io.ReadCloser, error)
+	HeadObjectFn                func(key string) (*store.HeadResult, error)
 }
 
 func (m *MockFileStore) ListObjects(prefix, marker string, limit int) (*store.ListResult, error) {
@@ -265,5 +270,8 @@ func (m *MockFileStore) ListParts(key, uploadID string) ([]store.PartInfo, error
 	return nil, nil
 }
 func (m *MockFileStore) HeadObject(key string) (*store.HeadResult, error) {
+	if m.HeadObjectFn != nil {
+		return m.HeadObjectFn(key)
+	}
 	return &store.HeadResult{Size: 100, ETag: "\"mock-etag\""}, nil
 }

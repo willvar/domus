@@ -21,7 +21,6 @@ import (
 func NewMemRepos(onTaskUpdate TaskUpdateFunc) *Repos {
 	users := &memUserRepo{data: make(map[string]*User)}
 	files := &memFileRepo{data: make(map[string]*FileRecord), nextID: 1}
-	trash := &memTrashRepo{data: make(map[int64]*TrashItem), nextID: 1}
 	sessions := &memSessionRepo{data: make(map[string]*memSessionEntry)}
 	tasks := &memTaskRepo{data: make(map[string]*Task), nextID: 1, onTaskUpdate: onTaskUpdate}
 	jobs := &memJobRepo{data: make(map[string]*Job), nextID: 1, tasks: tasks}
@@ -31,7 +30,6 @@ func NewMemRepos(onTaskUpdate TaskUpdateFunc) *Repos {
 	cleanup := &memUserCleanupRepo{
 		users:     users,
 		files:     files,
-		trash:     trash,
 		sessions:  sessions,
 		jobs:      jobs,
 		tasks:     tasks,
@@ -43,7 +41,6 @@ func NewMemRepos(onTaskUpdate TaskUpdateFunc) *Repos {
 		onTaskUpdate: onTaskUpdate,
 		Users:        users,
 		Files:        files,
-		Trash:        trash,
 		Sessions:     sessions,
 		Jobs:         jobs,
 		Tasks:        tasks,
@@ -445,6 +442,7 @@ func (r *memFileRepo) SearchFiles(userID, query string, limit int) ([]SearchFile
 	for _, rec := range r.data {
 		if rec.UserID == userID && rec.Status == "ready" &&
 			!strings.HasPrefix(rec.Name, ".") &&
+			!strings.Contains(rec.Path, "/__trash__/") &&
 			strings.Contains(strings.ToLower(rec.Name), lowerQ) {
 			c := *rec
 			out = append(out, SearchFileResult{FileRecord: c, Rank: 1.0})
@@ -456,24 +454,26 @@ func (r *memFileRepo) SearchFiles(userID, query string, limit int) ([]SearchFile
 	return out, nil
 }
 
-func (r *memFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64) error {
+func (r *memFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, clientInstanceID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := fileKey(userID, path)
 	now := time.Now()
 	rec := &FileRecord{
-		ID:          r.nextID,
-		UserID:      userID,
-		Path:        path,
-		Parent:      memParentOf(path),
-		Name:        name,
-		Size:        fileSize,
-		Status:      "uploading",
-		UploadID:    uploadID,
-		TaskID:      taskID,
-		OSSUploadID: ossUploadID,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:               r.nextID,
+		UserID:           userID,
+		Path:             path,
+		Parent:           memParentOf(path),
+		Name:             name,
+		Size:             fileSize,
+		Status:           "uploading",
+		UploadID:         uploadID,
+		TaskID:           taskID,
+		OSSUploadID:      ossUploadID,
+		ClientInstanceID: clientInstanceID,
+		LastSeenAt:       now,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}
 	r.nextID++
 	r.data[key] = rec
@@ -518,6 +518,54 @@ func (r *memFileRepo) UpdateStatus(uploadID, status string) error {
 	return nil
 }
 
+func (r *memFileRepo) TouchUpload(uploadID string, seenAt time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, rec := range r.data {
+		if rec.UploadID == uploadID {
+			rec.LastSeenAt = seenAt
+			rec.UpdatedAt = seenAt
+			return nil
+		}
+	}
+	return nil
+}
+
+func (r *memFileRepo) ListActiveUploads(userID string) ([]FileRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []FileRecord
+	for _, rec := range r.data {
+		if rec.UserID == userID && rec.Status == "uploading" {
+			c := *rec
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+func (r *memFileRepo) CancelUploadsForOtherInstances(userID, clientInstanceID string, cutoff time.Time) ([]FileRecord, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []FileRecord
+	for _, rec := range r.data {
+		if rec.UserID != userID || rec.Status != "uploading" {
+			continue
+		}
+		if !rec.LastSeenAt.Before(cutoff) {
+			continue
+		}
+		if clientInstanceID != "" && rec.ClientInstanceID == clientInstanceID {
+			continue
+		}
+		rec.Status = "cancelled"
+		rec.UpdatedAt = time.Now()
+		c := *rec
+		out = append(out, c)
+	}
+	return out, nil
+}
+
 func (r *memFileRepo) GetStaleUploads(staleAfter time.Duration) ([]FileRecord, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -539,80 +587,6 @@ func memParentOf(path string) string {
 		return p[:idx+1]
 	}
 	return ""
-}
-
-// ---------------------------------------------------------------------------
-// memTrashRepo
-// ---------------------------------------------------------------------------
-
-type memTrashRepo struct {
-	mu     sync.Mutex
-	data   map[int64]*TrashItem
-	nextID int64
-}
-
-func (r *memTrashRepo) Create(userID, originalPath, trashKey string, size int64, isDir bool) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	item := &TrashItem{
-		ID:           r.nextID,
-		UserID:       userID,
-		OriginalPath: originalPath,
-		TrashKey:     trashKey,
-		Size:         size,
-		IsDir:        isDir,
-		DeletedAt:    time.Now(),
-	}
-	r.nextID++
-	r.data[item.ID] = item
-	return nil
-}
-
-func (r *memTrashRepo) List(userID string) ([]TrashItem, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var out []TrashItem
-	for _, item := range r.data {
-		if item.UserID == userID {
-			c := *item
-			out = append(out, c)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].DeletedAt.After(out[j].DeletedAt) })
-	return out, nil
-}
-
-func (r *memTrashRepo) Get(id int64, userID string) (*TrashItem, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	item, ok := r.data[id]
-	if !ok || item.UserID != userID {
-		return nil, gorm.ErrRecordNotFound
-	}
-	c := *item
-	return &c, nil
-}
-
-func (r *memTrashRepo) Delete(id int64) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	delete(r.data, id)
-	return nil
-}
-
-func (r *memTrashRepo) Clear(userID string) ([]TrashItem, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var out []TrashItem
-	for id, item := range r.data {
-		if item.UserID == userID {
-			c := *item
-			out = append(out, c)
-			delete(r.data, id)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].DeletedAt.After(out[j].DeletedAt) })
-	return out, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -772,7 +746,7 @@ func (r *memTaskRepo) UpdateProgress(taskID string, progress float64, phase stri
 	r.mu.Unlock()
 
 	if cb != nil {
-		cb(tc.UserID, tc.TaskID, tc.Type, tc.Name, tc.Status, progress, phase)
+		cb(tc.UserID, tc.TaskID, tc.Type, tc.Name, tc.Status, tc.ClientInstanceID, progress, phase)
 	}
 	return nil
 }
@@ -794,7 +768,7 @@ func (r *memTaskRepo) UpdateStatus(taskID, status string) error {
 	r.mu.Unlock()
 
 	if cb != nil {
-		cb(tc.UserID, tc.TaskID, tc.Type, tc.Name, status, tc.Progress, tc.Phase)
+		cb(tc.UserID, tc.TaskID, tc.Type, tc.Name, status, tc.ClientInstanceID, tc.Progress, tc.Phase)
 	}
 	return nil
 }
@@ -927,27 +901,12 @@ func (r *memJobRepo) ListActive(userID string) ([]Job, error) {
 	return out, nil
 }
 
-func (r *memJobRepo) ListActiveUploads(userID string) ([]Job, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var out []Job
-	for _, j := range r.data {
-		if j.UserID == userID &&
-			(j.Type == "oss_upload" || j.Type == "upload") &&
-			(j.Status == "uploading" || j.Status == "pending" || j.Status == "running") {
-			c := *j
-			out = append(out, c)
-		}
-	}
-	return out, nil
-}
-
 func (r *memJobRepo) ListRecent(userID string) ([]Job, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var out []Job
 	for _, j := range r.data {
-		if j.UserID == userID && (j.Type == "transcode" || j.Type == "oss_upload" || j.Type == "upload") {
+		if j.UserID == userID && j.Type == "transcode" {
 			c := *j
 			out = append(out, c)
 		}
@@ -1307,7 +1266,6 @@ func (r *memAuditRepo) ListLogs(_ AuditFilter) ([]AuditLog, int64, error) {
 type memUserCleanupRepo struct {
 	users     *memUserRepo
 	files     *memFileRepo
-	trash     *memTrashRepo
 	sessions  *memSessionRepo
 	jobs      *memJobRepo
 	tasks     *memTaskRepo
@@ -1333,15 +1291,6 @@ func (r *memUserCleanupRepo) DeleteUserAndRelatedData(userID string) error {
 		}
 	}
 	r.files.mu.Unlock()
-
-	// Delete trash
-	r.trash.mu.Lock()
-	for id, item := range r.trash.data {
-		if item.UserID == userID {
-			delete(r.trash.data, id)
-		}
-	}
-	r.trash.mu.Unlock()
 
 	// Delete jobs
 	r.jobs.mu.Lock()

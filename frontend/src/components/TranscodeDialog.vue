@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
-import { useWebSocket } from '../composables/useWebSocket'
+import api from '../composables/useApi'
 import { useI18n } from '../composables/useI18n'
 import { useMessage } from '../composables/useMessage'
-import { useJobsStore } from '../stores/jobs'
+import { useActivityStore } from '../stores/activity'
+import { useTasksStore } from '../stores/tasks'
 import { Modal, Form, FormItem, Select, Switch, Button } from '../barrels/breeze'
 
-const ws = useWebSocket()
 const { t, te } = useI18n()
 const message = useMessage()
-const jobsStore = useJobsStore()
+const activityStore = useActivityStore()
+const tasksStore = useTasksStore()
 
 const show = ref(false)
 const loading = ref(false)
@@ -90,7 +91,7 @@ function close() {
 async function startTranscode() {
   loading.value = true
   try {
-    const res = await ws.request<{ task_id: string }>('task.create', {
+    const { data: res } = await api.post<{ task_id: string }>('/job/', {
       type: 'transcode',
       path: filePath.value,
       preset: preset.value,
@@ -98,7 +99,7 @@ async function startTranscode() {
       replace: replace.value,
     })
     const taskId = res.task_id
-    jobsStore.addTask({
+    tasksStore.upsertTask({
       task_id: taskId,
       type: 'transcode',
       status: 'running',
@@ -106,6 +107,7 @@ async function startTranscode() {
       phase: '',
       name: fileName.value,
     })
+    activityStore.show()
     message.success(t('transcode.started'))
     show.value = false
     if (resolvePromise) {

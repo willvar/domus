@@ -371,6 +371,38 @@ func TestMoveSharesByPrefix(t *testing.T) {
 	}
 }
 
+func TestGetShareForUser(t *testing.T) {
+	repos := setupShareTestDB(t)
+
+	share := &Share{
+		ShareID:      "for-user-1",
+		OwnerID:      "owner-1",
+		FilePath:     "owner1/docs/file.txt",
+		FileName:     "file.txt",
+		TargetUserID: "target-1",
+		WrappedDEK:   "aa",
+		Permission:   "read",
+	}
+	if err := repos.Shares.Create(share); err != nil {
+		t.Fatalf("CreateShare: %v", err)
+	}
+
+	got, err := repos.Shares.GetForUser("owner1/docs/file.txt", "target-1")
+	if err != nil {
+		t.Fatalf("GetForUser: %v", err)
+	}
+	if got.ShareID != "for-user-1" {
+		t.Fatalf("expected for-user-1, got %s", got.ShareID)
+	}
+
+	if _, err := repos.Shares.GetForUser("owner1/docs/file.txt", "target-2"); err == nil {
+		t.Fatal("expected error for wrong target user")
+	}
+	if _, err := repos.Shares.GetForUser("owner1/docs/missing.txt", "target-1"); err == nil {
+		t.Fatal("expected error for wrong file path")
+	}
+}
+
 func TestUpdateShareFileSize(t *testing.T) {
 	repos := setupShareTestDB(t)
 

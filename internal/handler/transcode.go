@@ -151,9 +151,14 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 	outputPath := filepath.Join(params.TempDir, "output"+outputExt)
 
 	// Phase 1: Download and decrypt
+	log.Printf("[transcode] job %s downloading source %s", job.JobID, params.SourceKey)
+	_ = h.Repos.Jobs.UpdateStatus(job.JobID, "running")
+	if job.TaskID != "" {
+		_ = h.Repos.Tasks.UpdateStatus(job.TaskID, "running")
+	}
 	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.0, "downloading")
 	if err := h.Store.DownloadToFile(params.SourceKey, inputPath); err != nil {
-		return fmt.Errorf("download: %w", err)
+		return fmt.Errorf("download source: %w", err)
 	}
 
 	kek, err := h.loadUserKEK(job.UserID)
@@ -175,6 +180,8 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 		return fmt.Errorf("unwrap source DEK: %w", err)
 	}
 
+	log.Printf("[transcode] job %s decrypting source", job.JobID)
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.05, "decrypting")
 	decPath := inputPath + ".dec"
 	if err := auth.DecryptFile(srcDEK, inputPath, decPath); err != nil {
 		return fmt.Errorf("decrypt source: %w", err)
@@ -189,21 +196,24 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 	}
 
 	// Phase 2: Probe + Transcode
-	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.1, "transcoding")
 	transcoder := service.NewTranscoder(h.Config.Transcode)
+	log.Printf("[transcode] job %s probing input", job.JobID)
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.1, "probing")
 
 	probe, err := transcoder.Probe(ctx, inputPath)
 	if err != nil {
 		log.Printf("[transcode] probe failed for job %s: %v (continuing without duration)", job.JobID, err)
 	}
 
+	log.Printf("[transcode] job %s starting ffmpeg (duration=%.3f)", job.JobID, probeDuration(probe))
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.15, "transcoding")
 	err = transcoder.Run(ctx, inputPath, outputPath, params.MediaType, params.Preset, params.OutputFormat, probe, func(pct float64) {
-		// Map 0~1 to 0.1~0.8
-		progress := 0.1 + pct*0.7
+		// Map 0~1 to 0.15~0.8
+		progress := 0.15 + pct*0.65
 		_ = h.Repos.Jobs.UpdateProgress(job.JobID, progress, "transcoding")
 	})
 	if err != nil {
-		return fmt.Errorf("transcode: %w", err)
+		return fmt.Errorf("transcode media: %w", err)
 	}
 
 	if ctx.Err() != nil {
@@ -211,7 +221,8 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 	}
 
 	// Phase 3: Upload to OSS
-	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.85, "uploading_oss")
+	log.Printf("[transcode] job %s encrypting output", job.JobID)
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.82, "encrypting")
 
 	// If replacing and format changed, delete old file first
 	if params.Replace && params.TargetKey != params.SourceKey {
@@ -234,9 +245,11 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 	if err := auth.EncryptFile(outDEK, outputPath, encPath); err != nil {
 		return fmt.Errorf("encrypt output: %w", err)
 	}
+	log.Printf("[transcode] job %s uploading output to %s", job.JobID, params.TargetKey)
+	_ = h.Repos.Jobs.UpdateProgress(job.JobID, 0.9, "uploading_oss")
 	if err := h.Store.UploadFromFile(params.TargetKey, encPath); err != nil {
 		_ = os.Remove(encPath)
-		return fmt.Errorf("upload: %w", err)
+		return fmt.Errorf("upload output: %w", err)
 	}
 	_ = os.Remove(encPath)
 
@@ -281,6 +294,13 @@ func (h *Handler) RunTranscodeJob(ctx context.Context, job *model.Job) error {
 func probeDurationMs(p *service.ProbeResult) int64 {
 	if p != nil {
 		return int64(p.Duration * 1000)
+	}
+	return 0
+}
+
+func probeDuration(p *service.ProbeResult) float64 {
+	if p != nil {
+		return p.Duration
 	}
 	return 0
 }
