@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
+import { ref, shallowRef, computed, watch, nextTick, onMounted, onUnmounted } from 'vue'
 import type MarkdownIt from 'markdown-it'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useCodeMirror } from '../../composables/useCodeMirror'
@@ -19,15 +19,15 @@ const mdWrap = ref<HTMLDivElement | null>(null)
 const editBuffer = ref('')
 const mode = ref(window.innerWidth < 768 ? 'preview' : 'split')
 
-let md: MarkdownIt | null = null
+const md = shallowRef<MarkdownIt | null>(null)
 onMounted(async () => {
   const { default: MarkdownIt } = await import('markdown-it')
-  md = new MarkdownIt({ html: false, linkify: true, typographer: true })
+  md.value = new MarkdownIt({ html: false, linkify: true, typographer: true })
 })
 
 const renderedHtml = computed(() => {
-  if (!props.state.content || !md) return ''
-  return md.render(props.state.content)
+  if (!props.state.content || !md.value) return ''
+  return md.value.render(props.state.content)
 })
 
 const showCode = computed(() => mode.value !== 'preview')
@@ -42,7 +42,11 @@ function createEditor(readOnly: boolean) {
   cm.create(cmContainer.value, props.state.content || '', 'markdown', readOnly, callbacks)
 }
 
-const canEdit = computed(() => !props.state.chunked || props.state.isFullyLoaded)
+const canEdit = computed(() => {
+  if (props.state.file?.path?.startsWith('/__trash__/')) return false
+  if (props.state.file?._shareId && props.state.file?._permission !== 'write') return false
+  return !props.state.chunked || props.state.isFullyLoaded
+})
 
 watch(() => props.state.content !== null, (ready) => {
   if (ready && !props.state.editing) nextTick(() => { if (!cm.view.value) createEditor(true) })

@@ -404,7 +404,7 @@ onUnmounted(() => {
     >
       <component :is="icon" v-if="icon" class="plasma-titlebar-icon" width="20" height="20" />
       <span class="plasma-titlebar-title">{{ title }}</span>
-      <div class="plasma-titlebar-buttons">
+      <div class="plasma-titlebar-buttons" @mousedown.stop @touchstart.stop>
         <button class="plasma-btn plasma-btn-minimize" title="最小化" @click.stop="minimize">
           <svg width="18" height="18" viewBox="0 0 18 18"><polyline points="4,7 9,12 14,7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" /></svg>
         </button>

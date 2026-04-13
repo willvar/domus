@@ -134,9 +134,9 @@ type FileInfo struct {
 	MediaHeight   int       `json:"media_height,omitempty"`
 	MediaDuration float64   `json:"media_duration,omitempty"`
 	Status        string    `json:"status,omitempty"`
-	JobID         string    `json:"job_id,omitempty"`
-	JobProgress   float64   `json:"job_progress,omitempty"`
-	JobPhase      string    `json:"job_phase,omitempty"`
+	TaskID        string    `json:"task_id,omitempty"`
+	TaskProgress  float64   `json:"task_progress,omitempty"`
+	TaskPhase     string    `json:"task_phase,omitempty"`
 }
 
 // ListResult holds a paginated directory listing

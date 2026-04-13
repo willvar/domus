@@ -45,6 +45,9 @@ func (h *Handler) handleCreateShare(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	if isTrashAppPath(body.Path) {
+		return c.Status(400).JSON(fiber.Map{"error": "trash_not_shareable"})
+	}
 
 	session := c.Locals("session").(*model.Session)
 	fileRecord, err := h.Repos.Files.Get(session.UserID, resolvedPath)
@@ -150,7 +153,28 @@ func (h *Handler) handleListShares(c *fiber.Ctx) error {
 	if shares == nil {
 		shares = []model.Share{}
 	}
-	return c.JSON(shares)
+	views := make([]fiber.Map, 0, len(shares))
+	for _, share := range shares {
+		targetUsername := ""
+		if user, err := h.Repos.Users.GetByID(share.TargetUserID); err == nil {
+			targetUsername = user.Username
+		}
+		views = append(views, fiber.Map{
+			"id": share.ID,
+			"share_id": share.ShareID,
+			"owner_id": share.OwnerID,
+			"file_path": share.FilePath,
+			"file_name": share.FileName,
+			"file_size": share.FileSize,
+			"content_type": share.ContentType,
+			"target_user_id": share.TargetUserID,
+			"target_username": targetUsername,
+			"permission": share.Permission,
+			"expires_at": share.ExpiresAt,
+			"created_at": share.CreatedAt,
+		})
+	}
+	return c.JSON(views)
 }
 
 // handleDeleteShare revokes a share. Both owner and target user can delete.
@@ -180,16 +204,16 @@ func (h *Handler) handleDeleteShare(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
-// handleListSharedWithMe lists files shared with the current user.
+// handleListSharedWithMe lists files shared with the current user as file-like views.
 // GET /file/shared
 func (h *Handler) handleListSharedWithMe(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	shares, err := h.Repos.Shares.ListForUser(session.UserID)
+	shares, err := h.Repos.Shares.ListAsFiles(session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "list_failed"})
 	}
 	if shares == nil {
-		shares = []model.Share{}
+		shares = []model.ShareFileView{}
 	}
 	return c.JSON(shares)
 }

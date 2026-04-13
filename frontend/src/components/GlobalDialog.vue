@@ -85,6 +85,7 @@ function formatSize(bytes: number | undefined) {
   <Modal
     v-if="dialogState?.type !== 'duplicate'"
     :show="visible"
+    :z-index="6000"
     preset="dialog"
     :title="dialogState?.title ?? ''"
     :positive-text="dialogState?.positiveText || t('dialog.ok')"
@@ -112,6 +113,7 @@ function formatSize(bytes: number | undefined) {
   <Modal
     v-else
     :show="visible"
+    :z-index="6000"
     @close="handleCancel"
     @mask-click="handleCancel"
   >

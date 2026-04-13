@@ -149,10 +149,10 @@ const columns = computed(() => [
           ? h(InlineRename, { file: row })
           : h('span', { class: 'truncate' }, row.name),
       ]
-      if (status === 'processing' && row.job_phase) {
-        const pct = row.job_progress != null ? Math.round(row.job_progress * 100) : 0
-        const phaseText = t(`jobs.phase_${row.job_phase}`) || row.job_phase
-        children.push(h('span', { class: 'file-status-badge badge-processing' }, `${phaseText} ${pct}%`))
+      if (status !== 'ready' && row.task_phase) {
+        const pct = row.task_progress != null ? Math.round(row.task_progress * 100) : 0
+        const phaseText = t(`tasks.phase_${row.task_phase}`) || row.task_phase
+        children.push(h('span', { class: `file-status-badge badge-${status}` }, `${phaseText} ${pct}%`))
       } else if (status !== 'ready') {
         children.push(h('span', { class: `file-status-badge badge-${status}` }, t(`status.badge_${status}`)))
       }
@@ -180,10 +180,10 @@ function getRowTouch(row: any) {
   if (!rowTouchCache.has(row.path)) {
     rowTouchCache.set(row.path, useTouchHandlers({
       onDoubleTap: () => {
-        if (fs.isTrash) return
+        const fileName = row._originalName || row.name
         if (row.is_dir) fs.navigate(row.path)
-        else if (fs.getViewerType(row.name)) fs.openViewer(row)
-        else fs.downloadFile(row.path)
+        else if (fs.getViewerType(fileName)) fs.openViewer(row)
+        else fs.downloadFile(row._shareId ? row : row.path)
       },
       onLongPress: (e: TouchEvent) => {
         const t = e.touches[0]
@@ -200,10 +200,10 @@ const rowProps = (row: any) => {
     class: fs.selectedFiles.includes(row.path) ? 'row-selected' : '',
     onClick: (e: MouseEvent) => fs.selectFile(row.path, e),
     onDblclick: () => {
-      if (fs.isTrash) return
+      const fileName = row._originalName || row.name
       if (row.is_dir) fs.navigate(row.path)
-      else if (fs.getViewerType(row.name)) fs.openViewer(row)
-      else fs.downloadFile(row.path)
+      else if (fs.getViewerType(fileName)) fs.openViewer(row)
+      else fs.downloadFile(row._shareId ? row : row.path)
     },
     onContextmenu: (e: MouseEvent) => {
       e.stopPropagation()
@@ -261,12 +261,13 @@ function handleSearchResultClick(item: any) {
 
 function handleSearchResultDblClick(item: any) {
   fs.exitSearch()
+  const fileName = item._originalName || item.name
   if (item.is_dir) {
     fs.navigate(item.path)
-  } else if (fs.getViewerType(item.name)) {
+  } else if (fs.getViewerType(fileName)) {
     fs.openViewer(item)
   } else {
-    fs.downloadFile(item.path)
+    fs.downloadFile(item._shareId ? item : item.path)
   }
 }
 </script>

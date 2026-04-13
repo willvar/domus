@@ -36,12 +36,20 @@ const options = computed(() => {
 
   if (fs.isTrash) {
     if (targetFile.value) {
+      items.push({ label: t('menu.open'), key: 'open' })
+      if (!targetFile.value.is_dir) {
+        items.push({ label: t('menu.download'), key: 'download' })
+      }
+      items.push({ type: 'divider' })
       items.push({ label: t('menu.restore'), key: 'restore' })
       items.push({ label: t('menu.permanent_delete'), key: 'delete' })
     } else {
-      items.push({ label: t('menu.empty_trash'), key: 'empty_trash' })
-      items.push({ type: 'divider' })
+      if (fs.isTrashRoot) {
+        items.push({ label: t('menu.empty_trash'), key: 'empty_trash' })
+        items.push({ type: 'divider' })
+      }
       items.push({ label: t('menu.refresh'), key: 'refresh' })
+      items.push({ label: t('menu.select_all'), key: 'selectall' })
     }
     return items
   }

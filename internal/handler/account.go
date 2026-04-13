@@ -19,6 +19,24 @@ func isValidEmail(email string) bool {
 	return err == nil && a.Address == email
 }
 
+func (h *Handler) handleStorageUsage(c *fiber.Ctx) error {
+	session := c.Locals("session").(*model.Session)
+	user, err := h.Repos.Users.GetByID(session.UserID)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
+	}
+
+	size, count, err := h.Store.GetTotalSize(user.Username + "/")
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	}
+
+	return c.JSON(fiber.Map{
+		"size":  size,
+		"count": count,
+	})
+}
+
 // handleSecurityStatus returns the user's current security configuration.
 func (h *Handler) handleSecurityStatus(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
@@ -33,6 +51,22 @@ func (h *Handler) handleSecurityStatus(c *fiber.Ctx) error {
 		"totp_enabled": user.TOTPEnabled,
 		"smtp_enabled": h.Email.Configured(),
 	})
+}
+
+func (h *Handler) handleUpdateDisplayName(c *fiber.Ctx) error {
+	var body struct {
+		DisplayName string `json:"display_name"`
+	}
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	}
+
+	session := c.Locals("session").(*model.Session)
+	if err := h.Repos.Users.UpdateDisplayName(session.UserID, body.DisplayName); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "update_failed"})
+	}
+
+	return c.JSON(fiber.Map{"ok": true})
 }
 
 // handleBindEmail sends a verification code to the provided email address.

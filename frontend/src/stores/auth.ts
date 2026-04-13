@@ -12,7 +12,9 @@ export const useAuthStore = defineStore('auth', () => {
   const user: Ref<User | null> = ref(null)
   const loading: Ref<boolean> = ref(true)
   const needsSetup: Ref<boolean> = ref(false)
+  const initialized: Ref<boolean> = ref(false)
   const ws = useWebSocket()
+  let authInitPromise: Promise<void> | null = null
 
   const isLoggedIn: ComputedRef<boolean> = computed(() => !!user.value)
   const isRoot: ComputedRef<boolean> = computed(() => user.value?.role === 'root')
@@ -30,7 +32,18 @@ export const useAuthStore = defineStore('auth', () => {
       user.value = null
     } finally {
       loading.value = false
+      initialized.value = true
     }
+  }
+
+  async function ensureAuthInitialized(): Promise<void> {
+    if (initialized.value && !loading.value) return
+    if (!authInitPromise) {
+      authInitPromise = checkAuth().finally(() => {
+        authInitPromise = null
+      })
+    }
+    await authInitPromise
   }
 
   // POST /auth/verify — returns {token, methods}
@@ -78,6 +91,8 @@ export const useAuthStore = defineStore('auth', () => {
     ws.disconnect()
     useWindowManagerStore().clearUser()
     user.value = null
+    loading.value = false
+    initialized.value = true
   }
 
   // Listen for auth expiry events (from HTTP 401 interceptor)
@@ -94,6 +109,7 @@ export const useAuthStore = defineStore('auth', () => {
     isRoot,
     username,
     checkAuth,
+    ensureAuthInitialized,
     verify,
     login,
     logout,

@@ -41,6 +41,8 @@ export { default as IconLanguageJavascript } from '~icons/mdi/language-javascrip
 export { default as IconLanguageMarkdownOutline } from '~icons/mdi/language-markdown-outline'
 export { default as IconLanguagePython } from '~icons/mdi/language-python'
 export { default as IconMagnify } from '~icons/mdi/magnify'
+export { default as IconMagnifyMinusOutline } from '~icons/mdi/magnify-minus-outline'
+export { default as IconMagnifyPlusOutline } from '~icons/mdi/magnify-plus-outline'
 export { default as IconMenu } from '~icons/mdi/menu'
 export { default as IconPackageVariantClosed } from '~icons/mdi/package-variant-closed'
 export { default as IconPencil } from '~icons/mdi/pencil'

@@ -1,4 +1,5 @@
 import type { FunctionalComponent, SVGAttributes } from 'vue'
+import api from './useApi'
 import { useWebSocket } from './useWebSocket'
 import { usePreferences } from './usePreferences'
 import { getFileIcon } from './useFileIcon'
@@ -101,8 +102,7 @@ function scheduleSave(wm: WindowManagerLike, fs: FileSystemLike): void {
   if (_saveTimer) clearTimeout(_saveTimer)
   _saveTimer = setTimeout(() => {
     const state: WorkspaceSnapshot = buildSnapshot(wm, fs)
-    const ws = useWebSocket()
-    ws.request('workspace.save', { state }).catch(() => {})
+    api.put('/workspace/', { state }).catch(() => {})
   }, 2000)
 }
 
@@ -144,9 +144,8 @@ function buildSnapshot(wm: WindowManagerLike, fs: FileSystemLike): WorkspaceSnap
  */
 async function load(): Promise<WorkspaceSnapshot | null> {
   if (!isEnabled()) return null
-  const ws = useWebSocket()
   try {
-    const res = await ws.request('workspace.load') as { state?: WorkspaceSnapshot | string } | undefined
+    const { data: res } = await api.get<{ state?: WorkspaceSnapshot | string }>('/workspace/')
     if (res?.state && typeof res.state === 'object') {
       return res.state as WorkspaceSnapshot
     }
@@ -162,9 +161,8 @@ async function load(): Promise<WorkspaceSnapshot | null> {
  * Clear saved workspace state (on explicit logout).
  */
 async function clear(): Promise<void> {
-  const ws = useWebSocket()
   try {
-    await ws.request('workspace.clear')
+    await api.delete('/workspace/')
   } catch { /* silent */ }
 }
 
@@ -327,10 +325,6 @@ function setupPushHandler(wm: WindowManagerLike, fs: FileSystemLike): void {
   })
 }
 
-export function isRemote(): boolean {
-  return _isRemote
-}
-
 export function useWorkspaceSync(): {
   emitEvent: (event: WorkspaceEvent) => void
   scheduleSave: (wm: WindowManagerLike, fs: FileSystemLike) => void
@@ -339,7 +333,6 @@ export function useWorkspaceSync(): {
   restoreWindows: (wm: WindowManagerLike, serializedWindows: SerializedWindow[]) => void
   setupPushHandler: (wm: WindowManagerLike, fs: FileSystemLike) => void
   resolveIcon: (id: string, type: string) => FunctionalComponent<SVGAttributes>
-  isRemote: () => boolean
 } {
   return {
     emitEvent,
@@ -349,6 +342,5 @@ export function useWorkspaceSync(): {
     restoreWindows,
     setupPushHandler,
     resolveIcon,
-    isRemote,
   }
 }

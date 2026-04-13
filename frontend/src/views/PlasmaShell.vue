@@ -3,8 +3,7 @@ import { ref, h, provide, watch, defineAsyncComponent } from 'vue'
 import TranscodeDialog from '../components/TranscodeDialog.vue'
 import ShareDialog from '../components/ShareDialog.vue'
 import WallpaperDialog from '../components/plasma/WallpaperDialog.vue'
-import JobsPanel from '../components/plasma/systemtray/JobsPanel.vue'
-import PendingOpsPanel from '../components/plasma/systemtray/PendingOpsPanel.vue'
+import ActivityPanel from '../components/plasma/systemtray/ActivityPanel.vue'
 import PreferencesPanel from '../components/plasma/systemtray/PreferencesPanel.vue'
 import { useAuthStore } from '../stores/auth'
 import { useFileSystemStore } from '../stores/fileSystem'
@@ -161,8 +160,7 @@ if (auth.needsSetup) {
     <ContextMenu />
     <TranscodeDialog ref="transcodeDialogRef" />
     <ShareDialog :show="shareDialogShow" :file-path="shareDialogPath" @close="shareDialogShow = false" />
-    <JobsPanel />
-    <PendingOpsPanel />
+    <ActivityPanel />
     <GlobalDialog />
     <ProfileApp />
     <PreferencesPanel v-model:show="showPrefs" />

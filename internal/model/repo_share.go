@@ -100,7 +100,7 @@ func (r *gormShareRepo) MoveByPrefix(ownerID, oldPrefix, newPrefix string) error
 
 func (r *gormShareRepo) GetForUser(filePath, targetUserID string) (*Share, error) {
 	var s Share
-	if err := r.db.Where("file_path = ? AND share_type = 'user' AND target_user_id = ?", filePath, targetUserID).
+	if err := r.db.Where("file_path = ? AND target_user_id = ?", filePath, targetUserID).
 		First(&s).Error; err != nil {
 		return nil, err
 	}

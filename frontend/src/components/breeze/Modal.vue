@@ -9,6 +9,7 @@ const props = defineProps({
   positiveText: { type: String, default: '' },
   positiveType: { type: String, default: 'primary' },
   negativeText: { type: String, default: '' },
+  zIndex: { type: Number, default: null },
 })
 
 const emit = defineEmits(['update:show', 'positive-click', 'negative-click', 'close', 'mask-click'])
@@ -41,7 +42,7 @@ watch(() => props.show, (v) => {
 <template>
   <Teleport to="body">
     <Transition name="breeze-modal">
-      <div v-if="show" class="breeze-modal-mask" @click.self="onMaskClick">
+      <div v-if="show" class="breeze-modal-mask" :style="props.zIndex != null ? { zIndex: String(props.zIndex) } : undefined" @click.self="onMaskClick">
         <div v-if="preset === 'dialog'" class="breeze-modal-dialog" style="width: 400px; max-width: 95vw">
           <div class="breeze-modal-dialog__header">
             <span class="breeze-modal-dialog__title">{{ title }}</span>

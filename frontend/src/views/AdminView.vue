@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, h } from 'vue'
 import { useRouter } from 'vue-router'
-import { useWebSocket } from '../composables/useWebSocket'
 import { useI18n } from '../composables/useI18n'
 import { useMessage } from '../composables/useMessage'
 import { showPrompt, showConfirm } from '../composables/useNativeDialog'
@@ -10,7 +9,6 @@ import dayjs from 'dayjs'
 import { Button, Modal, Form, FormItem, Input, Select, DataTable } from '../barrels/breeze'
 
 const router = useRouter()
-const ws = useWebSocket()
 const { t } = useI18n()
 const message = useMessage()
 
@@ -81,7 +79,7 @@ function openEdit(user: any) {
 async function loadUsers() {
   loading.value = true
   try {
-    const data = await ws.request('admin.listUsers')
+    const { data } = await api.get('/audit/user/')
     users.value = Array.isArray(data) ? data : []
   } catch {
     message.error('Failed to load users')
@@ -92,7 +90,7 @@ async function loadUsers() {
 
 async function createUser() {
   try {
-    await ws.request('admin.createUser', newUser.value)
+    await api.post('/audit/user/', newUser.value)
     message.success(t('admin.user_created'))
     showCreate.value = false
     newUser.value = { username: '', password: '', role: 'user' }
@@ -105,8 +103,7 @@ async function createUser() {
 async function saveEdit() {
   if (!editingUser.value) return
   try {
-    await ws.request('admin.updateUser', {
-      id: editingUser.value.id,
+    await api.put('/audit/user/' + editingUser.value.id, {
       role: editingUser.value.role,
     })
     message.success(t('admin.user_updated'))
@@ -122,7 +119,7 @@ async function resetPassword(user: any) {
   const password = await showPrompt(t('admin.new_password', { name: user.username }))
   if (!password) return
   try {
-    await ws.request('admin.updateUser', { id: user.id, password })
+    await api.put('/audit/user/' + user.id, { password })
     message.success(t('admin.pwd_updated'))
   } catch {
     message.error('Failed to reset password')
@@ -132,7 +129,7 @@ async function resetPassword(user: any) {
 async function deleteUser(user: any) {
   if (!await showConfirm(t('admin.confirm_delete', { name: user.username }))) return
   try {
-    await ws.request('admin.deleteUser', { id: user.id })
+    await api.delete('/audit/user/' + user.id)
     message.success(t('admin.user_deleted'))
     await loadUsers()
   } catch (e: any) {
@@ -143,7 +140,7 @@ async function deleteUser(user: any) {
 async function resetOTP(user: any) {
   if (!await showConfirm(t('admin.confirm_reset_otp', { name: user.username }))) return
   try {
-    await ws.request('admin.resetUserOTP', { id: user.id })
+    await api.delete('/audit/user/' + user.id + '/otp')
     message.success(t('admin.otp_reset'))
     await loadUsers()
   } catch {
@@ -154,7 +151,7 @@ async function resetOTP(user: any) {
 async function resetEmail(user: any) {
   if (!await showConfirm(t('admin.confirm_reset_email', { name: user.username }))) return
   try {
-    await ws.request('admin.resetUserEmail', { id: user.id })
+    await api.delete('/audit/user/' + user.id + '/email')
     message.success(t('admin.email_reset'))
     await loadUsers()
   } catch {
@@ -169,9 +166,12 @@ async function checkOSSCors() {
   try {
     const res = await api.get<{ put_url: string; delete_url: string }>('/admin/oss/cors-check')
     const { put_url, delete_url } = res.data
-    await fetch(put_url, { method: 'PUT', body: new Blob(['1']) })
+    const putRes = await fetch(put_url, { method: 'PUT', body: new Blob(['1']) })
+    if (!putRes.ok) throw new Error('oss_cors_probe_failed')
     // Clean up probe object
-    fetch(delete_url, { method: 'DELETE' }).catch(() => {})
+    fetch(delete_url, { method: 'DELETE' }).then(res => {
+      if (!res.ok) console.warn('OSS CORS cleanup failed:', res.status)
+    }).catch(() => {})
     corsOk.value = true
   } catch {
     corsOk.value = false

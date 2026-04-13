@@ -126,6 +126,8 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 		FileSize         int64  `json:"file_size"`
 		ContentType      string `json:"content_type"`
 		ConflictStrategy string `json:"conflict_strategy"`
+		ClientInstanceID string `json:"client_instance_id"`
+		Internal         bool   `json:"internal"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
@@ -201,13 +203,18 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 
 	// Task + FileRecord
 	uploadID := uuid.New().String()
-	taskID := uuid.New().String()
-	if err := h.Repos.Tasks.Create(session.UserID, taskID, "upload", fileName); err != nil {
-		_ = h.Store.AbortMultipartUpload(resolvedPath, ossUploadID)
-		return c.Status(500).JSON(fiber.Map{"error": "create_task_failed"})
+	taskID := ""
+	if !body.Internal {
+		taskID = uuid.New().String()
+		if err := h.Repos.Tasks.Create(session.UserID, taskID, "upload", fileName); err != nil {
+			_ = h.Store.AbortMultipartUpload(resolvedPath, ossUploadID)
+			return c.Status(500).JSON(fiber.Map{"error": "create_task_failed"})
+		}
 	}
-	if err := h.Repos.Files.CreateUpload(session.UserID, uploadID, taskID, ossUploadID, resolvedPath, fileName, body.FileSize); err != nil {
-		_ = h.Repos.Tasks.Delete(taskID)
+	if err := h.Repos.Files.CreateUpload(session.UserID, uploadID, taskID, ossUploadID, resolvedPath, fileName, body.FileSize, body.ClientInstanceID); err != nil {
+		if taskID != "" {
+			_ = h.Repos.Tasks.Delete(taskID)
+		}
 		_ = h.Store.AbortMultipartUpload(resolvedPath, ossUploadID)
 		return c.Status(500).JSON(fiber.Map{"error": "record_upload_failed"})
 	}
@@ -255,6 +262,7 @@ func (h *Handler) handleUploadPresign(c *fiber.Ctx) error {
 	if record.Status != "uploading" {
 		return c.Status(409).JSON(fiber.Map{"error": "upload_not_active"})
 	}
+	_ = h.Repos.Files.TouchUpload(uploadID, time.Now())
 
 	type partURL struct {
 		PartNumber   int    `json:"part_number"`
@@ -301,27 +309,47 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}
 
-	// Complete the multipart upload on OSS
-	if record.OSSUploadID != "" && len(body.Parts) > 0 {
+	expectedEncryptedSize := encryptedFileSize(record.Size)
+	if body.EncryptedSize <= 0 || body.EncryptedSize != expectedEncryptedSize {
+		return c.Status(400).JSON(fiber.Map{
+			"error":         "invalid_encrypted_size",
+			"expected_size": expectedEncryptedSize,
+			"actual_size":   body.EncryptedSize,
+		})
+	}
+
+	expectedPartSize := config.UploadChunkSize
+	expectedTotalParts := int((expectedEncryptedSize + expectedPartSize - 1) / expectedPartSize)
+	if expectedTotalParts < 1 {
+		expectedTotalParts = 1
+	}
+	if len(body.Parts) != expectedTotalParts {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_parts"})
+	}
+	for i, part := range body.Parts {
+		if part.PartNumber != i+1 || strings.TrimSpace(part.ETag) == "" {
+			return c.Status(400).JSON(fiber.Map{"error": "invalid_parts"})
+		}
+	}
+
+	if record.OSSUploadID != "" {
 		if err := h.Store.CompleteMultipartUpload(record.Path, record.OSSUploadID, body.Parts); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "complete_multipart_failed"})
 		}
 	}
 
-	// Verify file on OSS
 	head, err := h.Store.HeadObject(record.Path)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "verify_failed"})
 	}
-	if body.EncryptedSize > 0 && head.Size != body.EncryptedSize {
+	if head.Size != expectedEncryptedSize {
 		return c.Status(400).JSON(fiber.Map{
 			"error":         "size_mismatch",
-			"expected_size": body.EncryptedSize,
+			"expected_size": expectedEncryptedSize,
 			"actual_size":   head.Size,
 		})
 	}
 
-	// Wrap DEK server-side (KEK never leaves the server)
 	var wrappedDEKHex string
 	if body.DEK != "" {
 		dekBytes, err := hex.DecodeString(body.DEK)
@@ -339,18 +367,18 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		wrappedDEKHex = hex.EncodeToString(wrapped)
 	}
 
-	// Finalize file record
-	ct := body.ContentHash // reuse var name for content type
-	_ = ct
 	contentType := mime.TypeByExtension(filepath.Ext(record.Name))
-	_ = h.Repos.Files.Upsert(
+	if err := h.Repos.Files.Upsert(
 		session.UserID, record.Path, record.Name, false,
 		record.Size, contentType, body.ContentHash,
 		model.UpsertFileOpts{WrappedDEK: wrappedDEKHex},
-	)
-	_ = h.Repos.Files.UpdateStatus(body.UploadID, "ready")
+	); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "record_finalize_failed"})
+	}
+	if err := h.Repos.Files.UpdateStatus(body.UploadID, "ready"); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "record_status_failed"})
+	}
 
-	// Link thumbnail if provided
 	if body.ThumbnailUploadID != "" {
 		thumbRecord, err := h.Repos.Files.GetUpload(session.UserID, body.ThumbnailUploadID)
 		if err == nil && thumbRecord.Status == "ready" {
@@ -368,7 +396,6 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		)
 	}
 
-	// Full-text search index
 	if body.SearchText != "" {
 		h.indexFile(session.UserID, record.Path, record.Name, "", false)
 		_ = h.Repos.Files.UpdateSearchVector(session.UserID, record.Path, record.Name+"\n"+body.SearchText)
@@ -376,17 +403,14 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		h.indexFileName(session.UserID, record.Path, record.Name)
 	}
 
-	// Invalidate avatar cache if this upload is an avatar
 	if strings.HasSuffix(record.Path, "/.user/avatar.webp") {
 		h.InvalidateAvatarCache(session.Username)
 	}
 
-	// Complete task
 	if record.TaskID != "" {
 		_ = h.Repos.Tasks.UpdateStatus(record.TaskID, "completed")
 	}
 
-	// Notify
 	if h.Hub != nil {
 		parent := parentDirOf(record.Path)
 		if parent != "" {
@@ -399,6 +423,90 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true})
 }
 
+func (h *Handler) handleUploadHeartbeat(c *fiber.Ctx) error {
+	var body struct {
+		UploadID string `json:"upload_id"`
+	}
+	if err := c.BodyParser(&body); err != nil || strings.TrimSpace(body.UploadID) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "upload_id required"})
+	}
+	if err := h.Repos.Files.TouchUpload(strings.TrimSpace(body.UploadID), time.Now()); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "heartbeat_failed"})
+	}
+	return c.JSON(fiber.Map{"ok": true})
+}
+
+func (h *Handler) handleUploadCancel(c *fiber.Ctx) error {
+	var body struct {
+		UploadID string `json:"upload_id"`
+		TaskID   string `json:"task_id"`
+		Reason   string `json:"reason"`
+		Status   string `json:"status"`
+	}
+	if err := c.BodyParser(&body); err != nil || strings.TrimSpace(body.UploadID) == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "upload_id required"})
+	}
+
+	uploadID := strings.TrimSpace(body.UploadID)
+	taskID := strings.TrimSpace(body.TaskID)
+	reason := strings.TrimSpace(body.Reason)
+	status := strings.TrimSpace(body.Status)
+	if status != "failed" {
+		status = "cancelled"
+	}
+	session := c.Locals("session").(*model.Session)
+	record, err := h.Repos.Files.GetUpload(session.UserID, uploadID)
+	if err != nil {
+		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
+	}
+	if record.OSSUploadID != "" {
+		_ = h.Store.AbortMultipartUpload(record.Path, record.OSSUploadID)
+	}
+	_ = h.Store.DeleteObject(record.Path)
+	_ = h.Repos.Files.Delete(session.UserID, record.Path)
+	if taskID == "" {
+		taskID = record.TaskID
+	}
+	if taskID != "" {
+		_ = h.Repos.Tasks.UpdateStatus(taskID, status)
+	}
+	if h.Hub != nil {
+		h.notifyParentDir(session.Username, record.Path)
+	}
+	if reason != "" {
+		h.Audit.LogFromCtx(c, "file_upload_abort", record.Path, reason, status, 0)
+	}
+	return c.JSON(fiber.Map{"ok": true})
+}
+
+func (h *Handler) handleUploadCleanup(c *fiber.Ctx) error {
+	var body struct {
+		ClientInstanceID string `json:"client_instance_id"`
+	}
+	_ = c.BodyParser(&body)
+	session := c.Locals("session").(*model.Session)
+	clientInstanceID := strings.TrimSpace(body.ClientInstanceID)
+	cutoff := time.Now().Add(-15 * time.Second)
+	records, err := h.Repos.Files.CancelUploadsForOtherInstances(session.UserID, clientInstanceID, cutoff)
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "cleanup_failed"})
+	}
+	for _, record := range records {
+		if record.OSSUploadID != "" {
+			_ = h.Store.AbortMultipartUpload(record.Path, record.OSSUploadID)
+		}
+		_ = h.Store.DeleteObject(record.Path)
+		_ = h.Repos.Files.Delete(session.UserID, record.Path)
+		if record.TaskID != "" {
+			_ = h.Repos.Tasks.UpdateStatus(record.TaskID, "cancelled")
+		}
+		if h.Hub != nil {
+			h.notifyParentDir(session.Username, record.Path)
+		}
+	}
+	return c.JSON(fiber.Map{"ok": true, "count": len(records)})
+}
+
 // ── abort ────────────────────────────────────────────────────────────────────
 
 func (h *Handler) handleUploadAbort(c *fiber.Ctx) error {
@@ -407,6 +515,11 @@ func (h *Handler) handleUploadAbort(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "upload_id required"})
 	}
 	taskID := c.Query("task_id", "")
+	status := c.Query("status", "cancelled")
+	if status != "cancelled" && status != "failed" {
+		status = "cancelled"
+	}
+	reason := strings.TrimSpace(c.Query("reason", ""))
 
 	session := c.Locals("session").(*model.Session)
 	record, err := h.Repos.Files.GetUpload(session.UserID, uploadID)
@@ -426,7 +539,13 @@ func (h *Handler) handleUploadAbort(c *fiber.Ctx) error {
 		taskID = record.TaskID
 	}
 	if taskID != "" {
-		_ = h.Repos.Tasks.UpdateStatus(taskID, "cancelled")
+		_ = h.Repos.Tasks.UpdateStatus(taskID, status)
+	}
+	if h.Hub != nil {
+		h.notifyParentDir(session.Username, record.Path)
+	}
+	if reason != "" {
+		h.Audit.LogFromCtx(c, "file_upload_abort", record.Path, reason, status, 0)
 	}
 
 	return c.JSON(fiber.Map{"ok": true})

@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -23,11 +22,12 @@ func seedUserDeleteFixture(t *testing.T, repos *model.Repos, victim, other, targ
 	t.Helper()
 
 	filePath := victim.Username + "/home/" + victim.Username + "/doc.txt"
+	trashPath := victim.Username + "/__trash__/home/" + victim.Username + "/doc.txt"
 	if err := repos.Files.Upsert(victim.ID, filePath, "doc.txt", false, 123, "text/plain", "hash"); err != nil {
 		t.Fatalf("upsert file: %v", err)
 	}
-	if err := repos.Trash.Create(victim.ID, filePath, victim.Username+"/.trash/doc.txt", 123, false); err != nil {
-		t.Fatalf("create trash record: %v", err)
+	if err := repos.Files.Upsert(victim.ID, trashPath, "doc.txt", false, 123, "text/plain", "hash"); err != nil {
+		t.Fatalf("upsert trash file: %v", err)
 	}
 	if _, err := repos.Jobs.Create(victim.ID, "job-clean-"+victim.Username, "transcode", "{}"); err != nil {
 		t.Fatalf("create job: %v", err)
@@ -100,12 +100,8 @@ func assertUserDeletedCompletely(t *testing.T, repos *model.Repos, victim *model
 	if _, err := repos.Files.Get(victim.ID, fx.filePath); err == nil {
 		t.Fatal("expected file record to be deleted")
 	}
-	trash, err := repos.Trash.List(victim.ID)
-	if err != nil {
-		t.Fatalf("list trash: %v", err)
-	}
-	if len(trash) != 0 {
-		t.Fatalf("expected no trash records, got %d", len(trash))
+	if _, err := repos.Files.Get(victim.ID, victim.Username+"/__trash__/home/"+victim.Username+"/doc.txt"); err == nil {
+		t.Fatal("expected trash file record to be deleted")
 	}
 	jobs, err := repos.Jobs.ListActive(victim.ID)
 	if err != nil {
@@ -180,53 +176,6 @@ func TestDeleteUserHTTPCleansRelatedData(t *testing.T) {
 	assertUserDeletedCompletely(t, repos, victim, fx)
 }
 
-func TestDeleteUserWSCleansRelatedData(t *testing.T) {
-	repos := model.NewMemRepos(nil)
-
-	audit := model.NewAuditWorker(nil)
-
-	h := &Handler{
-		Repos: repos,
-		Store: &MockFileStore{},
-		Audit: audit,
-		Hub:   ws.NewHub(),
-	}
-
-	admin, _ := repos.Users.Create("admin-ws", "pass", "root", "")
-	victim, _ := repos.Users.Create("victim-ws", "pass", "user", "")
-	other, _ := repos.Users.Create("other-ws", "pass", "user", "")
-	target, _ := repos.Users.Create("target-ws", "pass", "user", "")
-	fx := seedUserDeleteFixture(t, repos, victim, other, target)
-
-	victimSessionID, err := repos.Sessions.Create(victim.ID, victim.Username, victim.Role)
-	if err != nil {
-		t.Fatalf("create victim session: %v", err)
-	}
-
-	payload, _ := json.Marshal(map[string]string{"id": victim.ID})
-	conn := &ws.Conn{
-		Session: &model.Session{
-			UserID:   admin.ID,
-			Username: admin.Username,
-			Role:     "root",
-		},
-	}
-
-	result, err := h.wsAdminDeleteUser(conn, "", payload)
-	if err != nil {
-		t.Fatalf("wsAdminDeleteUser: %v", err)
-	}
-	resultMap, ok := result.(map[string]any)
-	if !ok || resultMap["ok"] != true {
-		t.Fatalf("expected ok response, got %#v", result)
-	}
-	if repos.Sessions.Get(victimSessionID) != nil {
-		t.Fatal("expected victim sessions to be deleted")
-	}
-
-	assertUserDeletedCompletely(t, repos, victim, fx)
-}
-
 func TestDeleteUserCompletelyIgnoresStorageCleanupError(t *testing.T) {
 	repos := model.NewMemRepos(nil)
 
@@ -255,44 +204,5 @@ func TestDeleteUserCompletelyIgnoresStorageCleanupError(t *testing.T) {
 	}
 	if _, err := repos.Users.GetByID(victim.ID); err == nil {
 		t.Fatal("expected user to be deleted even when storage cleanup fails")
-	}
-}
-
-func TestDeleteLastRootRejectedWS(t *testing.T) {
-	repos := model.NewMemRepos(nil)
-
-	audit := model.NewAuditWorker(nil)
-
-	h := &Handler{
-		Repos: repos,
-		Store: &MockFileStore{},
-		Audit: audit,
-		Hub:   ws.NewHub(),
-	}
-
-	lastRoot, _ := repos.Users.Create("last-root", "pass", "root", "")
-	payload, _ := json.Marshal(map[string]string{"id": lastRoot.ID})
-	conn := &ws.Conn{
-		Session: &model.Session{
-			UserID:   "external-admin",
-			Username: "external-admin",
-			Role:     "root",
-		},
-	}
-
-	_, err := h.wsAdminDeleteUser(conn, "", payload)
-	if err == nil {
-		t.Fatal("expected cannot_delete_last_root error")
-	}
-	wsErr, ok := err.(*wsError)
-	if !ok {
-		t.Fatalf("expected wsError, got %T", err)
-	}
-	if wsErr.Code != "cannot_delete_last_root" {
-		t.Fatalf("expected cannot_delete_last_root, got %s", wsErr.Code)
-	}
-
-	if _, err := repos.Users.GetByID(lastRoot.ID); err != nil {
-		t.Fatalf("expected last root to remain, got err: %v", err)
 	}
 }

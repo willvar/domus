@@ -2,16 +2,18 @@
 import { computed, ref, watch, nextTick, onUnmounted } from 'vue'
 import { useWindowManagerStore } from '../../stores/windowManager'
 import { useAuthStore } from '../../stores/auth'
-import { useJobsStore } from '../../stores/jobs'
+import { useTasksStore } from '../../stores/tasks'
+import { useActivityStore } from '../../stores/activity'
 import { useUploadStore } from '../../stores/upload'
 import { usePendingOpsStore } from '../../stores/pendingOps'
 import { useI18n } from '../../composables/useI18n'
 import { consumeContextMenuSuppress, suppressNextContextMenu } from '../../composables/useContextMenu'
-import { IconViewGrid as IconGrid, IconRefresh as IconSync, IconAccount, IconCogOutline as IconCog } from '../../barrels/icons'
+import { IconViewListOutline as IconActivity, IconAccount, IconCogOutline as IconCog } from '../../barrels/icons'
 
 const wm = useWindowManagerStore()
 const auth = useAuthStore()
-const jobsStore = useJobsStore()
+const tasksStore = useTasksStore()
+const activityStore = useActivityStore()
 const uploadStore = useUploadStore()
 const pendingOps = usePendingOpsStore()
 const { t, locale, setLocale } = useI18n()
@@ -183,19 +185,9 @@ onUnmounted(() => {
 })
 
 function toggleTasks() {
-  const opening = !jobsStore.panelOpen
-  jobsStore.panelOpen = opening
+  const opening = !activityStore.open
+  activityStore.toggle()
   if (opening) {
-    pendingOps.showPanel = false
-    emit('update:showPrefs', false)
-  }
-}
-
-function togglePending() {
-  const opening = !pendingOps.showPanel
-  pendingOps.showPanel = opening
-  if (opening) {
-    jobsStore.panelOpen = false
     emit('update:showPrefs', false)
   }
 }
@@ -204,12 +196,16 @@ function togglePrefs() {
   const opening = !props.showPrefs
   emit('update:showPrefs', opening)
   if (opening) {
-    jobsStore.panelOpen = false
-    pendingOps.showPanel = false
+    activityStore.close()
   }
 }
 
-const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.activeUploads.length)
+const activeTaskIds = computed(() => new Set(uploadStore.uploads.map(u => u.taskId).filter(Boolean)))
+const activeCount = computed(() =>
+  uploadStore.activeUploads.length +
+  tasksStore.activeTasks.filter(task => !activeTaskIds.value.has(task.task_id)).length
+)
+const activityCount = computed(() => activeCount.value + pendingOps.pendingCount)
 </script>
 
 <template>
@@ -233,22 +229,16 @@ const activeCount = computed(() => jobsStore.activeTasks.length + uploadStore.ac
     <div class="taskbar-right">
       <button
         class="taskbar-tray-btn"
-        :class="{ 'taskbar-tray-btn--active': jobsStore.panelOpen }"
-        :title="t('jobs.title')"
+        :class="{ 'taskbar-tray-btn--active': activityStore.open }"
+        :title="t('activity.title')"
         @click="toggleTasks"
       >
-        <IconGrid width="22" height="22" />
-        <span v-if="activeCount > 0" class="tray-badge">{{ activeCount }}</span>
-      </button>
-
-      <button
-        class="taskbar-tray-btn"
-        :class="{ 'taskbar-tray-btn--active': pendingOps.showPanel }"
-        :title="t('pending.title')"
-        @click="togglePending"
-      >
-        <IconSync width="22" height="22" />
-        <span v-if="pendingOps.pendingCount > 0" class="tray-badge tray-badge--warning">{{ pendingOps.pendingCount }}</span>
+        <IconActivity width="22" height="22" />
+        <span
+          v-if="activityCount > 0"
+          class="tray-badge"
+          :class="{ 'tray-badge--warning': pendingOps.pendingCount > 0 }"
+        >{{ activityCount }}</span>
       </button>
 
       <button

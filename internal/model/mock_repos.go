@@ -7,7 +7,6 @@ func MockRepos() *Repos {
 	return &Repos{
 		Users:     &MockUserRepo{},
 		Files:     &MockFileRepo{},
-		Trash:     &MockTrashRepo{},
 		Sessions:  &MockSessionRepo{},
 		Jobs:      &MockJobRepo{},
 		Tasks:     &MockTaskRepo{},
@@ -140,10 +139,13 @@ type MockFileRepo struct {
 	RebuildAllSearchVectorsFn func() (int64, error)
 	SearchFilesFn             func(userID, query string, limit int) ([]SearchFileResult, error)
 	HasFullTextSearchFn       func() bool
-	CreateUploadFn            func(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64) error
+	CreateUploadFn            func(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, clientInstanceID string) error
 	GetUploadFn               func(userID, uploadID string) (*FileRecord, error)
 	UpdateUploadPartsFn       func(uploadID, completedParts string) error
 	UpdateStatusFn            func(uploadID, status string) error
+	TouchUploadFn             func(uploadID string, seenAt time.Time) error
+	ListActiveUploadsFn       func(userID string) ([]FileRecord, error)
+	CancelUploadsForOtherInstancesFn func(userID, clientInstanceID string, cutoff time.Time) ([]FileRecord, error)
 	GetStaleUploadsFn         func(staleAfter time.Duration) ([]FileRecord, error)
 }
 
@@ -237,9 +239,9 @@ func (m *MockFileRepo) HasFullTextSearch() bool {
 	}
 	return false
 }
-func (m *MockFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64) error {
+func (m *MockFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, clientInstanceID string) error {
 	if m.CreateUploadFn != nil {
-		return m.CreateUploadFn(userID, uploadID, taskID, ossUploadID, path, name, fileSize)
+		return m.CreateUploadFn(userID, uploadID, taskID, ossUploadID, path, name, fileSize, clientInstanceID)
 	}
 	return nil
 }
@@ -261,52 +263,29 @@ func (m *MockFileRepo) UpdateStatus(uploadID, status string) error {
 	}
 	return nil
 }
+func (m *MockFileRepo) TouchUpload(uploadID string, seenAt time.Time) error {
+	if m.TouchUploadFn != nil {
+		return m.TouchUploadFn(uploadID, seenAt)
+	}
+	return nil
+}
+func (m *MockFileRepo) ListActiveUploads(userID string) ([]FileRecord, error) {
+	if m.ListActiveUploadsFn != nil {
+		return m.ListActiveUploadsFn(userID)
+	}
+	return []FileRecord{}, nil
+}
+func (m *MockFileRepo) CancelUploadsForOtherInstances(userID, clientInstanceID string, cutoff time.Time) ([]FileRecord, error) {
+	if m.CancelUploadsForOtherInstancesFn != nil {
+		return m.CancelUploadsForOtherInstancesFn(userID, clientInstanceID, cutoff)
+	}
+	return []FileRecord{}, nil
+}
 func (m *MockFileRepo) GetStaleUploads(staleAfter time.Duration) ([]FileRecord, error) {
 	if m.GetStaleUploadsFn != nil {
 		return m.GetStaleUploadsFn(staleAfter)
 	}
 	return []FileRecord{}, nil
-}
-
-// --- MockTrashRepo ---
-
-type MockTrashRepo struct {
-	CreateFn func(userID, originalPath, trashKey string, size int64, isDir bool) error
-	ListFn   func(userID string) ([]TrashItem, error)
-	GetFn    func(id int64, userID string) (*TrashItem, error)
-	DeleteFn func(id int64) error
-	ClearFn  func(userID string) ([]TrashItem, error)
-}
-
-func (m *MockTrashRepo) Create(userID, originalPath, trashKey string, size int64, isDir bool) error {
-	if m.CreateFn != nil {
-		return m.CreateFn(userID, originalPath, trashKey, size, isDir)
-	}
-	return nil
-}
-func (m *MockTrashRepo) List(userID string) ([]TrashItem, error) {
-	if m.ListFn != nil {
-		return m.ListFn(userID)
-	}
-	return []TrashItem{}, nil
-}
-func (m *MockTrashRepo) Get(id int64, userID string) (*TrashItem, error) {
-	if m.GetFn != nil {
-		return m.GetFn(id, userID)
-	}
-	return &TrashItem{ID: id, UserID: userID}, nil
-}
-func (m *MockTrashRepo) Delete(id int64) error {
-	if m.DeleteFn != nil {
-		return m.DeleteFn(id)
-	}
-	return nil
-}
-func (m *MockTrashRepo) Clear(userID string) ([]TrashItem, error) {
-	if m.ClearFn != nil {
-		return m.ClearFn(userID)
-	}
-	return []TrashItem{}, nil
 }
 
 // --- MockSessionRepo ---
@@ -366,7 +345,6 @@ type MockJobRepo struct {
 	CreateDirectFn      func(job *Job) error
 	GetByJobIDFn        func(jobID string) (*Job, error)
 	ListActiveFn        func(userID string) ([]Job, error)
-	ListActiveUploadsFn func(userID string) ([]Job, error)
 	ListRecentFn        func(userID string) ([]Job, error)
 	DeleteCompletedFn   func(userID string) error
 	UpdateStatusFn      func(jobID, status string) error
@@ -400,12 +378,6 @@ func (m *MockJobRepo) GetByJobID(jobID string) (*Job, error) {
 func (m *MockJobRepo) ListActive(userID string) ([]Job, error) {
 	if m.ListActiveFn != nil {
 		return m.ListActiveFn(userID)
-	}
-	return []Job{}, nil
-}
-func (m *MockJobRepo) ListActiveUploads(userID string) ([]Job, error) {
-	if m.ListActiveUploadsFn != nil {
-		return m.ListActiveUploadsFn(userID)
 	}
 	return []Job{}, nil
 }

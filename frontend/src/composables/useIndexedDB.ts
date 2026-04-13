@@ -2,7 +2,7 @@ import type { PendingOp } from '../types'
 
 const DB_NAME: string = 'zephyr'
 const DB_VERSION: number = 1
-const STORE_NAME: string = 'pending_ops'
+const PENDING_OPS_STORE: string = 'pending_ops'
 
 let db: IDBDatabase | null = null
 let dbUnavailable: boolean = false
@@ -23,8 +23,8 @@ function openDB(): Promise<IDBDatabase> {
 
     request.onupgradeneeded = (e: IDBVersionChangeEvent): void => {
       const database: IDBDatabase = (e.target as IDBOpenDBRequest).result
-      if (!database.objectStoreNames.contains(STORE_NAME)) {
-        const store: IDBObjectStore = database.createObjectStore(STORE_NAME, { keyPath: 'id' })
+      if (!database.objectStoreNames.contains(PENDING_OPS_STORE)) {
+        const store: IDBObjectStore = database.createObjectStore(PENDING_OPS_STORE, { keyPath: 'id' })
         store.createIndex('createdAt', 'createdAt', { unique: false })
       }
     }
@@ -45,8 +45,8 @@ function openDB(): Promise<IDBDatabase> {
 export async function addOp(op: PendingOp): Promise<void> {
   const database: IDBDatabase = await openDB()
   return new Promise((resolve, reject) => {
-    const tx: IDBTransaction = database.transaction(STORE_NAME, 'readwrite')
-    const store: IDBObjectStore = tx.objectStore(STORE_NAME)
+    const tx: IDBTransaction = database.transaction(PENDING_OPS_STORE, 'readwrite')
+    const store: IDBObjectStore = tx.objectStore(PENDING_OPS_STORE)
     const request: IDBRequest = store.put(op)
     request.onsuccess = (): void => resolve()
     request.onerror = (e: Event): void => reject((e.target as IDBRequest).error)
@@ -56,8 +56,8 @@ export async function addOp(op: PendingOp): Promise<void> {
 export async function getAllOps(): Promise<PendingOp[]> {
   const database: IDBDatabase = await openDB()
   return new Promise((resolve, reject) => {
-    const tx: IDBTransaction = database.transaction(STORE_NAME, 'readonly')
-    const store: IDBObjectStore = tx.objectStore(STORE_NAME)
+    const tx: IDBTransaction = database.transaction(PENDING_OPS_STORE, 'readonly')
+    const store: IDBObjectStore = tx.objectStore(PENDING_OPS_STORE)
     const index: IDBIndex = store.index('createdAt')
     const request: IDBRequest<PendingOp[]> = index.getAll()
     request.onsuccess = (e: Event): void => resolve((e.target as IDBRequest<PendingOp[]>).result || [])
@@ -68,8 +68,8 @@ export async function getAllOps(): Promise<PendingOp[]> {
 export async function deleteOp(id: string): Promise<void> {
   const database: IDBDatabase = await openDB()
   return new Promise((resolve, reject) => {
-    const tx: IDBTransaction = database.transaction(STORE_NAME, 'readwrite')
-    const store: IDBObjectStore = tx.objectStore(STORE_NAME)
+    const tx: IDBTransaction = database.transaction(PENDING_OPS_STORE, 'readwrite')
+    const store: IDBObjectStore = tx.objectStore(PENDING_OPS_STORE)
     const request: IDBRequest = store.delete(id)
     request.onsuccess = (): void => resolve()
     request.onerror = (e: Event): void => reject((e.target as IDBRequest).error)
@@ -79,8 +79,8 @@ export async function deleteOp(id: string): Promise<void> {
 export async function clearOps(): Promise<void> {
   const database: IDBDatabase = await openDB()
   return new Promise((resolve, reject) => {
-    const tx: IDBTransaction = database.transaction(STORE_NAME, 'readwrite')
-    const store: IDBObjectStore = tx.objectStore(STORE_NAME)
+    const tx: IDBTransaction = database.transaction(PENDING_OPS_STORE, 'readwrite')
+    const store: IDBObjectStore = tx.objectStore(PENDING_OPS_STORE)
     const request: IDBRequest = store.clear()
     request.onsuccess = (): void => resolve()
     request.onerror = (e: Event): void => reject((e.target as IDBRequest).error)

@@ -185,6 +185,7 @@ func (t *Transcoder) Run(ctx context.Context, inputPath, outputPath, mediaType, 
 	}
 
 	scanner := bufio.NewScanner(stdout)
+	fallbackProgress := 0.0
 	for scanner.Scan() {
 		line := scanner.Text()
 		if matches := progressRe.FindStringSubmatch(line); len(matches) == 2 {
@@ -193,14 +194,26 @@ func (t *Transcoder) Run(ctx context.Context, inputPath, outputPath, mediaType, 
 			if probe != nil {
 				durationSec = probe.Duration
 			}
-			if durationSec > 0 && onProgress != nil {
+			if onProgress == nil {
+				continue
+			}
+			if durationSec > 0 {
 				pct := (ms / 1_000_000) / durationSec
 				if pct > 1.0 {
 					pct = 1.0
 				}
 				onProgress(pct)
+				continue
 			}
+			fallbackProgress += 0.02
+			if fallbackProgress > 0.95 {
+				fallbackProgress = 0.95
+			}
+			onProgress(fallbackProgress)
 		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("scan ffmpeg progress: %w", err)
 	}
 
 	if err := cmd.Wait(); err != nil {

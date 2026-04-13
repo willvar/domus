@@ -38,20 +38,6 @@ export function showConfirm(title: string, content: string = '', options: Confir
 }
 
 /**
- * Show an alert dialog. Returns when dismissed.
- */
-export function showAlert(title: string, content: string = ''): Promise<void> {
-  return new Promise((resolve) => {
-    dialogState.value = {
-      type: 'alert',
-      title,
-      content,
-      resolve: resolve as (value: unknown) => void,
-    }
-  })
-}
-
-/**
  * Show a duplicate conflict dialog. Returns { action, applyToAll } or null if cancelled.
  */
 export function showDuplicateDialog(options: DuplicateDialogOptions): Promise<DuplicateDialogResult | null> {

@@ -23,12 +23,14 @@ type FileRecord struct {
 	// Envelope encryption
 	WrappedDEK string `gorm:"default:''" json:"-"`
 	// Upload-related fields
-	Status         string `gorm:"not null;default:'ready';index" json:"status"`
-	UploadID       string `gorm:"default:'';index" json:"-"`
-	TaskID         string `gorm:"default:'';index" json:"-"`
-	OSSUploadID    string `gorm:"default:''" json:"-"` // S3 multipart upload ID for client-direct-upload
-	ChunkSize      int    `gorm:"not null;default:0" json:"-"`
-	CompletedParts string `gorm:"default:''" json:"-"`
+	Status           string    `gorm:"not null;default:'ready';index" json:"status"`
+	UploadID         string    `gorm:"default:'';index" json:"-"`
+	TaskID           string    `gorm:"default:'';index" json:"-"`
+	OSSUploadID      string    `gorm:"default:''" json:"-"` // S3 multipart upload ID for client-direct-upload
+	ChunkSize        int       `gorm:"not null;default:0" json:"-"`
+	CompletedParts   string    `gorm:"default:''" json:"-"`
+	ClientInstanceID string    `gorm:"default:'';index" json:"-"`
+	LastSeenAt       time.Time `json:"-"`
 	// Full-text search
 	SearchVector string    `gorm:"type:tsvector" json:"-"`
 	CreatedAt    time.Time `json:"created_at"`
@@ -36,18 +38,6 @@ type FileRecord struct {
 }
 
 func (FileRecord) TableName() string { return "files" }
-
-type TrashItem struct {
-	ID           int64     `gorm:"primaryKey;autoIncrement" json:"id"`
-	UserID       string    `gorm:"not null;index" json:"user_id"`
-	OriginalPath string    `gorm:"not null" json:"original_path"`
-	TrashKey     string    `gorm:"not null" json:"trash_key"`
-	Size         int64     `gorm:"not null;default:0" json:"size"`
-	IsDir        bool      `gorm:"not null;default:false" json:"is_dir"`
-	DeletedAt    time.Time `gorm:"autoCreateTime" json:"deleted_at"`
-}
-
-func (TrashItem) TableName() string { return "trash" }
 
 // UpsertFileOpts holds optional fields for UpsertFile.
 type UpsertFileOpts struct {

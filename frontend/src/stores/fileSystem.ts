@@ -7,7 +7,8 @@ import { useAuthStore } from './auth'
 import { useWindowManagerStore } from './windowManager'
 import { useI18n } from '../composables/useI18n'
 import { ICONS } from '../composables/useFileIcon'
-import { showPrompt, showConfirm } from '../composables/useNativeDialog'
+import { showPrompt, showConfirm, showDuplicateDialog } from '../composables/useNativeDialog'
+import { useMessage } from '../composables/useMessage'
 import { usePreferences } from '../composables/usePreferences'
 import { useWorkspaceSync } from '../composables/useWorkspaceSync'
 import { useServiceWorker } from '../composables/useServiceWorker'
@@ -27,14 +28,72 @@ import type {
   ViewerWindowInfo,
   FileAccessResponse,
   SearchResult,
+  PendingOpInput,
 } from '../types'
 
 const TEXT_CHUNK_SIZE: number = 256 * 1024 // 256KB — aligns with 4 encryption chunks
 const NON_CHUNKABLE_TYPES: Set<string> = new Set(['notebook', 'archive'])
+const TRASH_ROOT_PATH = '/__trash__/'
 
 function getLargeFileLimit(): number {
   const { prefs } = usePreferences()
   return prefs.largeFileLimitMB * 1024 * 1024
+}
+
+function normalizeAppPath(path: string): string {
+  if (!path) return '/'
+  if (!path.startsWith('/')) path = '/' + path
+  return path
+}
+
+function normalizeDirPath(path: string): string {
+  path = normalizeAppPath(path)
+  if (path !== '/' && !path.endsWith('/')) path += '/'
+  return path
+}
+
+function isTrashPath(path: string): boolean {
+  const normalized = normalizeAppPath(path)
+  return normalized === '/__trash__' || normalized === TRASH_ROOT_PATH || normalized.startsWith(TRASH_ROOT_PATH)
+}
+
+function toTrashPath(path: string): string {
+  const normalized = normalizeAppPath(path)
+  if (normalized === '/') return TRASH_ROOT_PATH
+  return TRASH_ROOT_PATH + normalized.replace(/^\/+/, '')
+}
+
+function restorePathFromTrash(path: string): string {
+  const normalized = normalizeAppPath(path)
+  if (!isTrashPath(normalized)) return normalized
+  const restored = '/' + normalized.slice(TRASH_ROOT_PATH.length)
+  if (restored === '//') return '/'
+  if (normalized.endsWith('/') && restored !== '/' && !restored.endsWith('/')) return restored + '/'
+  return restored
+}
+
+function appParentPath(path: string): string {
+  const normalized = normalizeAppPath(path)
+  if (normalized === '/') return '/'
+  const trimmed = normalized !== '/' && normalized.endsWith('/') ? normalized.slice(0, -1) : normalized
+  const idx = trimmed.lastIndexOf('/')
+  return idx <= 0 ? '/' : trimmed.slice(0, idx + 1)
+}
+
+function splitFileName(name: string): { base: string; ext: string } {
+  const dot = name.lastIndexOf('.')
+  if (dot <= 0) return { base: name, ext: '' }
+  return { base: name.slice(0, dot), ext: name.slice(dot) }
+}
+
+function nextAvailableName(name: string, usedNames: Set<string>): string {
+  const { base, ext } = splitFileName(name)
+  let index = 1
+  while (true) {
+    const candidate = `${base} (${index})${ext}`
+    if (!usedNames.has(candidate)) return candidate
+    index++
+  }
 }
 
 function formatFileSize(bytes: number): string {
@@ -80,6 +139,38 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const ws = useWebSocket()
   const { t, te } = useI18n()
   const sync = useWorkspaceSync()
+  const message = useMessage()
+
+  function pendingLabel(type: PendingOpInput['type']): string {
+    return type ? t(`pending.type_${type}`) : t('pending.title')
+  }
+
+  function pendingDescription(type: PendingOpInput['type'], detail?: string): string {
+    const label = pendingLabel(type)
+    return detail ? `${label}: ${detail}` : label
+  }
+
+  function pendingToast(type: PendingOpInput['type'], detail?: string): string {
+    const label = pendingLabel(type)
+    const description = detail ? `${label} ${detail}` : label
+    return t('pending.queued_with_description', { description })
+  }
+
+  function pendingDetailFromRecord(record: PendingOpInput): string | undefined {
+    if (typeof record.description !== 'string' || !record.description) return undefined
+    const prefix = `${pendingLabel(record.type)}: `
+    return record.description.startsWith(prefix) ? record.description.slice(prefix.length) : record.description
+  }
+
+  async function maybeQueuePendingOp(error: any, record: PendingOpInput): Promise<boolean> {
+    const { usePendingOpsStore } = await import('./pendingOps')
+    const pendingOps = usePendingOpsStore()
+    if (!pendingOps.isQueueableError(error)) return false
+    await pendingOps.enqueue(record)
+    const { useMessage } = await import('../composables/useMessage')
+    useMessage().warning(pendingToast(record.type, pendingDetailFromRecord(record)))
+    return true
+  }
 
   // --- Multi-tab state ---
   const tabs: Ref<FileTab[]> = ref([])
@@ -136,8 +227,12 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     searchMode.value = true
     searchLoading.value = true
     try {
-      const res = await ws.request<{ results?: SearchResult[] }>('file.search', { query, limit: 100 })
-      searchResults.value = res.results || []
+      const res = await api.get<{ results?: SearchResult[] }>('/file/search', {
+        params: { query, limit: 100 },
+      })
+      const results = res.data.results || []
+      registerThumbnails(results)
+      searchResults.value = results
     } catch {
       searchResults.value = []
     } finally {
@@ -186,12 +281,13 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     return undefined
   })
 
-  const isTrash: ComputedRef<boolean> = computed(() => currentPath.value === '__trash__/')
+  const isTrash: ComputedRef<boolean> = computed(() => isTrashPath(currentPath.value))
+  const isTrashRoot: ComputedRef<boolean> = computed(() => normalizeDirPath(currentPath.value) === TRASH_ROOT_PATH)
   const isShared: ComputedRef<boolean> = computed(() => currentPath.value === '__shared__/')
 
   const canGoBack: ComputedRef<boolean> = computed(() => historyIndex.value > 0)
   const canGoForward: ComputedRef<boolean> = computed(() => historyIndex.value < history.value.length - 1)
-  const canGoUp: ComputedRef<boolean> = computed(() => currentPath.value !== '/' && !isTrash.value && !isShared.value)
+  const canGoUp: ComputedRef<boolean> = computed(() => currentPath.value !== '/' && !isShared.value && !isTrashRoot.value)
 
   const pathSegments: ComputedRef<PathSegment[]> = computed(() => {
     if (!currentPath.value || currentPath.value === '/') return []
@@ -201,7 +297,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     let accumulated: string = '/'
     for (const part of parts) {
       accumulated += part + '/'
-      segments.push({ name: part, path: accumulated })
+      segments.push({ name: part === '__trash__' ? t('places.trash') : part, path: accumulated })
     }
     return segments
   })
@@ -314,7 +410,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     // Unsubscribe old directory for this tab
     const tabId: string = activeTabId.value
     const oldSub = tabSubs.get(tabId)
-    if (oldSub && oldSub !== path && path !== '__trash__/' && path !== '__shared__/') {
+    if (oldSub && oldSub !== path && path !== '__shared__/') {
       ws.request('unsubscribe.directory', { path: oldSub }).catch(() => {})
     }
 
@@ -336,7 +432,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     }
 
     // Subscribe to new directory
-    if (path !== '__trash__/' && path !== '__shared__/') {
+    if (path !== '__shared__/') {
       tabSubs.set(tabId, path)
       ws.request('subscribe.directory', { path }).catch(() => {})
     }
@@ -373,27 +469,8 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   async function fetchFiles(path: string): Promise<FileListItem[]> {
-    if (path === '__trash__/') {
-      const items = await ws.request<Array<{
-        id: number
-        original_path: string
-        is_dir: boolean
-        size: number
-        deleted_at: string
-      }>>('trash.list') || []
-      return items.map(item => ({
-        name: item.original_path.replace(/\/$/, '').split('/').pop()!,
-        path: '__trash__/' + item.id,
-        is_dir: item.is_dir,
-        size: item.size,
-        created_at: item.deleted_at,
-        last_modified: item.deleted_at,
-        _trashId: item.id,
-        _originalPath: item.original_path,
-      }))
-    }
     if (path === '__shared__/') {
-      const items = await ws.request<Array<{
+      const res = await api.get<Array<{
         id: number
         share_id: string
         file_name: string
@@ -403,7 +480,8 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         permission: string
         expires_at?: string | null
         created_at: string
-      }>>('share.list') || []
+      }>>('/file/shared')
+      const items = res.data || []
       return items.map(item => ({
         name: item.file_name + (item.owner_username ? ` (${item.owner_username})` : ''),
         path: '__shared__/' + item.share_id,
@@ -420,11 +498,48 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         _originalName: item.file_name,
       }))
     }
-    const res = await ws.request<{ files?: FileListItem[] }>('file.list', { path })
-    const list = res.files || []
+    const res = await api.get<{ files?: FileListItem[] }>('/file/', { params: { path } })
+    const list = res.data.files || []
     registerThumbnails(list)
     await useServiceWorker().flush()
     return list
+  }
+
+  async function listFilesAtPath(path: string): Promise<FileListItem[]> {
+    if (path === '__shared__/') return []
+    const res = await api.get<{ files?: FileListItem[] }>('/file/', { params: { path } })
+    return res.data.files || []
+  }
+
+  async function findExistingPath(path: string): Promise<FileListItem | undefined> {
+    const parentPath = appParentPath(path)
+    const entries = await listFilesAtPath(parentPath)
+    return entries.find(entry => entry.path === path)
+  }
+
+  async function resolveRestoreTarget(file: FileListItem, action: 'skip' | 'replace' | 'rename'): Promise<string | null> {
+    const sourcePath = normalizeAppPath(file.path)
+    let targetPath = restorePathFromTrash(sourcePath)
+    const existing = await findExistingPath(targetPath)
+
+    if (existing) {
+      if (action === 'skip') return ''
+      if (action === 'replace') {
+        await api.delete('/file/delete', { params: { path: existing.path, permanent: true } })
+      } else if (action === 'rename') {
+        const parentPath = appParentPath(targetPath)
+        const siblings = await listFilesAtPath(parentPath)
+        const usedNames = new Set(siblings.map(entry => entry.name))
+        const renamed = nextAvailableName(file.name, usedNames)
+        targetPath = parentPath + renamed + (file.is_dir ? '/' : '')
+      }
+    }
+
+    return targetPath
+  }
+
+  function notifyDecryptUnavailable(): void {
+    message.warning(t('preview.decrypt_unavailable'))
   }
 
   /** Register thumbnails with the Service Worker for client-side decryption. */
@@ -440,6 +555,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         filename: '',
         dek: file.thumbnail_dek,
       })
+      if (!decryptUrl) continue
       file.thumbnail_url = decryptUrl
       file.thumbnail_dek = undefined
     }
@@ -564,14 +680,26 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   async function paste(): Promise<void> {
+    if (isTrash.value) return
     if (clipboard.value.items.length === 0) return
     const mode = clipboard.value.mode
-    const action: string = mode === 'copy' ? 'file.copy' : 'file.move'
-
-    const results = await Promise.allSettled(clipboard.value.items.map(item => {
+    const results = await Promise.allSettled(clipboard.value.items.map(async item => {
       const name: string = item.is_dir ? item.name.replace(/\/+$/, '') : item.name
       const dstPath: string = currentPath.value + name + (item.is_dir ? '/' : '')
-      return ws.request(action, { src_path: item.path, dst_path: dstPath, is_dir: item.is_dir })
+      const apiUrl = mode === 'copy' ? '/file/copy' : '/file/move'
+      const apiData = { src_path: item.path, dst_path: dstPath, is_dir: item.is_dir }
+      try {
+        await api.post(apiUrl, apiData)
+      } catch (e: any) {
+        const queued = await maybeQueuePendingOp(e, {
+          apiUrl,
+          apiMethod: 'post',
+          apiData,
+          type: mode === 'copy' ? 'copy' : 'move',
+          description: pendingDescription(mode === 'copy' ? 'copy' : 'move', item.name),
+        })
+        if (!queued) throw e
+      }
     }))
 
     const failed = results.filter(r => r.status === 'rejected')
@@ -590,13 +718,22 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   // File operations
   async function createFolder(): Promise<void> {
+    if (isTrash.value) return
     const name = await showPrompt(t('dialog.new_folder_name'))
     if (!name) return
 
     try {
-      await ws.request('file.mkdir', { path: currentPath.value + name })
+      await api.post('/file/mkdir', { path: currentPath.value + name })
       await reloadCurrentDir()
     } catch (e: any) {
+      const queued = await maybeQueuePendingOp(e, {
+        apiUrl: '/file/mkdir',
+        apiMethod: 'post',
+        apiData: { path: currentPath.value + name },
+        type: 'mkdir',
+        description: pendingDescription('mkdir', name),
+      })
+      if (queued) return
       console.error('Create folder failed:', e)
     }
   }
@@ -616,7 +753,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const newPath: string = parts.join('/') + (isDir ? '/' : '')
 
     try {
-      await ws.request('file.rename', {
+      await api.post('/file/rename', {
         old_path: oldPath,
         new_path: newPath,
         is_dir: isDir,
@@ -624,6 +761,21 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       renamingFile.value = null
       await reloadCurrentDir()
     } catch (e: any) {
+      const queued = await maybeQueuePendingOp(e, {
+        apiUrl: '/file/rename',
+        apiMethod: 'post',
+        apiData: {
+          old_path: oldPath,
+          new_path: newPath,
+          is_dir: isDir,
+        },
+        type: 'rename',
+        description: pendingDescription('rename', newName),
+      })
+      if (queued) {
+        renamingFile.value = null
+        return
+      }
       console.error('Rename failed:', e)
       throw e
     }
@@ -637,10 +789,17 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       if (!await showConfirm(t('dialog.permanent_delete_title'), t('dialog.confirm_permanent_delete', { n: count }), { icon: 'warning', positiveType: 'error' })) return
       for (const path of selectedFiles.value) {
         const file = getFileByPath(path)
-        if (!file?._trashId) continue
         try {
-          await ws.request('trash.delete', { id: file._trashId })
+          await api.delete('/file/delete', { params: { path, permanent: true } })
         } catch (e: any) {
+          const queued = await maybeQueuePendingOp(e, {
+            apiUrl: '/file/delete',
+            apiMethod: 'delete',
+            apiData: { path, permanent: true },
+            type: 'deleteTrash',
+            description: pendingDescription('deleteTrash', file?.name || path),
+          })
+          if (queued) continue
           console.error('Permanent delete failed:', e)
         }
       }
@@ -657,10 +816,21 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       }
     } else {
       if (!await showConfirm(t('dialog.delete_title'), t('dialog.confirm_delete', { n: count }), { icon: 'warning', positiveType: 'error' })) return
-      const promises = selectedFiles.value.map(path => {
-        return ws.request('file.delete', { path })
-      })
-      await Promise.all(promises)
+      await Promise.allSettled(selectedFiles.value.map(async path => {
+        const file = getFileByPath(path)
+        try {
+          await api.delete('/file/delete', { params: { path } })
+        } catch (e: any) {
+          const queued = await maybeQueuePendingOp(e, {
+            apiUrl: '/file/delete',
+            apiMethod: 'delete',
+            apiData: { path },
+            type: 'delete',
+            description: pendingDescription('delete', file?.name || path),
+          })
+          if (!queued) throw e
+        }
+      }))
     }
 
     selectedFiles.value = []
@@ -669,11 +839,47 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   async function restoreSelected(): Promise<void> {
     if (!isTrash.value || selectedFiles.value.length === 0) return
+    let applyAction: 'skip' | 'replace' | 'rename' | undefined
     for (const path of selectedFiles.value) {
       const file = getFileByPath(path)
-      if (!file?._trashId) continue
+      if (!file) continue
       try {
-        await ws.request('trash.restore', { id: file._trashId })
+        const originalPath = restorePathFromTrash(path)
+        const existing = await findExistingPath(originalPath)
+        let action = applyAction
+        if (existing && !action) {
+          const decision = await showDuplicateDialog({
+            title: t('upload.duplicate_title'),
+            incomingName: file.name,
+            incomingSize: file.size,
+            existingName: existing.name,
+            existingSize: existing.size,
+            existingIsDir: existing.is_dir,
+          })
+          if (!decision) break
+          action = decision.action
+          if (decision.applyToAll) applyAction = action
+        }
+        const targetPath = action ? await resolveRestoreTarget(file, action) : originalPath
+        if (targetPath === null) break
+        if (targetPath === '') continue
+        const apiData = {
+          src_path: path,
+          dst_path: targetPath,
+          is_dir: file.is_dir,
+        }
+        try {
+          await api.post('/file/move', apiData)
+        } catch (e: any) {
+          const queued = await maybeQueuePendingOp(e, {
+            apiUrl: '/file/move',
+            apiMethod: 'post',
+            apiData,
+            type: 'restore',
+            description: pendingDescription('restore', file.name),
+          })
+          if (!queued) throw e
+        }
       } catch (e: any) {
         console.error('Restore failed:', e)
       }
@@ -685,8 +891,16 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   async function emptyTrash(): Promise<void> {
     if (!await showConfirm(t('dialog.empty_trash_title'), t('dialog.confirm_empty_trash'), { icon: 'warning', positiveType: 'error' })) return
     try {
-      await ws.request('trash.clear')
+      await api.delete('/file/delete', { params: { path: TRASH_ROOT_PATH, permanent: true } })
     } catch (e: any) {
+      const queued = await maybeQueuePendingOp(e, {
+        apiUrl: '/file/delete',
+        apiMethod: 'delete',
+        apiData: { path: TRASH_ROOT_PATH, permanent: true },
+        type: 'emptyTrash',
+        description: pendingDescription('emptyTrash'),
+      })
+      if (queued) return
       console.error('Empty trash failed:', e)
     }
     await reloadCurrentDir()
@@ -709,7 +923,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   const imageExts: Set<string> = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp', 'svg', 'ico', 'avif'])
-  const videoExts: Set<string> = new Set(['mp4', 'webm'])
+  const videoExts: Set<string> = new Set(['mp4', 'webm', 'mov', 'm4v'])
   const audioExts: Set<string> = new Set(['mp3', 'wav', 'ogg', 'aac', 'm4a', 'flac', 'opus'])
   const fontExts: Set<string> = new Set(['ttf', 'otf', 'woff', 'woff2'])
   const archiveExts: Set<string> = new Set(['zip'])
@@ -722,24 +936,58 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const textExts: Set<string> = new Set([
     'txt', 'json', 'yaml', 'yml', 'xml', 'log', 'ini', 'conf', 'cfg',
     'js', 'ts', 'jsx', 'tsx', 'vue', 'html', 'css', 'scss', 'less',
+    'sass', 'styl', 'pug', 'coffee', 'liquid',
     'go', 'py', 'rb', 'java', 'c', 'cpp', 'h', 'hpp', 'rs', 'swift', 'kt',
+    'd', 'pas', 'f90', 'f95', 'f', 'v', 'sv', 'vhd', 'vhdl',
     'sh', 'bash', 'zsh', 'fish', 'ps1', 'bat', 'cmd',
-    'sql', 'graphql', 'proto',
-    'toml', 'env', 'gitignore', 'dockerignore', 'editorconfig',
-    'dockerfile', 'makefile',
-    'php', 'pl', 'lua', 'r', 'scala', 'clj', 'ex', 'exs', 'erl', 'hs',
+    'pl', 'pm', 'tcl',
+    'sql', 'proto', 'wast', 'wat',
+    'toml', 'properties', 'env', 'gitignore', 'dockerignore', 'editorconfig',
+    'dockerfile', 'makefile', 'cmake',
+    'tex', 'latex', 'textile', 'diff', 'patch',
+    'php', 'lua', 'r', 'scala', 'clj', 'cljs', 'erl', 'hrl',
+    'ex', 'exs', 'hs', 'lhs', 'ml', 'mli', 'fs', 'fsx', 'fsi',
+    'jl', 'elm', 'groovy', 'gradle',
+    'scm', 'rkt', 'lisp', 'cl',
+    'm', 'nb', 'vb', 'bas', 'pp', 'epp', 'cr', 'nim',
+    'sparql', 'ttl', 'nt', 'xq', 'xquery',
     'mod', 'sum',
   ])
   const extToLanguage: Record<string, string> = {
+    // Web
     js: 'javascript', ts: 'typescript', jsx: 'javascript', tsx: 'typescript',
-    vue: 'xml', html: 'xml', css: 'css', scss: 'scss', less: 'less',
+    vue: 'vue', html: 'html', css: 'css', scss: 'scss', less: 'less', liquid: 'liquid',
+    sass: 'sass', styl: 'stylus', pug: 'pug', coffee: 'coffeescript',
+    // Systems / compiled
     go: 'go', py: 'python', rb: 'ruby', java: 'java',
     c: 'c', cpp: 'cpp', h: 'c', hpp: 'cpp', rs: 'rust', swift: 'swift', kt: 'kotlin',
+    d: 'd', pas: 'pascal', f90: 'fortran', f95: 'fortran', f: 'fortran',
+    v: 'verilog', sv: 'verilog', vhd: 'vhdl', vhdl: 'vhdl',
+    // Shell / scripting
     sh: 'bash', bash: 'bash', zsh: 'bash', fish: 'bash',
-    json: 'json', yaml: 'yaml', yml: 'yaml', xml: 'xml', toml: 'ini',
-    sql: 'sql', graphql: 'graphql', proto: 'protobuf',
-    md: 'markdown', php: 'php', lua: 'lua', r: 'r', scala: 'scala',
-    dockerfile: 'dockerfile', makefile: 'makefile',
+    ps1: 'powershell', bat: 'powershell',
+    pl: 'perl', pm: 'perl', tcl: 'tcl',
+    // Data / config
+    json: 'json', yaml: 'yaml', yml: 'yaml', xml: 'xml', toml: 'toml',
+    ini: 'ini', properties: 'properties', conf: 'nginx',
+    sql: 'sql', proto: 'protobuf', wast: 'wast', wat: 'wast',
+    // Markup / docs
+    md: 'markdown', tex: 'stex', latex: 'stex', textile: 'textile',
+    diff: 'diff', patch: 'diff',
+    // Languages
+    php: 'php', lua: 'lua', r: 'r', scala: 'scala',
+    clj: 'clojure', cljs: 'clojure', erl: 'erlang', hrl: 'erlang',
+    ex: 'elixir', exs: 'elixir', hs: 'haskell', lhs: 'haskell',
+    ml: 'ocaml', mli: 'ocaml', fs: 'fsharp', fsx: 'fsharp', fsi: 'fsharp',
+    jl: 'julia', elm: 'elm', groovy: 'groovy', gradle: 'groovy',
+    cmake: 'cmake', dockerfile: 'dockerfile',
+    scm: 'scheme', rkt: 'scheme', lisp: 'commonlisp', cl: 'commonlisp',
+    m: 'octave', nb: 'mathematica', vb: 'vb', bas: 'vb',
+    pp: 'puppet', epp: 'puppet',
+    cr: 'crystal', nim: 'nim',
+    // Misc
+    sparql: 'sparql', ttl: 'turtle', nt: 'ntriples',
+    xq: 'xquery', xquery: 'xquery',
   }
 
   const appIcons: Record<string, any> = {
@@ -817,6 +1065,10 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const windowId: string = appWindowId(file.path) + (forceType ? `-${forceType}` : '')
     const fileName: string = file._originalName || file.name
     const type: ViewerType = forceType || getViewerType(fileName) || 'image'
+    const shouldOpenTextFully: boolean =
+      type !== 'notebook' &&
+      ['text', 'markdown', 'csv'].includes(type) &&
+      (file.size || 0) > TEXT_CHUNK_SIZE
 
     // If already open, just bring to front
     const existing = findApp(windowId)
@@ -825,6 +1077,15 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       const win = wm.findWindow(windowId)
       if (win) win.minimized = false
       return
+    }
+
+    if (shouldOpenTextFully) {
+      const sizeStr: string = formatFileSize(file.size || 0)
+      const ok = await showConfirm(
+        t('dialog.text_open_title'),
+        t('dialog.text_open_body', { size: sizeStr }),
+      )
+      if (!ok) return
     }
 
     const state = reactive<AppWindowState>({
@@ -901,6 +1162,11 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
           url, size, chunkSize: chunk_size, contentType: content_type, filename: name, dek,
           contentHash: content_hash,
         })
+        if (!decryptUrl) {
+          notifyDecryptUnavailable()
+          state.url = ''
+          return
+        }
         ;(state as any)._decryptUrl = decryptUrl
 
         state.url = decryptUrl
@@ -913,7 +1179,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       ;(state as any).baseSize = file.size || 0
 
       // Register SW decrypt URL for text files
-      let decryptUrl: string | undefined
+      let decryptUrl: string | null = null
       try {
         const sw = useServiceWorker()
         const accessRes = file._shareId
@@ -924,6 +1190,11 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
           url, size, chunkSize: chunk_size, contentType: content_type, filename: name, dek,
           contentHash: content_hash,
         })
+        if (!decryptUrl) {
+          notifyDecryptUnavailable()
+          state.content = ''
+          return
+        }
         ;(state as any)._decryptUrl = decryptUrl
       } catch {
         state.content = ''
@@ -942,6 +1213,23 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         } catch {
           state.content = ''
           ;(state as any).baseSize = 0
+        }
+      } else if (shouldOpenTextFully) {
+        ;(state as any).chunked = false
+        ;(state as any).page = 0
+        ;(state as any).totalPages = 1
+        ;(state as any).isFullyLoaded = true
+        try {
+          const res = await fetch(decryptUrl!)
+          const text: string = await res.text()
+          state.content = text
+          const byteLength = new TextEncoder().encode(text).byteLength
+          ;(state as any).baseSize = byteLength
+          ;(state as any).totalSize = byteLength
+        } catch {
+          state.content = ''
+          ;(state as any).baseSize = 0
+          ;(state as any).totalSize = 0
         }
       } else {
         // Range-based chunked loading via SW
@@ -978,22 +1266,46 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       const newContent: string = state.content!
       const newBytes: Uint8Array = new TextEncoder().encode(newContent)
       if (state.file._shareId) {
-        await ws.request('share.patchContent', {
-          share_id: state.file._shareId,
+        const apiUrl = `/file/shared/${encodeURIComponent(state.file._shareId)}/content/diff`
+        const apiData = {
           base_size: state.baseSize,
           edits: [{ offset: 0, delete: state.baseSize, insert: newContent }],
-        })
+        }
+        await api.put(apiUrl, apiData)
       } else {
-        await ws.request('file.patchContent', {
+        const apiUrl = '/file/content/diff'
+        const apiData = {
           path: state.file.path,
           base_size: state.baseSize,
           edits: [{ offset: 0, delete: state.baseSize, insert: newContent }],
-        })
+        }
+        await api.put(apiUrl, apiData)
       }
       ;(state as any).baseSize = newBytes.length
       state.editing = false
       state.dirty = false
     } catch (e: any) {
+      const apiUrl = state.file._shareId
+        ? `/file/shared/${encodeURIComponent(state.file._shareId)}/content/diff`
+        : '/file/content/diff'
+      const apiData = state.file._shareId
+        ? {
+            base_size: state.baseSize,
+            edits: [{ offset: 0, delete: state.baseSize, insert: state.content! }],
+          }
+        : {
+            path: state.file.path,
+            base_size: state.baseSize,
+            edits: [{ offset: 0, delete: state.baseSize, insert: state.content! }],
+          }
+      const queued = await maybeQueuePendingOp(e, {
+        apiUrl,
+        apiMethod: 'put',
+        apiData,
+        type: 'saveViewer',
+        description: pendingDescription('saveViewer', state.file.name),
+      })
+      if (queued) return
       console.error('Save failed:', e)
     } finally {
       state.saving = false
@@ -1005,7 +1317,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     if (state) {
       if (state.openedAt) {
         const duration: number = Date.now() - state.openedAt
-        ws.request('audit.preview', {
+        api.post('/audit/', {
           path: state.file.path,
           duration_ms: duration,
           type: state.type,
@@ -1025,6 +1337,8 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   async function downloadFile(pathOrFile: string | FileListItem): Promise<void> {
+    let objectUrl: string | null = null
+    let decryptUrl: string | null = null
     try {
       const sw = useServiceWorker()
       const path: string = typeof pathOrFile === 'string' ? pathOrFile : pathOrFile.path
@@ -1033,20 +1347,36 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         ? await api.get<FileAccessResponse>('/file/shared/' + shareId)
         : await api.get<FileAccessResponse>('/file/access', { params: { path } })
       const { url, size, name, content_type, chunk_size, dek, content_hash } = res.data
-      const decryptUrl: string = sw.registerDecrypt({
+      decryptUrl = sw.registerDecrypt({
         url, size, chunkSize: chunk_size, contentType: content_type,
         filename: name, dek, download: true, contentHash: content_hash,
       })
+      if (!decryptUrl) {
+        notifyDecryptUnavailable()
+        return
+      }
+      await sw.flush()
+      const resp = await fetch(decryptUrl)
+      if (!resp.ok) {
+        throw new Error(`Download fetch failed: ${resp.status}`)
+      }
+      const blob = await resp.blob()
+      objectUrl = URL.createObjectURL(blob)
       const a: HTMLAnchorElement = document.createElement('a')
-      a.href = decryptUrl
+      a.href = objectUrl
       a.download = name
       document.body.appendChild(a)
       a.click()
       document.body.removeChild(a)
-      // Clean up after browser starts the download
-      setTimeout(() => sw.unregisterDecrypt(decryptUrl), 60000)
     } catch (e: any) {
       console.error('Download failed:', e)
+    } finally {
+      if (objectUrl) {
+        setTimeout(() => URL.revokeObjectURL(objectUrl!), 60000)
+      }
+      if (decryptUrl) {
+        useServiceWorker().unregisterDecrypt(decryptUrl)
+      }
     }
   }
 
@@ -1055,9 +1385,9 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     if (!data.task_id) return
     for (const tab of tabs.value) {
       for (const file of tab.files) {
-        if (file.job_id === data.task_id) {
-          file.job_progress = data.progress
-          file.job_phase = data.phase
+        if (file.task_id === data.task_id) {
+          file.task_progress = data.progress
+          file.task_phase = data.phase
           file.status = data.status === 'completed' ? 'ready' : file.status
         }
       }
@@ -1263,16 +1593,12 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     restoreSelected,
     emptyTrash,
     isTrash,
+    isTrashRoot,
     isShared,
     openSelected,
     downloadFile,
     appWindows,
-    isImageFile,
-    isVideoFile,
-    isTextFile,
-    isPdfFile,
     getViewerType,
-    getLanguage,
     findApp,
     openViewer,
     saveViewer,
@@ -1283,5 +1609,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     init,
     restoreTabs,
     restoreViewers,
+    listFilesAtPath,
   }
 })

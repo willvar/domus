@@ -72,16 +72,16 @@ func startSSH(s *Session, args []string) error {
 		if mgr := s.getManager(); mgr != nil && mgr.OnPushSSH != nil {
 			mgr.OnPushSSH(s.ConnID, s.ID, "disconnected")
 		}
-		return fmt.Errorf("connection failed: %v", err)
+		return fmt.Errorf("connection failed: %w", err)
 	}
 	if err != nil {
-		return fmt.Errorf("connection failed: %v", err)
+		return fmt.Errorf("connection failed: %w", err)
 	}
 
 	session, err := client.NewSession()
 	if err != nil {
 		_ = client.Close()
-		return fmt.Errorf("session failed: %v", err)
+		return fmt.Errorf("session failed: %w", err)
 	}
 
 	// Request PTY with actual terminal dimensions
@@ -100,7 +100,7 @@ func startSSH(s *Session, args []string) error {
 	if err := session.RequestPty("xterm-256color", rows, cols, modes); err != nil {
 		_ = session.Close()
 		_ = client.Close()
-		return fmt.Errorf("PTY request failed: %v", err)
+		return fmt.Errorf("PTY request failed: %w", err)
 	}
 
 	// Set up I/O pipes
@@ -108,21 +108,21 @@ func startSSH(s *Session, args []string) error {
 	if err != nil {
 		_ = session.Close()
 		_ = client.Close()
-		return fmt.Errorf("stdin pipe failed: %v", err)
+		return fmt.Errorf("stdin pipe failed: %w", err)
 	}
 
 	stdout, err := session.StdoutPipe()
 	if err != nil {
 		_ = session.Close()
 		_ = client.Close()
-		return fmt.Errorf("stdout pipe failed: %v", err)
+		return fmt.Errorf("stdout pipe failed: %w", err)
 	}
 
 	// Start shell
 	if err := session.Shell(); err != nil {
 		_ = session.Close()
 		_ = client.Close()
-		return fmt.Errorf("shell start failed: %v", err)
+		return fmt.Errorf("shell start failed: %w", err)
 	}
 
 	// Switch session to SSH mode

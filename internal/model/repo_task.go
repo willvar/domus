@@ -7,7 +7,7 @@ import (
 )
 
 // TaskUpdateFunc is the callback invoked when a task's progress or status changes.
-type TaskUpdateFunc func(userID, taskID, taskType, name, status string, progress float64, phase string)
+type TaskUpdateFunc func(userID, taskID, taskType, name, status, clientInstanceID string, progress float64, phase string)
 
 // TaskRepo defines task data access operations.
 type TaskRepo interface {
@@ -26,11 +26,15 @@ type gormTaskRepo struct {
 }
 
 func (r *gormTaskRepo) Create(userID, taskID, taskType, name string) error {
+	status := "running"
+	if taskType == "transcode" {
+		status = "pending"
+	}
 	return r.db.Create(&Task{
 		UserID: userID,
 		TaskID: taskID,
 		Type:   taskType,
-		Status: "running",
+		Status: status,
 		Name:   name,
 	}).Error
 }
@@ -51,7 +55,14 @@ func (r *gormTaskRepo) UpdateProgress(taskID string, progress float64, phase str
 	}).Error
 	if err == nil && r.onTaskUpdate != nil {
 		if t, e := r.Get(taskID); e == nil {
-			r.onTaskUpdate(t.UserID, t.TaskID, t.Type, t.Name, t.Status, progress, phase)
+			clientInstanceID := ""
+			if t.Type == "upload" {
+				var rec FileRecord
+				if err := r.db.Where("task_id = ?", t.TaskID).First(&rec).Error; err == nil {
+					clientInstanceID = rec.ClientInstanceID
+				}
+			}
+			r.onTaskUpdate(t.UserID, t.TaskID, t.Type, t.Name, t.Status, clientInstanceID, progress, phase)
 		}
 	}
 	return err
@@ -68,7 +79,14 @@ func (r *gormTaskRepo) UpdateStatus(taskID, status string) error {
 	err := r.db.Model(&Task{}).Where("task_id = ?", taskID).Updates(updates).Error
 	if err == nil && r.onTaskUpdate != nil {
 		if t, e := r.Get(taskID); e == nil {
-			r.onTaskUpdate(t.UserID, t.TaskID, t.Type, t.Name, status, t.Progress, t.Phase)
+			clientInstanceID := ""
+			if t.Type == "upload" {
+				var rec FileRecord
+				if err := r.db.Where("task_id = ?", t.TaskID).First(&rec).Error; err == nil {
+					clientInstanceID = rec.ClientInstanceID
+				}
+			}
+			r.onTaskUpdate(t.UserID, t.TaskID, t.Type, t.Name, status, clientInstanceID, t.Progress, t.Phase)
 		}
 	}
 	return err

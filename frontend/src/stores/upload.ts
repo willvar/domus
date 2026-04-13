@@ -5,8 +5,8 @@ import api from '../composables/useApi'
 import { useWebSocket } from '../composables/useWebSocket'
 import { useI18n } from '../composables/useI18n'
 import { showConfirm, showDuplicateDialog } from '../composables/useNativeDialog'
+import { useActivityStore } from './activity'
 import { useFileSystemStore } from './fileSystem'
-import { useJobsStore } from './jobs'
 import { usePreferences } from '../composables/usePreferences'
 import {
   generateDEK,
@@ -15,8 +15,7 @@ import {
   encryptBlob,
 } from '../composables/useCryptoUpload'
 import type {
-  Upload,
-  UploadPart,
+  UploadSession,
   ConflictInfo,
   TaskUpdateEvent,
   DuplicateDecision,
@@ -25,25 +24,30 @@ import type {
 // Presigned URL batch size — request this many at a time from the server
 const PRESIGN_BATCH = 100
 
+function getClientInstanceId(): string {
+  return crypto?.randomUUID?.() || (Math.random().toString(36).slice(2) + Date.now().toString(36))
+}
+
 export const useUploadStore = defineStore('upload', () => {
   const { t } = useI18n()
   const ws = useWebSocket()
-  const uploads: Ref<Upload[]> = ref([])
-  const showPanel: Ref<boolean> = ref(false)
+  const clientInstanceId = getClientInstanceId()
+  const uploads: Ref<UploadSession[]> = ref([])
+  const activityStore = useActivityStore()
 
-  const activeUploads: ComputedRef<Upload[]> = computed(() => uploads.value.filter(u => u.status === 'uploading' || u.status === 'paused'))
+  const activeUploads: ComputedRef<UploadSession[]> = computed(() => uploads.value.filter(u => u.status === 'uploading' || u.status === 'paused'))
   const hasActive: ComputedRef<boolean> = computed(() => activeUploads.value.length > 0)
 
   // Active encrypt workers keyed by upload id
   const workers = new Map<string, Worker>()
 
-  // Listen for task updates — remove local upload entries once server confirms completion
+  // Once the server-side task reaches a terminal state, the persisted task
+  // becomes the source of truth and the local upload session can disappear.
   ws.on('task.update', (data: TaskUpdateEvent) => {
     const entry = uploads.value.find(u => u.taskId === data.task_id)
     if (!entry) return
-    if (data.status === 'completed' || data.status === 'failed') {
-      uploads.value = uploads.value.filter(u => u.taskId !== data.task_id)
-      if (uploads.value.length === 0) showPanel.value = false
+    if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
+      removeUploadSession(entry.id)
     }
   })
 
@@ -124,27 +128,109 @@ export const useUploadStore = defineStore('upload', () => {
     expires_in: number
   }
 
+  function encryptedFileSize(plainSize: number): number {
+    if (plainSize <= 0) return 5
+    const chunkPlain = 65536
+    const overhead = 28
+    const numChunks = Math.ceil(plainSize / chunkPlain)
+    return 5 + plainSize + numChunks * overhead
+  }
+
+  function totalPartsFor(fileSize: number, partSize: number): number {
+    if (partSize <= 0) return 1
+    return Math.max(1, Math.ceil(encryptedFileSize(fileSize) / partSize))
+  }
+
+  function removeUploadSession(id: string): void {
+    uploads.value = uploads.value.filter(u => u.id !== id)
+  }
+
+  function taskProgressFor(session: UploadSession, phase?: string): number {
+    const ratio = Math.max(0, Math.min(1, session.progress / 100))
+    switch (phase) {
+      case 'generating':
+        return 0.05
+      case 'encrypting':
+        return 0.1
+      case 'uploading':
+        return Math.max(0.1, Math.min(0.9, ratio * 0.9))
+      case 'thumbnail':
+        return 0.95
+      case 'processing':
+        return 0.99
+      default:
+        return Math.max(0, Math.min(1, ratio))
+    }
+  }
+
+  async function syncTask(
+    session: UploadSession,
+    opts: { phase?: string; progress?: number; status?: 'failed' | 'cancelled'; force?: boolean } = {},
+  ): Promise<void> {
+    if (!session.taskId) return
+
+    const phase = opts.phase ?? session.phase
+    const progress = opts.progress ?? taskProgressFor(session, phase)
+    const now = Date.now()
+    const lastAt = session._lastTaskSyncAt || 0
+    const lastProgress = session._lastTaskProgress ?? -1
+    const lastPhase = session._lastTaskPhase || ''
+    const status = opts.status
+    const force = !!opts.force || !!status
+
+    if (!force) {
+      const progressDelta = Math.abs(progress - lastProgress)
+      const phaseChanged = phase !== lastPhase
+      if (!phaseChanged && progressDelta < 0.01 && now - lastAt < 300) {
+        return
+      }
+    }
+
+    session._lastTaskSyncAt = now
+    session._lastTaskProgress = progress
+    session._lastTaskPhase = phase
+
+    const payload: Record<string, unknown> = {
+      task_id: session.taskId,
+      progress,
+    }
+    if (phase) payload.phase = phase
+    if (status) payload.status = status
+
+    try {
+      await ws.request('task.report', payload)
+    } catch {
+      // Best-effort only; the local session remains authoritative while active.
+    }
+  }
+
   async function startUpload(file: File, targetPath: string, allowZeroByte = false, conflictStrategy: string | null = null): Promise<void> {
-    const entry: Upload = {
+    const entry: UploadSession = {
       id: crypto?.randomUUID?.() || (Math.random().toString(36).slice(2) + Date.now().toString(36)),
       fileName: file.name,
       fileSize: file.size,
       progress: 0,
       speed: 0,
       status: 'uploading',
+      phase: 'generating',
       uploadId: null,
       taskId: null,
       targetPath,
-      completedParts: [],
+      partSize: undefined,
+      totalParts: undefined,
+      encryptedSize: encryptedFileSize(file.size),
+      dekHex: null,
       startTime: Date.now(),
       startProgress: 0,
       bytesUploaded: 0,
+      _lastTaskSyncAt: 0,
+      _lastTaskProgress: -1,
+      _lastTaskPhase: '',
       _resume: null,
       _file: file,
     }
     uploads.value.push(entry)
-    showPanel.value = true
-    try { useJobsStore().panelOpen = true } catch { /* ignore */ }
+    try { activityStore.show() } catch { /* ignore */ }
     const upload = uploads.value[uploads.value.length - 1]
 
     try {
@@ -154,12 +240,16 @@ export const useUploadStore = defineStore('upload', () => {
         return
       }
 
+      const dek = await generateDEK()
+      upload.dekHex = dek.hex
+
       // 1. Init — create multipart upload on server
       const initPayload: Record<string, unknown> = {
         path: targetPath,
         file_name: file.name,
         file_size: file.size,
         content_type: file.type || '',
+        client_instance_id: clientInstanceId,
       }
       if (conflictStrategy) initPayload.conflict_strategy = conflictStrategy
 
@@ -171,6 +261,9 @@ export const useUploadStore = defineStore('upload', () => {
       }
       upload.uploadId = init.upload_id
       upload.taskId = init.task_id || null
+      upload.partSize = init.part_size
+      upload.totalParts = init.total_parts
+      await syncTask(upload, { phase: 'generating', force: true })
 
       // 2. Thumbnail + text extraction (fast — only reads a small portion)
       const { prefs } = usePreferences()
@@ -181,8 +274,9 @@ export const useUploadStore = defineStore('upload', () => {
 
       if ((upload.status as string) === 'cancelled') return
 
-      // 3. Generate DEK
-      const dek = await generateDEK()
+      // 3. Enter encrypting phase
+      upload.phase = 'encrypting'
+      await syncTask(upload, { phase: 'encrypting', force: true })
 
       // 4. Get first batch of presigned URLs
       const presignRes = await api.get<PresignResponse>('/file/upload/presign', {
@@ -193,6 +287,8 @@ export const useUploadStore = defineStore('upload', () => {
       if ((upload.status as string) === 'cancelled') return
 
       // 5. Encrypt + hash + upload (all in worker, main thread stays free)
+      upload.phase = 'uploading'
+      await syncTask(upload, { phase: 'uploading', force: true })
       const workerResult = await runEncryptWorker(upload, file, dek.raw, partUrls, init.part_size, init.upload_id)
 
       if (upload.status === 'cancelled' || !workerResult) return
@@ -200,14 +296,20 @@ export const useUploadStore = defineStore('upload', () => {
       // 6. Upload thumbnail as a separate encrypted file
       let thumbnailUploadId: string | null = null
       if (thumbnail) {
-        thumbnailUploadId = await uploadThumbnail(upload, thumbnail, dek, targetPath)
+        upload.phase = 'thumbnail'
+        await syncTask(upload, { phase: 'thumbnail', force: true })
+        thumbnailUploadId = await uploadThumbnail(upload, thumbnail, targetPath)
       }
 
       // 7. Complete
+      upload.phase = 'processing'
+      upload.status = 'processing'
+      await syncTask(upload, { phase: 'processing', force: true })
       const completePayload: Record<string, unknown> = {
         upload_id: init.upload_id,
         dek: dek.hex,
         content_hash: workerResult.contentHash,
+        encrypted_size: upload.encryptedSize,
         parts: workerResult.parts,
       }
       if (searchText) completePayload.search_text = searchText
@@ -218,16 +320,14 @@ export const useUploadStore = defineStore('upload', () => {
       }
       if (thumbnailUploadId) completePayload.thumbnail_upload_id = thumbnailUploadId
 
-      await api.post('/file/upload', completePayload)
+      await api.post('/file/upload', completePayload, { timeout: 120000 })
 
-      upload.status = 'processing'
       upload.progress = 100
       upload.speed = 0
 
       // Remove from uploads list after a short delay
       setTimeout(() => {
-        uploads.value = uploads.value.filter(u => u.id !== upload.id)
-        if (uploads.value.length === 0) showPanel.value = false
+        removeUploadSession(upload.id)
       }, 2000)
 
       const fs = useFileSystemStore()
@@ -237,8 +337,23 @@ export const useUploadStore = defineStore('upload', () => {
     } catch (e: unknown) {
       if (upload.status !== 'cancelled') {
         upload.status = 'failed'
+        upload.phase = undefined
         const err = e as { response?: { data?: { error?: string } }; message?: string }
         upload.error = err.response?.data?.error || err.message
+        if (upload.uploadId) {
+          try {
+            await api.post('/file/upload/cancel', {
+              upload_id: upload.uploadId,
+              task_id: upload.taskId || '',
+              reason: 'upload_failed',
+              status: 'failed',
+            })
+          } catch {
+            await syncTask(upload, { status: 'failed', force: true })
+          }
+        } else {
+          await syncTask(upload, { status: 'failed', force: true })
+        }
       }
       console.error('Upload failed:', e)
     }
@@ -252,7 +367,7 @@ export const useUploadStore = defineStore('upload', () => {
   }
 
   function runEncryptWorker(
-    upload: Upload,
+    upload: UploadSession,
     file: File,
     dekRaw: Uint8Array,
     initialUrls: string[],
@@ -273,21 +388,18 @@ export const useUploadStore = defineStore('upload', () => {
             const pct = msg.total > 0 ? Math.floor((msg.uploaded / msg.total) * 100) : 0
             upload.progress = pct
             upload.bytesUploaded = msg.uploaded
-            // Report to server
-            if (upload.taskId) {
-              ws.request('upload.progress', {
-                task_id: upload.taskId,
-                progress: msg.uploaded / msg.total,
-              }).catch(() => {})
-            }
+            upload.phase = 'uploading'
+            void syncTask(upload, { phase: 'uploading' })
             break
           }
           case 'part':
-            upload.completedParts.push({ partNumber: msg.partNumber })
             break
           case 'need-urls':
             // Worker needs more presigned URLs
             try {
+              if (!Number.isInteger(msg.from) || !Number.isInteger(msg.count) || msg.from < 1 || msg.count < 1) {
+                throw new Error(`Invalid presign request: from=${msg.from} count=${msg.count}`)
+              }
               const res = await api.get<PresignResponse>('/file/upload/presign', {
                 params: { upload_id: uploadId, start: msg.from, count: msg.count },
               })
@@ -332,9 +444,8 @@ export const useUploadStore = defineStore('upload', () => {
   // ── Thumbnail upload (as a separate encrypted file) ──────────────────
 
   async function uploadThumbnail(
-    parentUpload: Upload,
+    parentUpload: UploadSession,
     thumb: { blob: Blob; width: number; height: number; duration?: number },
-    parentDek: { key: CryptoKey; raw: Uint8Array; hex: string },
     targetPath: string,
   ): Promise<string | null> {
     try {
@@ -344,9 +455,10 @@ export const useUploadStore = defineStore('upload', () => {
       // Init a mini upload for the thumbnail
       const initRes = await api.post<InitResponse>('/file/upload', {
         path: targetPath.replace(/\/?$/, '/') + '.user/thumbnails',
-        file_name: `${parentUpload.uploadId}.webp`,
+        file_name: `thumb_${parentUpload.uploadId}.webp`,
         file_size: thumb.blob.size,
         content_type: 'image/webp',
+        internal: true,
       })
       const thumbInit = initRes.data
 
@@ -365,6 +477,7 @@ export const useUploadStore = defineStore('upload', () => {
       await api.post('/file/upload', {
         upload_id: thumbInit.upload_id,
         dek: thumbDek.hex,
+        encrypted_size: encrypted.byteLength,
         parts: [{ part_number: 1, etag }],
       })
 
@@ -390,10 +503,12 @@ export const useUploadStore = defineStore('upload', () => {
     const upload = uploads.value.find(u => u.id === id)
     if (upload && upload.status === 'paused') {
       upload.status = 'uploading'
+      upload.phase = 'uploading'
       upload.startTime = Date.now()
       upload.startProgress = upload.progress
       const worker = workers.get(id)
       if (worker) worker.postMessage({ type: 'resume' })
+      void syncTask(upload, { phase: 'uploading', force: true })
     }
   }
 
@@ -402,6 +517,8 @@ export const useUploadStore = defineStore('upload', () => {
     if (!upload) return
 
     upload.status = 'cancelled'
+    upload.phase = undefined
+    removeUploadSession(id)
     const worker = workers.get(id)
     if (worker) {
       worker.postMessage({ type: 'cancel' })
@@ -410,8 +527,16 @@ export const useUploadStore = defineStore('upload', () => {
     }
     if (upload.uploadId) {
       try {
-        await api.delete('/file/upload', { params: { upload_id: upload.uploadId, task_id: upload.taskId || '' } })
-      } catch { /* best-effort */ }
+        await api.post('/file/upload/cancel', {
+          upload_id: upload.uploadId,
+          task_id: upload.taskId || '',
+          reason: 'user_cancel',
+        })
+      } catch {
+        await syncTask(upload, { status: 'cancelled', force: true })
+      }
+    } else {
+      await syncTask(upload, { status: 'cancelled', force: true })
     }
   }
 
@@ -420,18 +545,85 @@ export const useUploadStore = defineStore('upload', () => {
     if (!u || !u._file) return
     const file: File = u._file
     const targetPath: string = u.targetPath
-    uploads.value = uploads.value.filter(x => x.id !== id)
+    removeUploadSession(id)
     startUpload(file, targetPath)
   }
 
+  function abortUploads(reason: 'page_unload' | 'startup_reconcile'): void {
+    const targets = uploads.value.filter(u =>
+      !!u.uploadId && (u.status === 'uploading' || u.status === 'paused')
+    )
+    const baseURL = api.defaults.baseURL || window.location.origin
+    for (const upload of targets) {
+      const payload = JSON.stringify({
+        upload_id: upload.uploadId,
+        task_id: upload.taskId || '',
+        reason,
+      })
+      let sent = false
+      try {
+        if (reason === 'page_unload' && typeof navigator !== 'undefined' && typeof navigator.sendBeacon === 'function') {
+          sent = navigator.sendBeacon(new URL('/file/upload/cancel', baseURL).toString(), new Blob([payload], { type: 'application/json' }))
+        }
+      } catch {
+        sent = false
+      }
+      if (sent) continue
+      try {
+        fetch(new URL('/file/upload/cancel', baseURL).toString(), {
+          method: 'POST',
+          credentials: 'include',
+          keepalive: true,
+          headers: { 'Content-Type': 'application/json' },
+          body: payload,
+        }).catch(() => {})
+      } catch {
+        // ignore best-effort unload cleanup failures
+      }
+    }
+  }
+
+  async function reconcileStaleUploads(): Promise<void> {
+    try {
+      await api.post('/file/upload/cleanup', { client_instance_id: clientInstanceId })
+    } catch {
+      // ignore startup reconcile failures
+    }
+  }
+
+  let heartbeatTimer: number | null = null
+
+  async function sendHeartbeat(): Promise<void> {
+    const targets = uploads.value.filter(u => !!u.uploadId && (u.status === 'uploading' || u.status === 'paused'))
+    await Promise.all(targets.map((upload) =>
+      api.post('/file/upload/heartbeat', { upload_id: upload.uploadId }).catch(() => {})
+    ))
+  }
+
+  function bindPageUnloadCleanup(): void {
+    const handler = () => abortUploads('page_unload')
+    window.addEventListener('pagehide', handler)
+    window.addEventListener('beforeunload', handler)
+  }
+
+  function startHeartbeat(): void {
+    if (heartbeatTimer != null) return
+    heartbeatTimer = window.setInterval(() => {
+      void sendHeartbeat()
+    }, 5000)
+  }
+
+  bindPageUnloadCleanup()
+  startHeartbeat()
+  void reconcileStaleUploads()
+
   function removeCompleted(): void {
     uploads.value = uploads.value.filter(u => u.status === 'uploading' || u.status === 'paused')
-    if (uploads.value.length === 0) showPanel.value = false
   }
 
   return {
+    clientInstanceId,
     uploads,
-    showPanel,
     activeUploads,
     hasActive,
     uploadFiles,

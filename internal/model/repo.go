@@ -10,7 +10,6 @@ type Repos struct {
 
 	Users     UserRepo
 	Files     FileRepo
-	Trash     TrashRepo
 	Sessions  SessionRepo
 	Jobs      JobRepo
 	Tasks     TaskRepo
@@ -29,7 +28,6 @@ func NewRepos(db *gorm.DB, hasFTS bool, onTaskUpdate TaskUpdateFunc) *Repos {
 		onTaskUpdate: onTaskUpdate,
 		Users:        &gormUserRepo{db: db},
 		Files:        &gormFileRepo{db: db, hasFTS: hasFTS},
-		Trash:        &gormTrashRepo{db: db},
 		Sessions:     NewSessionStore(db),
 		Jobs:         &gormJobRepo{db: db, tasks: taskRepo},
 		Tasks:        taskRepo,
