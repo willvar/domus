@@ -927,11 +927,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const audioExts: Set<string> = new Set(['mp3', 'wav', 'ogg', 'aac', 'm4a', 'flac', 'opus'])
   const fontExts: Set<string> = new Set(['ttf', 'otf', 'woff', 'woff2'])
   const archiveExts: Set<string> = new Set(['zip'])
-  const officeExts: Set<string> = new Set([
-    'doc', 'docx', 'docm', 'dotm', 'dotx',
-    'xls', 'xlsx', 'xlsb', 'xlsm',
-    'ppt', 'pptx', 'ppsx', 'pps', 'pptm', 'potm', 'ppam', 'potx', 'ppsm',
-  ])
   const notebookExts: Set<string> = new Set(['ipynb'])
   const textExts: Set<string> = new Set([
     'txt', 'json', 'yaml', 'yml', 'xml', 'log', 'ini', 'conf', 'cfg',
@@ -999,7 +994,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     markdown: ICONS.markdown,
     csv: ICONS.text,
     font: ICONS.file,
-    office: ICONS.document,
     archive: ICONS.archive,
     notebook: ICONS.code,
   }
@@ -1044,7 +1038,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     if (ext === 'md') return 'markdown'
     if (ext === 'csv') return 'csv'
     if (notebookExts.has(ext)) return 'notebook'
-    if (officeExts.has(ext)) return 'office'
     if (fontExts.has(ext)) return 'font'
     if (archiveExts.has(ext)) return 'archive'
     if (isTextFile(name)) return 'text'
@@ -1064,7 +1057,12 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   async function openViewer(file: FileListItem, { forceType, remote }: { forceType?: ViewerType; remote?: boolean } = {}): Promise<void> {
     const windowId: string = appWindowId(file.path) + (forceType ? `-${forceType}` : '')
     const fileName: string = file._originalName || file.name
-    const type: ViewerType = forceType || getViewerType(fileName) || 'image'
+    const viewerType = getViewerType(fileName)
+    if (!viewerType && !forceType) {
+      downloadFile(file._shareId ? file : file.path)
+      return
+    }
+    const type: ViewerType = forceType || viewerType || 'image'
     const shouldOpenTextFully: boolean =
       type !== 'notebook' &&
       ['text', 'markdown', 'csv'].includes(type) &&
@@ -1131,27 +1129,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       }
     }
 
-    if (type === 'office') {
-      // Privacy confirmation for Microsoft Office Online preview
-      const ok = await showConfirm(
-        t('dialog.office_privacy_title'),
-        t('dialog.office_privacy_body'),
-      )
-      if (!ok) {
-        appWindows.value = appWindows.value.filter(a => a.windowId !== windowId)
-        wm.closeWindow(windowId)
-        return
-      }
-      try {
-        const res = await api.get<{ url: string }>('/file/preview', {
-          params: { path: file.path, type: 'office' },
-        })
-        const presignedUrl: string = res.data.url
-        state.url = `https://view.officeapps.live.com/op/embed.aspx?src=${encodeURIComponent(presignedUrl)}`
-      } catch {
-        state.url = ''
-      }
-    } else if (blobTypes.includes(type)) {
+    if (blobTypes.includes(type)) {
       try {
         const sw = useServiceWorker()
         const res = file._shareId

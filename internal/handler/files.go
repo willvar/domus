@@ -2,7 +2,6 @@ package handler
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -12,7 +11,6 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/google/uuid"
 
 	"zephyr/internal/auth"
 	"zephyr/internal/middleware"
@@ -398,8 +396,7 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 				_ = w.Flush()
 			}
 
-			var moveErr error
-			moveErr = movePathViaStore(h, srcResolved, dstResolved, body.IsDir, progress)
+			moveErr := movePathViaStore(h, srcResolved, dstResolved, body.IsDir, progress)
 
 			if moveErr != nil {
 				data, _ := json.Marshal(fiber.Map{"error": moveErr.Error()})
@@ -615,90 +612,4 @@ func (h *Handler) handleFileAccess(c *fiber.Ctx) error {
 		"dek":          hex.EncodeToString(dek),
 		"content_hash": fileRecord.ContentHash,
 	})
-}
-
-// handlePreview generates a temporary public URL for previewing files
-// via external services (e.g., Microsoft Office Online).
-// Query params: path (file path), type (preview type, e.g. "office")
-func (h *Handler) handlePreview(c *fiber.Ctx) error {
-	path := c.Query("path", "")
-	if path == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
-	}
-	previewType := c.Query("type", "")
-	if previewType == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "type_required"})
-	}
-
-	switch previewType {
-	case "office":
-		return h.handleOfficePreview(c, path)
-	default:
-		return c.Status(400).JSON(fiber.Map{"error": "unsupported_preview_type"})
-	}
-}
-
-func (h *Handler) handleOfficePreview(c *fiber.Ctx, path string) error {
-	resolvedPath, err := middleware.ResolvePath(c, path)
-	if err != nil {
-		return err
-	}
-
-	session := c.Locals("session").(*model.Session)
-	fileRecord, err := h.Repos.Files.Get(session.UserID, resolvedPath)
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
-	}
-	if fileRecord.Status != "ready" {
-		return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
-	}
-	kek, err := h.getFileEncryptionKey(session)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-	}
-
-	// Unwrap the file's DEK
-	wrappedBytes, err := hex.DecodeString(fileRecord.WrappedDEK)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "invalid_wrapped_dek"})
-	}
-	dek, err := auth.UnwrapDEK(kek, wrappedBytes)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "unwrap_dek_failed"})
-	}
-
-	// Decrypt file into memory
-	reader, err := h.Store.GetObjectContent(resolvedPath)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "read_file_failed"})
-	}
-	defer func() { _ = reader.Close() }()
-
-	var plainBuf bytes.Buffer
-	if err := auth.DecryptStream(dek, reader, &plainBuf); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "decrypt_failed"})
-	}
-
-	// SECURITY NOTE: Office Online requires a publicly accessible plaintext URL.
-	// This is an inherent limitation — the temp file is plaintext on OSS for up to
-	// 2 minutes. The key is random and unguessable. This is the only exception to
-	// the "everything encrypted on OSS" model.
-	ext := filepath.Ext(resolvedPath)
-	tempKey := fmt.Sprintf("_tmp/preview/%s%s", uuid.New().String(), ext)
-	if err := h.Store.PutObjectBytes(tempKey, plainBuf.Bytes()); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "upload_temp_failed"})
-	}
-
-	presignedURL, err := h.Store.GeneratePresignedURL(tempKey, 1*time.Minute)
-	if err != nil {
-		_ = h.Store.DeleteObject(tempKey)
-		return c.Status(500).JSON(fiber.Map{"error": "presign_failed"})
-	}
-
-	go func() {
-		time.Sleep(2 * time.Minute)
-		_ = h.Store.DeleteObject(tempKey)
-	}()
-
-	return c.JSON(fiber.Map{"url": presignedURL})
 }

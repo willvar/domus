@@ -35,8 +35,6 @@ type Handler struct {
 	Repos      *model.Repos
 	Store      store.FileStore
 	Email      service.EmailSender
-	Dispatcher *service.Dispatcher
-	Transcoder *service.Transcoder
 	Audit      *model.AuditWorker
 	Challenges *auth.ChallengeManager
 	Mid        *middleware.Middleware
@@ -101,7 +99,6 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	file.Get("/", h.handleList)
 	file.Get("/search", h.handleSearch)
 	file.Get("/access", h.handleFileAccess)
-	file.Get("/preview", h.handlePreview)
 	file.Put("/content/diff", h.handlePatchContent)
 	file.Put("/shared/:share_id/content/diff", h.handleSharePatchContent)
 	file.Post("/mkdir", h.handleMkdir)
@@ -124,14 +121,6 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	file.Delete("/share/:id", h.handleDeleteShare)
 	file.Get("/shared", h.handleListSharedWithMe)
 	file.Get("/shared/:share_id", h.handleShareInfo)
-
-	// /job
-	job := authed.Group("/job")
-	job.Get("/", h.handleListJobs)
-	job.Post("/", h.handleJobDispatch)
-	job.Delete("/done", h.handleClearJobs)
-	job.Get("/:id/status", h.handleJobStatus)
-	job.Delete("/:id", h.handleCancelJob)
 
 	// /task
 	task := authed.Group("/task")
