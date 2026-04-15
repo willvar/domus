@@ -110,7 +110,7 @@ export interface ShareFileView extends Share {
 /** User-facing task. Mirrors model.Task (json-exported fields). */
 export interface Task {
   task_id: string
-  type: 'upload' | 'transcode' | string
+  type: 'upload' | string
   status: TaskStatus
   progress: number
   phase: string
@@ -244,7 +244,6 @@ export type ViewerType =
   | 'pdf'
   | 'font'
   | 'archive'
-  | 'office'
   | 'notebook'
 
 /** App window state for file viewers (image, video, text, etc.). */

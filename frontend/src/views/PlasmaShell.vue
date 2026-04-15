@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, h, provide, watch, defineAsyncComponent } from 'vue'
-import TranscodeDialog from '../components/TranscodeDialog.vue'
 import ShareDialog from '../components/ShareDialog.vue'
 import WallpaperDialog from '../components/plasma/WallpaperDialog.vue'
 import ActivityPanel from '../components/plasma/systemtray/ActivityPanel.vue'
@@ -57,13 +56,9 @@ provide('trayPanelSize', trayPanelSize)
 provide('updateTrayPanelSize', updateTrayPanelSize)
 
 const showPrefs = ref(false)
-const transcodeDialogRef = ref<any>(null)
 const shareDialogShow = ref(false)
 const shareDialogPath = ref('')
 
-provide('openTranscodeDialog', (path: string, name: string, mediaType: string) => {
-  transcodeDialogRef.value?.open(path, name, mediaType)
-})
 provide('openShareDialog', (path: string) => {
   shareDialogPath.value = path
   shareDialogShow.value = true
@@ -158,7 +153,6 @@ if (auth.needsSetup) {
     <PlasmaPanel v-model:show-prefs="showPrefs" />
 
     <ContextMenu />
-    <TranscodeDialog ref="transcodeDialogRef" />
     <ShareDialog :show="shareDialogShow" :file-path="shareDialogPath" @close="shareDialogShow = false" />
     <ActivityPanel />
     <GlobalDialog />

@@ -463,7 +463,6 @@ function onVideoError() {
         </div>
         <video v-else-if="state.type === 'video' && state.url" ref="videoEl" :src="state.url" controls autoplay playsinline class="viewer-video" @play="onVideoPlay" @pause="onVideoPause" @seeked="onVideoSeeked" @error="onVideoError" />
         <iframe v-else-if="state.type === 'pdf' && state.url" :src="state.url" class="viewer-pdf" />
-        <iframe v-else-if="state.type === 'office' && state.url" :src="state.url" class="viewer-pdf" allowfullscreen />
         <div v-else-if="state.type === 'text' && showCodePane" ref="cmContainer" class="viewer-cm-wrap" :class="{ 'viewer-pane': isHtmlPreview }" />
         <div v-if="state.type === 'text' && showRenderedPane" class="viewer-render-wrap" :class="{ 'viewer-pane': htmlPreviewMode === 'split' }">
           <iframe class="viewer-render-frame" :srcdoc="iframeSrcdoc" sandbox="" title="HTML Preview" />
