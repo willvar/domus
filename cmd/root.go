@@ -78,6 +78,8 @@ func Execute() {
 		restart(configPath, daemonMode)
 	case "status":
 		status(configPath)
+	case "reset":
+		reset(configPath, hasFlag(os.Args[2:], "--yes"))
 	case "help", "-h", "--help":
 		printHelp()
 	default:
@@ -85,6 +87,15 @@ func Execute() {
 		printHelp()
 		os.Exit(1)
 	}
+}
+
+func hasFlag(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
 }
 
 func start(configPath string, daemonMode bool) {
@@ -201,6 +212,57 @@ func status(configPath string) {
 	logger.Info("  Current QPS: %v", data["current_qps"])
 }
 
+func reset(configPath string, confirmed bool) {
+	cfg := loadConfig(configPath)
+	if err := resetInstance(cfg, configPath, confirmed, resetDeps{
+		getStatus: bootstrap.GetStatus,
+		resetDB:   model.ResetDatabase,
+		newStore:  store.NewOSSClient,
+	}); err != nil {
+		logger.Fatal("%v", err)
+	}
+	logger.Info("Reset finished. Run `zephyr start -c %s` to reinitialize the instance.", configPath)
+}
+
+type resetDeps struct {
+	getStatus func(pidFile string) (running bool, pid int, err error)
+	resetDB   func(cfg config.DatabaseConfig) error
+	newStore  func(cfg config.OSSConfig) (store.FileStore, error)
+}
+
+func resetInstance(cfg *config.Config, configPath string, confirmed bool, deps resetDeps) error {
+	running, pid, err := deps.getStatus(cfg.Server.PidFile)
+	if err != nil {
+		return fmt.Errorf("failed to check process status: %w", err)
+	}
+	if running {
+		return fmt.Errorf("service is running (PID: %d). Stop it before reset", pid)
+	}
+	if !confirmed {
+		return fmt.Errorf("reset is destructive. Re-run with --yes to clear database %q and bucket %q", cfg.Database.DBName, cfg.OSS.Bucket)
+	}
+
+	logger.Info("Resetting Zephyr instance")
+	logger.Info("  Config file: %s", configPath)
+	logger.Info("  Database: %s", cfg.Database.DBName)
+	logger.Info("  Bucket: %s", cfg.OSS.Bucket)
+
+	if err := deps.resetDB(cfg.Database); err != nil {
+		return fmt.Errorf("failed to reset database: %w", err)
+	}
+	logger.Info("Database reset complete")
+
+	fileStore, err := deps.newStore(cfg.OSS)
+	if err != nil {
+		return fmt.Errorf("database reset completed, but failed to init OSS client for bucket cleanup: %w", err)
+	}
+	if err := fileStore.DeleteAllObjects(nil); err != nil {
+		return fmt.Errorf("database reset completed, but failed to clear bucket %q: %w", cfg.OSS.Bucket, err)
+	}
+	logger.Info("Bucket cleanup complete")
+	return nil
+}
+
 func loadConfig(path string) *config.Config {
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -309,13 +371,7 @@ func runServer(cfg *config.Config, configPath string) {
 		logger.Fatal("Failed to init OSS: %v", err)
 	}
 
-	// Ensure temp dir exists
-	if err := os.MkdirAll(config.TempDir, 0755); err != nil {
-		logger.Fatal("Failed to create temp dir: %v", err)
-	}
-
 	// Initialize services
-	transcoder := service.NewTranscoder(cfg.Transcode)
 	mid := middleware.New(repos.Sessions, cfg.Server.SessionSecret)
 
 	// Initialize virtual shell manager
@@ -345,20 +401,12 @@ func runServer(cfg *config.Config, configPath string) {
 		Repos:      repos,
 		Store:      fileStore,
 		Email:      service.NewSMTPEmailSender(cfg.SMTP),
-		Transcoder: transcoder,
 		Audit:      audit,
 		Challenges: challenges,
 		Mid:        mid,
 		Hub:        hub,
 		Vsh:        shellMgr,
 	}
-
-	// Initialize and start job dispatcher
-	dispatcher := service.NewDispatcher(repos.Jobs)
-	dispatcher.Register("transcode", cfg.Jobs.TranscodeConcurrency, h.RunTranscodeJob)
-	dispatcher.Start()
-	defer dispatcher.Stop()
-	h.Dispatcher = dispatcher
 
 	// Clean orphan uploads at startup, then periodically
 	go func() {
@@ -530,5 +578,28 @@ func cleanOrphanUploads(s store.FileStore, repos *model.Repos) {
 }
 
 func printHelp() {
-	bootstrap.PrintHelp("zephyr", "文件管理服务")
+	fmt.Printf("%s %s v%s\n", "zephyr", "文件管理服务", version.Version)
+	fmt.Println()
+	fmt.Println("用法:")
+	fmt.Println("  zephyr <command> [options]")
+	fmt.Println()
+	fmt.Println("命令:")
+	fmt.Println("  start     启动服务")
+	fmt.Println("  stop      停止服务")
+	fmt.Println("  restart   重启服务")
+	fmt.Println("  status    查看服务状态")
+	fmt.Println("  reset     清空数据库并清空整个 bucket（危险）")
+	fmt.Println()
+	fmt.Println("选项:")
+	fmt.Println("  -c string  配置文件路径 (默认: config.yaml)")
+	fmt.Println("  -d         守护进程模式")
+	fmt.Println("  --yes      确认执行危险操作（仅 reset 使用）")
+	fmt.Println()
+	fmt.Println("示例:")
+	fmt.Println("  zephyr start")
+	fmt.Println("  zephyr start -d")
+	fmt.Println("  zephyr start -c app.yaml")
+	fmt.Println("  zephyr stop")
+	fmt.Println("  zephyr status")
+	fmt.Println("  zephyr reset -c config.yaml --yes")
 }
