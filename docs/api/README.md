@@ -18,7 +18,7 @@
 - [当前用户 `/user`](./user.md)
 - [审计与管理 `/audit` + `/admin`](./audit-admin.md)
 - [文件 / 上传 / 分享 `/file`](./file.md)
-- [作业与任务 `/job` + `/task`](./jobs-tasks.md)
+- [任务 `/task`](./jobs-tasks.md)
 - [工作区 `/workspace`](./workspace.md)
 
 ### WebSocket
@@ -45,7 +45,6 @@
 - `POST /file/copy`
 - `POST /file/move`
 - `DELETE /file/delete`（部分目录场景）
-- `GET /job/:id/status`
 
 文件类 SSE 常见事件数据格式：
 ```json

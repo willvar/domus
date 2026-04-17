@@ -13,7 +13,7 @@
 - [当前用户 `/user`](./docs/api/user.md)
 - [审计与管理 `/audit` + `/admin`](./docs/api/audit-admin.md)
 - [文件 / 上传 / 分享 `/file`](./docs/api/file.md)
-- [作业与任务 `/job` + `/task`](./docs/api/jobs-tasks.md)
+- [任务 `/task`](./docs/api/jobs-tasks.md)
 - [工作区 `/workspace`](./docs/api/workspace.md)
 
 ### WebSocket
