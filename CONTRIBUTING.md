@@ -65,7 +65,6 @@ zephyr/
 │   │   ├── files.go            #   文件列表 / 搜索 / 文件命令
 │   │   ├── upload.go           #   分片上传
 │   │   ├── content.go          #   文本编辑、原始内容
-│   │   ├── transcode.go        #   媒体格式转换
 │   │   ├── share.go            #   分享关系与共享访问
 │   │   ├── jobs.go             #   后台作业查询与控制
 │   │   ├── task.go             #   用户任务查询与控制
@@ -88,7 +87,6 @@ zephyr/
 │   │   └── audit.go            #   审计日志
 │   ├── service/                # 业务逻辑服务
 │   │   ├── dispatcher.go       #   作业队列分发器
-│   │   ├── transcode.go        #   FFmpeg 媒体转码
 │   │   └── email.go            #   邮件服务 (SMTP)
 │   ├── store/                  # 外部存储抽象
 │   │   └── oss.go              #   阿里云 OSS 客户端
@@ -185,7 +183,6 @@ cp config.example.yaml config.yaml
 编辑 `config.yaml`，填写必要的配置项：
 - `oss.*` — 阿里云 OSS 凭证与 Bucket
 - `database.*` — PostgreSQL 连接信息
-- `transcode.*` — FFmpeg 路径（如需媒体转码）
 - `smtp.*` — 邮箱验证（可选）
 
 可选：开发环境可额外创建 `config.dev.yaml`，只填写需要覆盖的字段（例如本机数据库名、端口等）。默认启动时会先读取 `config.yaml`，再用 `config.dev.yaml` 覆盖；如果使用 `-c xxx.yaml` 显式指定配置文件，则不会自动读取 `config.dev.yaml`。
@@ -227,6 +224,18 @@ make build-prod     # 压缩二进制 (需要 UPX)
 ```bash
 cd frontend && npm run build    # 输出到 frontend/dist/
 ```
+
+### 重置实例
+
+危险操作：会清空 `config.yaml` 指定的 PostgreSQL 数据库，并清空配置中的整个 OSS bucket。
+
+```bash
+zephyr reset -c config.yaml --yes
+```
+
+- 执行前请先停止服务，否则命令会拒绝运行
+- reset 不会立即创建 `root`；下一次 `zephyr start` 时会走首次启动逻辑自动初始化
+- 首次启动所需的 root 初始密码仍需通过 `server.root_bootstrap_password_file` 或 `ZEPHYR_ROOT_BOOTSTRAP_PASSWORD` 提供
 
 ## 开发工作流
 
@@ -356,19 +365,6 @@ HTTP 请求
         → ws/push.go（dir.changed / task.update / session.* 推送）
           → ws/hub.go（广播 / 目录订阅）
 ```
-
-### 作业调度
-
-```
-handler 发起作业请求
-  → service/dispatcher.go（作业队列分发）
-    → service/transcode.go（FFmpeg 转码）
-    → OSS 上传
-  → model/job.go（状态追踪）
-  → ws/push.go（实时进度推送）
-```
-
-**Job vs Task**：`Job` 是后台调度的内部工作单元（如转码），由 `dispatcher` 消费，不直接承担前端交互语义。`Task` 是面向用户的进度追踪记录，显示在前端任务面板中。一个 Job 可通过 `TaskID` 字段关联到一个 Task，Job 的状态/进度变化会同步到对应的 Task 并推送给客户端。
 
 ### 认证流程
 

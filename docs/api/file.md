@@ -83,23 +83,6 @@
 }
 ```
 
-### `GET /file/preview`
-生成预览 URL。
-
-鉴权：已登录
-
-查询参数：
-- `path`：必填
-- `type`：当前仅支持 `office`
-
-响应：
-```json
-{"url": "https://..."}
-```
-
-说明：
-- `type=office` 时，服务端会临时解密原文件并上传一份短时有效的明文预览文件。
-
 ## 文件内容写入
 
 ### `PUT /file/content/diff`
