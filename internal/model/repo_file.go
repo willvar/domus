@@ -1,7 +1,6 @@
 package model
 
 import (
-	"fmt"
 	"time"
 
 	"gorm.io/gorm"
@@ -18,16 +17,13 @@ type FileRepo interface {
 	ListAllChildren(userID, parent string) ([]FileRecord, error)
 	Move(userID, oldPath, newPath, newName string) error
 	MoveByPrefix(userID, oldPrefix, newPrefix string) error
-	SumSizeByPrefix(userID, prefix string) (int64, error)
 	UpdateThumbnail(userID, path, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) error
 	UpdateSearchVector(userID, path, text string) error
-	RebuildAllSearchVectors() (int64, error)
 	SearchFiles(userID, query string, limit int) ([]SearchFileResult, error)
 	HasFullTextSearch() bool
 	// Upload-related
 	CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, clientInstanceID string) error
 	GetUpload(userID, uploadID string) (*FileRecord, error)
-	UpdateUploadParts(uploadID, completedParts string) error
 	UpdateStatus(uploadID, status string) error
 	TouchUpload(uploadID string, seenAt time.Time) error
 	ListActiveUploads(userID string) ([]FileRecord, error)
@@ -131,13 +127,6 @@ func (r *gormFileRepo) MoveByPrefix(userID, oldPrefix, newPrefix string) error {
 		}).Error
 }
 
-func (r *gormFileRepo) SumSizeByPrefix(userID, prefix string) (int64, error) {
-	var total int64
-	err := r.db.Model(&FileRecord{}).Where("user_id = ? AND path LIKE ?", userID, prefix+"%").
-		Select("COALESCE(SUM(size), 0)").Scan(&total).Error
-	return total, err
-}
-
 func (r *gormFileRepo) UpdateThumbnail(userID, path, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) error {
 	return r.db.Model(&FileRecord{}).Where("user_id = ? AND path = ?", userID, path).Updates(map[string]interface{}{
 		"thumbnail_key":         thumbnailKey,
@@ -157,14 +146,6 @@ func (r *gormFileRepo) UpdateSearchVector(userID, path, text string) error {
 		"UPDATE files SET search_vector = to_tsvector('jiebacfg', ?) WHERE user_id = ? AND path = ?",
 		text, userID, path,
 	).Error
-}
-
-func (r *gormFileRepo) RebuildAllSearchVectors() (int64, error) {
-	if !r.hasFTS {
-		return 0, fmt.Errorf("pg_jieba is not available")
-	}
-	res := r.db.Exec("UPDATE files SET search_vector = to_tsvector('jiebacfg', name) WHERE status = 'ready'")
-	return res.RowsAffected, res.Error
 }
 
 func (r *gormFileRepo) HasFullTextSearch() bool {
@@ -232,13 +213,6 @@ func (r *gormFileRepo) GetUpload(userID, uploadID string) (*FileRecord, error) {
 		return nil, err
 	}
 	return rec, nil
-}
-
-func (r *gormFileRepo) UpdateUploadParts(uploadID, completedParts string) error {
-	return r.db.Model(&FileRecord{}).Where("upload_id = ?", uploadID).Updates(map[string]interface{}{
-		"completed_parts": completedParts,
-		"updated_at":      time.Now(),
-	}).Error
 }
 
 func (r *gormFileRepo) UpdateStatus(uploadID, status string) error {

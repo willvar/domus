@@ -162,30 +162,6 @@ func (h *Handler) wsWorkspaceEvent(conn *ws.Conn, _ string, data json.RawMessage
 
 // --- Helpers ---
 
-// updateTaskOp updates a task's progress and pushes a WebSocket event.
-func (h *Handler) updateTaskOp(userID, taskID, taskType, name string, done, total int, phase string) {
-	var progress float64
-	if total > 0 {
-		progress = float64(done) / float64(total)
-	}
-	_ = h.Repos.Tasks.UpdateProgress(taskID, progress, phase)
-	if h.Hub != nil {
-		h.Hub.PushTaskUpdate(userID, taskID, taskType, name, "running", "", progress, phase)
-	}
-}
-
-// finishTaskOp marks a task as completed/failed and pushes a WebSocket event.
-func (h *Handler) finishTaskOp(userID, taskID, taskType, name, status string) {
-	_ = h.Repos.Tasks.UpdateStatus(taskID, status)
-	if h.Hub != nil {
-		var progress float64
-		if status == "completed" {
-			progress = 1.0
-		}
-		h.Hub.PushTaskUpdate(userID, taskID, taskType, name, status, "", progress, "")
-	}
-}
-
 // notifyParentDir notifies subscribers of the parent directory that it changed.
 func (h *Handler) notifyParentDir(username, resolvedPath string) {
 	parent := parentDirOf(resolvedPath)

@@ -67,7 +67,6 @@ const hasActivity = computed(() =>
 )
 
 const typeIcons: Record<string, any> = {
-  transcode: IconSync,
   upload: IconUpload,
   copy: IconContentCopy,
   move: IconFolder,

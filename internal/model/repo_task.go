@@ -26,15 +26,11 @@ type gormTaskRepo struct {
 }
 
 func (r *gormTaskRepo) Create(userID, taskID, taskType, name string) error {
-	status := "running"
-	if taskType == "transcode" {
-		status = "pending"
-	}
 	return r.db.Create(&Task{
 		UserID: userID,
 		TaskID: taskID,
 		Type:   taskType,
-		Status: status,
+		Status: "running",
 		Name:   name,
 	}).Error
 }

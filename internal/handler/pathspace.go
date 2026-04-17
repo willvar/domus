@@ -2,8 +2,6 @@ package handler
 
 import (
 	"strings"
-
-	"zephyr/internal/model"
 )
 
 const trashRootPath = "/__trash__/"
@@ -32,21 +30,6 @@ func trashAppPath(path string) string {
 		return trashRootPath
 	}
 	return trashRootPath + strings.TrimPrefix(path, "/")
-}
-
-func restoreAppPath(path string) string {
-	path = normalizeAppPath(path)
-	if !isTrashAppPath(path) {
-		return path
-	}
-	restored := "/" + strings.TrimPrefix(path, trashRootPath)
-	if restored == "//" {
-		return "/"
-	}
-	if strings.HasSuffix(path, "/") && restored != "/" && !strings.HasSuffix(restored, "/") {
-		restored += "/"
-	}
-	return restored
 }
 
 // ensureParentDirRecords creates any missing ancestor directory records for a destination path.
@@ -118,10 +101,6 @@ func shouldDeleteSharesOnMove(srcAppPath, dstAppPath string) bool {
 	return !isTrashAppPath(srcAppPath) && isTrashAppPath(dstAppPath)
 }
 
-func sourceInTrashWithoutShares(srcAppPath string) bool {
-	return isTrashAppPath(srcAppPath)
-}
-
 func syncMovedFileRecords(h *Handler, userID, srcResolved, dstResolved, srcAppPath, dstAppPath string, isDir bool) {
 	if isDir {
 		_ = h.Repos.Files.MoveByPrefix(userID, srcResolved, dstResolved)
@@ -154,14 +133,4 @@ func movePathViaStore(h *Handler, srcResolved, dstResolved string, isDir bool, p
 		progress(1, 1, srcResolved)
 	}
 	return err
-}
-
-func existingEntryByPath(records []model.FileRecord, path string) *model.FileRecord {
-	for _, record := range records {
-		if record.Path == path {
-			copied := record
-			return &copied
-		}
-	}
-	return nil
 }
