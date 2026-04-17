@@ -6,10 +6,8 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"os"
 	"strconv"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"zephyr/config"
@@ -19,11 +17,6 @@ import (
 )
 
 // Custom types to decouple from SDK
-
-type UploadPartInfo struct {
-	PartNumber int    `json:"part_number"`
-	ETag       string `json:"etag"`
-}
 
 type ObjectInfo struct {
 	Key  string
@@ -62,17 +55,12 @@ type FileStore interface {
 	RecursiveCopy(srcPrefix, dstPrefix string, progress func(done, total int, current string)) error
 	RecursiveMove(srcPrefix, dstPrefix string, progress func(done, total int, current string)) error
 	RecursiveDelete(prefix string, progress func(done, total int, current string)) error
+	DeleteAllObjects(progress func(done, total int, current string)) error
 	GetTotalSize(prefix string) (int64, int, error)
 	GeneratePresignedURL(key string, expires time.Duration) (string, error)
 	GetObjectContent(key string) (io.ReadCloser, error)
-	GetObjectContentRange(key string, start, end int64) (io.ReadCloser, error)
-	PutObjectContent(key, content string) error
 	PutObjectBytes(key string, data []byte) error
 	RenameObject(oldKey, newKey string, isDir bool) error
-	DownloadToFile(key, localPath string) error
-	UploadFromFile(key, localPath string) error
-	UploadFromFileCtx(ctx context.Context, key, localPath string) error
-	UploadFromFileCtxProgress(ctx context.Context, key, localPath string, fn ProgressFn) error
 
 	// Client-direct-upload operations (presigned URLs use clientUploadClient)
 	PresignedPutObject(key string, expires time.Duration) (string, error)
@@ -83,40 +71,6 @@ type FileStore interface {
 	AbortMultipartUpload(key, uploadID string) error
 	ListParts(key, uploadID string) ([]PartInfo, error)
 	HeadObject(key string) (*HeadResult, error)
-}
-
-// ProgressFn reports upload progress: done bytes out of total bytes.
-type ProgressFn func(done, total int64)
-
-// progressReaderAt wraps an *os.File to report read progress while preserving
-// io.ReaderAt so the MinIO SDK can use parallel multipart uploads.
-type progressReaderAt struct {
-	f     *os.File
-	total int64
-	done  atomic.Int64
-	fn    ProgressFn
-}
-
-func (pr *progressReaderAt) Read(p []byte) (int, error) {
-	n, err := pr.f.Read(p)
-	if n > 0 {
-		d := pr.done.Add(int64(n))
-		if pr.fn != nil {
-			pr.fn(d, pr.total)
-		}
-	}
-	return n, err
-}
-
-func (pr *progressReaderAt) ReadAt(p []byte, off int64) (int, error) {
-	n, err := pr.f.ReadAt(p, off)
-	if n > 0 {
-		d := pr.done.Add(int64(n))
-		if pr.fn != nil {
-			pr.fn(d, pr.total)
-		}
-	}
-	return n, err
 }
 
 // FileInfo holds metadata for a file or directory
@@ -148,7 +102,7 @@ type ListResult struct {
 
 // OSSClient implements FileStore using MinIO S3-compatible SDK.
 // It holds two MinIO clients:
-//   - serverClient: for server-side operations (transcode, HeadObject, Delete, etc.)
+//   - serverClient: for server-side operations (HeadObject, Delete, etc.)
 //   - clientUploadClient: for generating presigned URLs that browsers will use for direct upload
 type OSSClient struct {
 	serverClient       *minio.Client
@@ -415,6 +369,11 @@ func (c *OSSClient) RecursiveDelete(prefix string, progress func(done, total int
 	return nil
 }
 
+// DeleteAllObjects deletes every object in the configured bucket.
+func (c *OSSClient) DeleteAllObjects(progress func(done, total int, current string)) error {
+	return c.RecursiveDelete("", progress)
+}
+
 // GetTotalSize calculates total size of all objects under a prefix
 func (c *OSSClient) GetTotalSize(prefix string) (int64, int, error) {
 	objects, err := c.ListAllObjects(prefix)
@@ -452,26 +411,6 @@ func (c *OSSClient) GetObjectContent(key string) (io.ReadCloser, error) {
 	return obj, nil
 }
 
-// GetObjectContentRange reads a byte range of an object's content
-func (c *OSSClient) GetObjectContentRange(key string, start, end int64) (io.ReadCloser, error) {
-	opts := minio.GetObjectOptions{}
-	if err := opts.SetRange(start, end); err != nil {
-		return nil, err
-	}
-	obj, err := c.serverClient.GetObject(context.Background(), c.bucketName, key, opts)
-	if err != nil {
-		return nil, err
-	}
-	return obj, nil
-}
-
-// PutObjectContent writes string content to an object
-func (c *OSSClient) PutObjectContent(key, content string) error {
-	r := strings.NewReader(content)
-	_, err := c.serverClient.PutObject(context.Background(), c.bucketName, key, r, int64(len(content)), minio.PutObjectOptions{})
-	return err
-}
-
 // PutObjectBytes writes binary data to an object
 func (c *OSSClient) PutObjectBytes(key string, data []byte) error {
 	r := bytes.NewReader(data)
@@ -491,46 +430,6 @@ func (c *OSSClient) RenameObject(oldKey, newKey string, isDir bool) error {
 		return c.RecursiveMove(oldKey, newKey, nil)
 	}
 	return c.MoveObject(oldKey, newKey)
-}
-
-// DownloadToFile downloads an object to a local file.
-func (c *OSSClient) DownloadToFile(key, localPath string) error {
-	return c.serverClient.FGetObject(context.Background(), c.bucketName, key, localPath, minio.GetObjectOptions{})
-}
-
-// UploadFromFile uploads a local file.
-func (c *OSSClient) UploadFromFile(key, localPath string) error {
-	return c.UploadFromFileCtx(context.Background(), key, localPath)
-}
-
-func (c *OSSClient) UploadFromFileCtx(ctx context.Context, key, localPath string) error {
-	return c.UploadFromFileCtxProgress(ctx, key, localPath, nil)
-}
-
-func (c *OSSClient) UploadFromFileCtxProgress(ctx context.Context, key, localPath string, fn ProgressFn) error {
-	f, err := os.Open(localPath)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = f.Close() }()
-
-	info, err := f.Stat()
-	if err != nil {
-		return err
-	}
-
-	opts := minio.PutObjectOptions{
-		PartSize:   uint64(config.UploadChunkSize),
-		NumThreads: 4,
-	}
-
-	var body io.Reader = f
-	if fn != nil {
-		body = &progressReaderAt{f: f, total: info.Size(), fn: fn}
-	}
-
-	_, err = c.serverClient.PutObject(ctx, c.bucketName, key, body, info.Size(), opts)
-	return err
 }
 
 // ---------------------------------------------------------------------------
