@@ -22,14 +22,13 @@ func setupTestDB(t *testing.T) (*gorm.DB, *Repos) {
 	if err != nil {
 		t.Skipf("skipping test: could not connect to PostgreSQL: %v", err)
 	}
-	if err := testDB.AutoMigrate(&User{}, &FileRecord{}, &DBSession{}, &Job{}, &Task{}, &AuditLog{}, &WorkspaceState{}, &Share{}); err != nil {
+	if err := testDB.AutoMigrate(&User{}, &FileRecord{}, &DBSession{}, &Task{}, &AuditLog{}, &WorkspaceState{}, &Share{}); err != nil {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 	testDB.Exec("ALTER TABLE shares DROP COLUMN IF EXISTS share_type")
 	testDB.Exec("DELETE FROM users")
 	testDB.Exec("DELETE FROM files")
 	testDB.Exec("DELETE FROM sessions")
-	testDB.Exec("DELETE FROM jobs")
 	testDB.Exec("DELETE FROM tasks")
 	testDB.Exec("DELETE FROM workspace_states")
 	testDB.Exec("DELETE FROM shares")
@@ -168,9 +167,6 @@ func TestDeleteUserAndRelatedData(t *testing.T) {
 	if err := repos.Files.Upsert(owner.ID, trashPath, "doc.txt", false, 123, "text/plain", "hash"); err != nil {
 		t.Fatalf("upsert trash file: %v", err)
 	}
-	if _, err := repos.Jobs.Create(owner.ID, "job-clean-owner", "transcode", "{}"); err != nil {
-		t.Fatalf("create job: %v", err)
-	}
 	if err := repos.Tasks.Create(owner.ID, "task-clean-owner", "upload", "doc.txt"); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -233,13 +229,6 @@ func TestDeleteUserAndRelatedData(t *testing.T) {
 	}
 	if _, err := repos.Files.Get(owner.ID, trashPath); err == nil {
 		t.Fatal("expected trash file record to be deleted")
-	}
-	jobs, err := repos.Jobs.ListActive(owner.ID)
-	if err != nil {
-		t.Fatalf("list jobs: %v", err)
-	}
-	if len(jobs) != 0 {
-		t.Fatalf("expected no jobs, got %d", len(jobs))
 	}
 	tasks, err := repos.Tasks.ListRecent(owner.ID)
 	if err != nil {

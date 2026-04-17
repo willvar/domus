@@ -41,13 +41,6 @@ func (h *Handler) cancelTask(session *model.Session, taskID string) error {
 		return fiber.NewError(fiber.StatusForbidden, "access_denied")
 	}
 
-	jobs, _ := h.Repos.Jobs.FindByTaskID(taskID)
-	for _, j := range jobs {
-		if j.Status == "pending" || j.Status == "running" {
-			h.Dispatcher.Cancel(j.JobID)
-		}
-	}
-
 	if task.Type == "upload" {
 		files, _ := h.Repos.Files.ListByPrefix(session.UserID, "")
 		for _, f := range files {

@@ -507,50 +507,6 @@ func (h *Handler) handleUploadCleanup(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{"ok": true, "count": len(records)})
 }
 
-// ── abort ────────────────────────────────────────────────────────────────────
-
-func (h *Handler) handleUploadAbort(c *fiber.Ctx) error {
-	uploadID := c.Query("upload_id", "")
-	if uploadID == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "upload_id required"})
-	}
-	taskID := c.Query("task_id", "")
-	status := c.Query("status", "cancelled")
-	if status != "cancelled" && status != "failed" {
-		status = "cancelled"
-	}
-	reason := strings.TrimSpace(c.Query("reason", ""))
-
-	session := c.Locals("session").(*model.Session)
-	record, err := h.Repos.Files.GetUpload(session.UserID, uploadID)
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
-	}
-
-	// Abort multipart upload on OSS
-	if record.OSSUploadID != "" {
-		_ = h.Store.AbortMultipartUpload(record.Path, record.OSSUploadID)
-	}
-	// Clean up any already-completed object
-	_ = h.Store.DeleteObject(record.Path)
-
-	_ = h.Repos.Files.Delete(session.UserID, record.Path)
-	if taskID == "" {
-		taskID = record.TaskID
-	}
-	if taskID != "" {
-		_ = h.Repos.Tasks.UpdateStatus(taskID, status)
-	}
-	if h.Hub != nil {
-		h.notifyParentDir(session.Username, record.Path)
-	}
-	if reason != "" {
-		h.Audit.LogFromCtx(c, "file_upload_abort", record.Path, reason, status, 0)
-	}
-
-	return c.JSON(fiber.Map{"ok": true})
-}
-
 // ── status ───────────────────────────────────────────────────────────────────
 
 func (h *Handler) handleUploadStatus(c *fiber.Ctx) error {

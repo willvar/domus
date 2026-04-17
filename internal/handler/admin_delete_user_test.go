@@ -29,9 +29,6 @@ func seedUserDeleteFixture(t *testing.T, repos *model.Repos, victim, other, targ
 	if err := repos.Files.Upsert(victim.ID, trashPath, "doc.txt", false, 123, "text/plain", "hash"); err != nil {
 		t.Fatalf("upsert trash file: %v", err)
 	}
-	if _, err := repos.Jobs.Create(victim.ID, "job-clean-"+victim.Username, "transcode", "{}"); err != nil {
-		t.Fatalf("create job: %v", err)
-	}
 	if err := repos.Tasks.Create(victim.ID, "task-clean-"+victim.Username, "upload", "doc.txt"); err != nil {
 		t.Fatalf("create task: %v", err)
 	}
@@ -102,13 +99,6 @@ func assertUserDeletedCompletely(t *testing.T, repos *model.Repos, victim *model
 	}
 	if _, err := repos.Files.Get(victim.ID, victim.Username+"/__trash__/home/"+victim.Username+"/doc.txt"); err == nil {
 		t.Fatal("expected trash file record to be deleted")
-	}
-	jobs, err := repos.Jobs.ListActive(victim.ID)
-	if err != nil {
-		t.Fatalf("list jobs: %v", err)
-	}
-	if len(jobs) != 0 {
-		t.Fatalf("expected no active jobs, got %d", len(jobs))
 	}
 	tasks, err := repos.Tasks.ListRecent(victim.ID)
 	if err != nil {

@@ -8,7 +8,6 @@ func MockRepos() *Repos {
 		Users:     &MockUserRepo{},
 		Files:     &MockFileRepo{},
 		Sessions:  &MockSessionRepo{},
-		Jobs:      &MockJobRepo{},
 		Tasks:     &MockTaskRepo{},
 		Audit:     &MockAuditRepo{},
 		Shares:    &MockShareRepo{},
@@ -124,29 +123,26 @@ func (m *MockUserRepo) SetWrappedKEK(userID, wrappedKEK string) error {
 // --- MockFileRepo ---
 
 type MockFileRepo struct {
-	UpsertFn                  func(userID, path, name string, isDir bool, size int64, contentType, contentHash string, opts ...UpsertFileOpts) error
-	GetFn                     func(userID, path string) (*FileRecord, error)
-	DeleteFn                  func(userID, path string) error
-	DeleteByPrefixFn          func(userID, prefix string) error
-	ListByPrefixFn            func(userID, prefix string) ([]FileRecord, error)
-	ListDirectChildrenFn      func(userID, parent string) ([]FileRecord, error)
-	ListAllChildrenFn         func(userID, parent string) ([]FileRecord, error)
-	MoveFn                    func(userID, oldPath, newPath, newName string) error
-	MoveByPrefixFn            func(userID, oldPrefix, newPrefix string) error
-	SumSizeByPrefixFn         func(userID, prefix string) (int64, error)
-	UpdateThumbnailFn         func(userID, path, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) error
-	UpdateSearchVectorFn      func(userID, path, text string) error
-	RebuildAllSearchVectorsFn func() (int64, error)
-	SearchFilesFn             func(userID, query string, limit int) ([]SearchFileResult, error)
-	HasFullTextSearchFn       func() bool
-	CreateUploadFn            func(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, clientInstanceID string) error
-	GetUploadFn               func(userID, uploadID string) (*FileRecord, error)
-	UpdateUploadPartsFn       func(uploadID, completedParts string) error
-	UpdateStatusFn            func(uploadID, status string) error
-	TouchUploadFn             func(uploadID string, seenAt time.Time) error
-	ListActiveUploadsFn       func(userID string) ([]FileRecord, error)
+	UpsertFn                         func(userID, path, name string, isDir bool, size int64, contentType, contentHash string, opts ...UpsertFileOpts) error
+	GetFn                            func(userID, path string) (*FileRecord, error)
+	DeleteFn                         func(userID, path string) error
+	DeleteByPrefixFn                 func(userID, prefix string) error
+	ListByPrefixFn                   func(userID, prefix string) ([]FileRecord, error)
+	ListDirectChildrenFn             func(userID, parent string) ([]FileRecord, error)
+	ListAllChildrenFn                func(userID, parent string) ([]FileRecord, error)
+	MoveFn                           func(userID, oldPath, newPath, newName string) error
+	MoveByPrefixFn                   func(userID, oldPrefix, newPrefix string) error
+	UpdateThumbnailFn                func(userID, path, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) error
+	UpdateSearchVectorFn             func(userID, path, text string) error
+	SearchFilesFn                    func(userID, query string, limit int) ([]SearchFileResult, error)
+	HasFullTextSearchFn              func() bool
+	CreateUploadFn                   func(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, clientInstanceID string) error
+	GetUploadFn                      func(userID, uploadID string) (*FileRecord, error)
+	UpdateStatusFn                   func(uploadID, status string) error
+	TouchUploadFn                    func(uploadID string, seenAt time.Time) error
+	ListActiveUploadsFn              func(userID string) ([]FileRecord, error)
 	CancelUploadsForOtherInstancesFn func(userID, clientInstanceID string, cutoff time.Time) ([]FileRecord, error)
-	GetStaleUploadsFn         func(staleAfter time.Duration) ([]FileRecord, error)
+	GetStaleUploadsFn                func(staleAfter time.Duration) ([]FileRecord, error)
 }
 
 func (m *MockFileRepo) Upsert(userID, path, name string, isDir bool, size int64, contentType, contentHash string, opts ...UpsertFileOpts) error {
@@ -203,12 +199,6 @@ func (m *MockFileRepo) MoveByPrefix(userID, oldPrefix, newPrefix string) error {
 	}
 	return nil
 }
-func (m *MockFileRepo) SumSizeByPrefix(userID, prefix string) (int64, error) {
-	if m.SumSizeByPrefixFn != nil {
-		return m.SumSizeByPrefixFn(userID, prefix)
-	}
-	return 0, nil
-}
 func (m *MockFileRepo) UpdateThumbnail(userID, path, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) error {
 	if m.UpdateThumbnailFn != nil {
 		return m.UpdateThumbnailFn(userID, path, thumbnailKey, thumbnailWrappedDEK, width, height, duration)
@@ -220,12 +210,6 @@ func (m *MockFileRepo) UpdateSearchVector(userID, path, text string) error {
 		return m.UpdateSearchVectorFn(userID, path, text)
 	}
 	return nil
-}
-func (m *MockFileRepo) RebuildAllSearchVectors() (int64, error) {
-	if m.RebuildAllSearchVectorsFn != nil {
-		return m.RebuildAllSearchVectorsFn()
-	}
-	return 0, nil
 }
 func (m *MockFileRepo) SearchFiles(userID, query string, limit int) ([]SearchFileResult, error) {
 	if m.SearchFilesFn != nil {
@@ -250,12 +234,6 @@ func (m *MockFileRepo) GetUpload(userID, uploadID string) (*FileRecord, error) {
 		return m.GetUploadFn(userID, uploadID)
 	}
 	return &FileRecord{UploadID: uploadID, Status: "uploading"}, nil
-}
-func (m *MockFileRepo) UpdateUploadParts(uploadID, completedParts string) error {
-	if m.UpdateUploadPartsFn != nil {
-		return m.UpdateUploadPartsFn(uploadID, completedParts)
-	}
-	return nil
 }
 func (m *MockFileRepo) UpdateStatus(uploadID, status string) error {
 	if m.UpdateStatusFn != nil {
@@ -336,110 +314,6 @@ func (m *MockSessionRepo) SetPopulateKEK(fn func(*Session)) {
 	if m.SetPopulateKEKFn != nil {
 		m.SetPopulateKEKFn(fn)
 	}
-}
-
-// --- MockJobRepo ---
-
-type MockJobRepo struct {
-	CreateFn            func(userID, jobID, jobType, params string) (*Job, error)
-	CreateDirectFn      func(job *Job) error
-	GetByJobIDFn        func(jobID string) (*Job, error)
-	ListActiveFn        func(userID string) ([]Job, error)
-	ListRecentFn        func(userID string) ([]Job, error)
-	DeleteCompletedFn   func(userID string) error
-	UpdateStatusFn      func(jobID, status string) error
-	UpdateProgressFn    func(jobID string, progress float64, phase string) error
-	UpdateResultFn      func(jobID, result string) error
-	UpdateErrorFn       func(jobID, errorMsg string) error
-	ClaimPendingFn      func(jobType string) (*Job, error)
-	FindActiveByParamFn func(jobType, paramSubstr string) (*Job, error)
-	ResetRunningFn      func() error
-	FindByTaskIDFn      func(taskID string) ([]Job, error)
-}
-
-func (m *MockJobRepo) Create(userID, jobID, jobType, params string) (*Job, error) {
-	if m.CreateFn != nil {
-		return m.CreateFn(userID, jobID, jobType, params)
-	}
-	return &Job{JobID: jobID, Type: jobType, Status: "pending"}, nil
-}
-func (m *MockJobRepo) CreateDirect(job *Job) error {
-	if m.CreateDirectFn != nil {
-		return m.CreateDirectFn(job)
-	}
-	return nil
-}
-func (m *MockJobRepo) GetByJobID(jobID string) (*Job, error) {
-	if m.GetByJobIDFn != nil {
-		return m.GetByJobIDFn(jobID)
-	}
-	return &Job{JobID: jobID, Status: "pending"}, nil
-}
-func (m *MockJobRepo) ListActive(userID string) ([]Job, error) {
-	if m.ListActiveFn != nil {
-		return m.ListActiveFn(userID)
-	}
-	return []Job{}, nil
-}
-func (m *MockJobRepo) ListRecent(userID string) ([]Job, error) {
-	if m.ListRecentFn != nil {
-		return m.ListRecentFn(userID)
-	}
-	return []Job{}, nil
-}
-func (m *MockJobRepo) DeleteCompleted(userID string) error {
-	if m.DeleteCompletedFn != nil {
-		return m.DeleteCompletedFn(userID)
-	}
-	return nil
-}
-func (m *MockJobRepo) UpdateStatus(jobID, status string) error {
-	if m.UpdateStatusFn != nil {
-		return m.UpdateStatusFn(jobID, status)
-	}
-	return nil
-}
-func (m *MockJobRepo) UpdateProgress(jobID string, progress float64, phase string) error {
-	if m.UpdateProgressFn != nil {
-		return m.UpdateProgressFn(jobID, progress, phase)
-	}
-	return nil
-}
-func (m *MockJobRepo) UpdateResult(jobID, result string) error {
-	if m.UpdateResultFn != nil {
-		return m.UpdateResultFn(jobID, result)
-	}
-	return nil
-}
-func (m *MockJobRepo) UpdateError(jobID, errorMsg string) error {
-	if m.UpdateErrorFn != nil {
-		return m.UpdateErrorFn(jobID, errorMsg)
-	}
-	return nil
-}
-func (m *MockJobRepo) ClaimPending(jobType string) (*Job, error) {
-	if m.ClaimPendingFn != nil {
-		return m.ClaimPendingFn(jobType)
-	}
-	return nil, nil
-}
-func (m *MockJobRepo) FindActiveByParam(jobType, paramSubstr string) (*Job, error) {
-	if m.FindActiveByParamFn != nil {
-		return m.FindActiveByParamFn(jobType, paramSubstr)
-	}
-	return nil, nil
-}
-func (m *MockJobRepo) ResetRunning() error {
-	if m.ResetRunningFn != nil {
-		return m.ResetRunningFn()
-	}
-	return nil
-}
-func (m *MockJobRepo) FindByTaskID(taskID string) ([]Job, error) {
-	if m.FindByTaskIDFn != nil {
-		return m.FindByTaskIDFn(taskID)
-	}
-	return []Job{}, nil
 }
 
 // --- MockTaskRepo ---

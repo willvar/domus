@@ -160,18 +160,18 @@ func (h *Handler) handleListShares(c *fiber.Ctx) error {
 			targetUsername = user.Username
 		}
 		views = append(views, fiber.Map{
-			"id": share.ID,
-			"share_id": share.ShareID,
-			"owner_id": share.OwnerID,
-			"file_path": share.FilePath,
-			"file_name": share.FileName,
-			"file_size": share.FileSize,
-			"content_type": share.ContentType,
-			"target_user_id": share.TargetUserID,
+			"id":              share.ID,
+			"share_id":        share.ShareID,
+			"owner_id":        share.OwnerID,
+			"file_path":       share.FilePath,
+			"file_name":       share.FileName,
+			"file_size":       share.FileSize,
+			"content_type":    share.ContentType,
+			"target_user_id":  share.TargetUserID,
 			"target_username": targetUsername,
-			"permission": share.Permission,
-			"expires_at": share.ExpiresAt,
-			"created_at": share.CreatedAt,
+			"permission":      share.Permission,
+			"expires_at":      share.ExpiresAt,
+			"created_at":      share.CreatedAt,
 		})
 	}
 	return c.JSON(views)

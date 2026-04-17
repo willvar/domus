@@ -281,7 +281,7 @@ func cmdRm(s *Session, args []string, redirect string) (string, error) {
 		rec, recErr := s.repos.Files.Get(s.UserID, ossPath+"/")
 		isDir := recErr == nil && rec.IsDir
 		if !isDir {
-			rec, recErr = s.repos.Files.Get(s.UserID, ossPath)
+			_, recErr = s.repos.Files.Get(s.UserID, ossPath)
 		}
 
 		if isTrashAppPath(appPath) {

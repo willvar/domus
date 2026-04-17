@@ -2,6 +2,7 @@ package model
 
 import (
 	"fmt"
+	"strings"
 
 	"zephyr/config"
 
@@ -35,6 +36,38 @@ func ensureDatabase(cfg config.DatabaseConfig) error {
 	return nil
 }
 
+func quoteIdentifier(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
+// ResetDatabase drops and recreates the target database.
+func ResetDatabase(cfg config.DatabaseConfig) error {
+	adminCfg := cfg
+	adminCfg.DBName = "postgres"
+	adminDB, err := gorm.Open(postgres.Open(adminCfg.DSN()), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+	if err != nil {
+		return fmt.Errorf("connect to postgres: %w", err)
+	}
+
+	targetDB := quoteIdentifier(cfg.DBName)
+	terminateSQL := `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = ? AND pid <> pg_backend_pid()`
+	if err := adminDB.Exec(terminateSQL, cfg.DBName).Error; err != nil {
+		return fmt.Errorf("terminate database connections for %s: %w", cfg.DBName, err)
+	}
+	if err := adminDB.Exec("DROP DATABASE IF EXISTS " + targetDB).Error; err != nil {
+		return fmt.Errorf("drop database %s: %w", cfg.DBName, err)
+	}
+	if err := adminDB.Exec("CREATE DATABASE " + targetDB).Error; err != nil {
+		return fmt.Errorf("create database %s: %w", cfg.DBName, err)
+	}
+
+	sqlDB, _ := adminDB.DB()
+	_ = sqlDB.Close()
+	return nil
+}
+
 // InitDB initializes the database connection, runs migrations, and returns:
 //   - the *gorm.DB handle
 //   - whether pg_jieba full-text search is available
@@ -50,9 +83,12 @@ func InitDB(cfg config.DatabaseConfig) (*gorm.DB, bool, error) {
 		return nil, false, fmt.Errorf("open db: %w", err)
 	}
 
-	if err := db.AutoMigrate(&User{}, &FileRecord{}, &DBSession{}, &Job{}, &Task{}, &AuditLog{}, &WorkspaceState{}, &Share{}); err != nil {
+	if err := db.AutoMigrate(&User{}, &FileRecord{}, &DBSession{}, &Task{}, &AuditLog{}, &WorkspaceState{}, &Share{}); err != nil {
 		return nil, false, fmt.Errorf("auto migrate: %w", err)
 	}
+
+	// One-time migration: drop legacy jobs table (dispatcher/jobs subsystem removed)
+	db.Exec("DROP TABLE IF EXISTS jobs")
 
 	// One-time migration: drop legacy uploads table (merged into files)
 	db.Exec("DROP TABLE IF EXISTS uploads")

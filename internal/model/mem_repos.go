@@ -23,7 +23,6 @@ func NewMemRepos(onTaskUpdate TaskUpdateFunc) *Repos {
 	files := &memFileRepo{data: make(map[string]*FileRecord), nextID: 1}
 	sessions := &memSessionRepo{data: make(map[string]*memSessionEntry)}
 	tasks := &memTaskRepo{data: make(map[string]*Task), nextID: 1, onTaskUpdate: onTaskUpdate}
-	jobs := &memJobRepo{data: make(map[string]*Job), nextID: 1, tasks: tasks}
 	shares := &memShareRepo{data: make(map[string]*Share), nextID: 1, users: users}
 	workspace := &memWorkspaceRepo{data: make(map[string]string)}
 	audit := &memAuditRepo{}
@@ -31,7 +30,6 @@ func NewMemRepos(onTaskUpdate TaskUpdateFunc) *Repos {
 		users:     users,
 		files:     files,
 		sessions:  sessions,
-		jobs:      jobs,
 		tasks:     tasks,
 		shares:    shares,
 		workspace: workspace,
@@ -42,7 +40,6 @@ func NewMemRepos(onTaskUpdate TaskUpdateFunc) *Repos {
 		Users:        users,
 		Files:        files,
 		Sessions:     sessions,
-		Jobs:         jobs,
 		Tasks:        tasks,
 		Audit:        audit,
 		Shares:       shares,
@@ -397,18 +394,6 @@ func (r *memFileRepo) MoveByPrefix(userID, oldPrefix, newPrefix string) error {
 	return nil
 }
 
-func (r *memFileRepo) SumSizeByPrefix(userID, prefix string) (int64, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var total int64
-	for _, rec := range r.data {
-		if rec.UserID == userID && strings.HasPrefix(rec.Path, prefix) {
-			total += rec.Size
-		}
-	}
-	return total, nil
-}
-
 func (r *memFileRepo) UpdateThumbnail(userID, path, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -426,10 +411,7 @@ func (r *memFileRepo) UpdateThumbnail(userID, path, thumbnailKey, thumbnailWrapp
 }
 
 func (r *memFileRepo) UpdateSearchVector(_, _, _ string) error { return nil }
-func (r *memFileRepo) RebuildAllSearchVectors() (int64, error) {
-	return 0, fmt.Errorf("pg_jieba is not available")
-}
-func (r *memFileRepo) HasFullTextSearch() bool { return false }
+func (r *memFileRepo) HasFullTextSearch() bool                 { return false }
 
 func (r *memFileRepo) SearchFiles(userID, query string, limit int) ([]SearchFileResult, error) {
 	if limit <= 0 {
@@ -490,19 +472,6 @@ func (r *memFileRepo) GetUpload(userID, uploadID string) (*FileRecord, error) {
 		}
 	}
 	return nil, gorm.ErrRecordNotFound
-}
-
-func (r *memFileRepo) UpdateUploadParts(uploadID, completedParts string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, rec := range r.data {
-		if rec.UploadID == uploadID {
-			rec.CompletedParts = completedParts
-			rec.UpdatedAt = time.Now()
-			return nil
-		}
-	}
-	return nil
 }
 
 func (r *memFileRepo) UpdateStatus(uploadID, status string) error {
@@ -809,248 +778,6 @@ func (r *memTaskRepo) Delete(taskID string) error {
 }
 
 // ---------------------------------------------------------------------------
-// memJobRepo
-// ---------------------------------------------------------------------------
-
-type memJobRepo struct {
-	mu     sync.Mutex
-	data   map[string]*Job
-	nextID int64
-	tasks  *memTaskRepo
-}
-
-func (r *memJobRepo) cascadeToTask(jobID string) {
-	j, ok := r.data[jobID]
-	if !ok || j.TaskID == "" {
-		return
-	}
-	switch j.Status {
-	case "completed":
-		_ = r.tasks.UpdateStatus(j.TaskID, "completed")
-	case "failed":
-		_ = r.tasks.UpdateProgress(j.TaskID, j.Progress, j.Phase)
-		_ = r.tasks.UpdateStatus(j.TaskID, "failed")
-	case "aborted":
-		_ = r.tasks.UpdateStatus(j.TaskID, "cancelled")
-	default:
-		_ = r.tasks.UpdateProgress(j.TaskID, j.Progress, j.Phase)
-	}
-}
-
-func (r *memJobRepo) Create(userID, jobID, jobType, params string) (*Job, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	now := time.Now()
-	job := &Job{
-		ID:        r.nextID,
-		UserID:    userID,
-		JobID:     jobID,
-		Type:      jobType,
-		Status:    "pending",
-		Params:    params,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-	r.nextID++
-	r.data[jobID] = job
-	c := *job
-	return &c, nil
-}
-
-func (r *memJobRepo) CreateDirect(job *Job) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if job.ID == 0 {
-		job.ID = r.nextID
-		r.nextID++
-	}
-	now := time.Now()
-	if job.CreatedAt.IsZero() {
-		job.CreatedAt = now
-	}
-	if job.UpdatedAt.IsZero() {
-		job.UpdatedAt = now
-	}
-	stored := *job
-	r.data[job.JobID] = &stored
-	return nil
-}
-
-func (r *memJobRepo) GetByJobID(jobID string) (*Job, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	j, ok := r.data[jobID]
-	if !ok {
-		return nil, gorm.ErrRecordNotFound
-	}
-	c := *j
-	return &c, nil
-}
-
-func (r *memJobRepo) ListActive(userID string) ([]Job, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var out []Job
-	for _, j := range r.data {
-		if j.UserID == userID && (j.Status == "pending" || j.Status == "running" || j.Status == "paused") {
-			c := *j
-			out = append(out, c)
-		}
-	}
-	sort.Slice(out, func(i, k int) bool { return out[i].CreatedAt.After(out[k].CreatedAt) })
-	return out, nil
-}
-
-func (r *memJobRepo) ListRecent(userID string) ([]Job, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var out []Job
-	for _, j := range r.data {
-		if j.UserID == userID && j.Type == "transcode" {
-			c := *j
-			out = append(out, c)
-		}
-	}
-	sort.Slice(out, func(i, k int) bool { return out[i].CreatedAt.After(out[k].CreatedAt) })
-	if len(out) > 50 {
-		out = out[:50]
-	}
-	return out, nil
-}
-
-func (r *memJobRepo) DeleteCompleted(userID string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for jobID, j := range r.data {
-		if j.UserID == userID && (j.Status == "completed" || j.Status == "failed" || j.Status == "aborted") {
-			delete(r.data, jobID)
-		}
-	}
-	return nil
-}
-
-func (r *memJobRepo) UpdateStatus(jobID, status string) error {
-	r.mu.Lock()
-	j, ok := r.data[jobID]
-	if !ok {
-		r.mu.Unlock()
-		return gorm.ErrRecordNotFound
-	}
-	j.Status = status
-	j.UpdatedAt = time.Now()
-	r.cascadeToTask(jobID)
-	r.mu.Unlock()
-	return nil
-}
-
-func (r *memJobRepo) UpdateProgress(jobID string, progress float64, phase string) error {
-	r.mu.Lock()
-	j, ok := r.data[jobID]
-	if !ok {
-		r.mu.Unlock()
-		return gorm.ErrRecordNotFound
-	}
-	j.Progress = progress
-	j.Phase = phase
-	j.UpdatedAt = time.Now()
-	r.cascadeToTask(jobID)
-	r.mu.Unlock()
-	return nil
-}
-
-func (r *memJobRepo) UpdateResult(jobID, result string) error {
-	r.mu.Lock()
-	j, ok := r.data[jobID]
-	if !ok {
-		r.mu.Unlock()
-		return gorm.ErrRecordNotFound
-	}
-	j.Result = result
-	j.Status = "completed"
-	j.Progress = 1.0
-	j.UpdatedAt = time.Now()
-	r.cascadeToTask(jobID)
-	r.mu.Unlock()
-	return nil
-}
-
-func (r *memJobRepo) UpdateError(jobID, errorMsg string) error {
-	r.mu.Lock()
-	j, ok := r.data[jobID]
-	if !ok {
-		r.mu.Unlock()
-		return gorm.ErrRecordNotFound
-	}
-	j.ErrorMsg = errorMsg
-	j.Status = "failed"
-	j.UpdatedAt = time.Now()
-	r.cascadeToTask(jobID)
-	r.mu.Unlock()
-	return nil
-}
-
-func (r *memJobRepo) ClaimPending(jobType string) (*Job, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	// Find oldest pending job of the given type
-	var oldest *Job
-	for _, j := range r.data {
-		if j.Status == "pending" && j.Type == jobType {
-			if oldest == nil || j.CreatedAt.Before(oldest.CreatedAt) {
-				oldest = j
-			}
-		}
-	}
-	if oldest == nil {
-		return nil, nil
-	}
-	oldest.Status = "running"
-	oldest.UpdatedAt = time.Now()
-	c := *oldest
-	return &c, nil
-}
-
-func (r *memJobRepo) FindActiveByParam(jobType, paramSubstr string) (*Job, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, j := range r.data {
-		if j.Type == jobType &&
-			(j.Status == "uploading" || j.Status == "pending" || j.Status == "running") &&
-			strings.Contains(j.Params, paramSubstr) {
-			c := *j
-			return &c, nil
-		}
-	}
-	return nil, gorm.ErrRecordNotFound
-}
-
-func (r *memJobRepo) ResetRunning() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	now := time.Now()
-	for _, j := range r.data {
-		if j.Status == "running" {
-			j.Status = "pending"
-			j.UpdatedAt = now
-		}
-	}
-	return nil
-}
-
-func (r *memJobRepo) FindByTaskID(taskID string) ([]Job, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var out []Job
-	for _, j := range r.data {
-		if j.TaskID == taskID {
-			c := *j
-			out = append(out, c)
-		}
-	}
-	return out, nil
-}
-
-// ---------------------------------------------------------------------------
 // memShareRepo
 // ---------------------------------------------------------------------------
 
@@ -1267,7 +994,6 @@ type memUserCleanupRepo struct {
 	users     *memUserRepo
 	files     *memFileRepo
 	sessions  *memSessionRepo
-	jobs      *memJobRepo
 	tasks     *memTaskRepo
 	shares    *memShareRepo
 	workspace *memWorkspaceRepo
@@ -1291,15 +1017,6 @@ func (r *memUserCleanupRepo) DeleteUserAndRelatedData(userID string) error {
 		}
 	}
 	r.files.mu.Unlock()
-
-	// Delete jobs
-	r.jobs.mu.Lock()
-	for jobID, j := range r.jobs.data {
-		if j.UserID == userID {
-			delete(r.jobs.data, jobID)
-		}
-	}
-	r.jobs.mu.Unlock()
 
 	// Delete tasks
 	r.tasks.mu.Lock()

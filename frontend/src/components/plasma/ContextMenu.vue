@@ -8,7 +8,6 @@ import { useContextMenuState, closeContextMenu, suppressNextContextMenu } from '
 const fs = useFileSystemStore()
 const { t } = useI18n()
 
-const openTranscodeDialog = inject<((...args: any[]) => void) | null>('openTranscodeDialog', null)
 const openShareDialog = inject<((path: string) => void) | null>('openShareDialog', null)
 
 const { show, x, y, targetFile, context } = useContextMenuState()
@@ -73,14 +72,6 @@ const options = computed(() => {
       const vtype = fs.getViewerType(targetFile.value.name)
       if (vtype !== 'text') {
         items.push({ label: t('menu.open_as_text'), key: 'open_as_text' })
-      }
-    }
-
-    if (!targetFile.value.is_dir) {
-      const ext = (targetFile.value.name || '').split('.').pop()?.toLowerCase() || ''
-      const mediaExts = ['mp4','mkv','webm','mov','avi','flv','wmv','m4v','ts','mp3','aac','flac','ogg','wav','wma','m4a','opus','jpg','jpeg','png','webp','bmp','gif','tiff','tif','heic','heif','avif']
-      if (mediaExts.includes(ext)) {
-        items.push({ label: t('menu.transcode'), key: 'transcode' })
       }
     }
 
@@ -184,18 +175,6 @@ function handleSelect(key: string) {
     case 'empty_trash': fs.emptyTrash(); break
     case 'upload':
       ;(document.querySelector('input[type="file"]') as HTMLElement)?.click()
-      break
-    case 'transcode':
-      if (targetFile.value && openTranscodeDialog) {
-        const name = targetFile.value.name || ''
-        const ext = name.split('.').pop()?.toLowerCase() || ''
-        const videoExts = ['mp4','mkv','webm','mov','avi','flv','wmv','m4v','ts']
-        const audioExts = ['mp3','aac','flac','ogg','wav','wma','m4a','opus']
-        let mtype = 'image'
-        if (videoExts.includes(ext)) mtype = 'video'
-        else if (audioExts.includes(ext)) mtype = 'audio'
-        openTranscodeDialog(targetFile.value.path, name, mtype)
-      }
       break
     case 'details':
       fs.showInfoPanel = !fs.showInfoPanel

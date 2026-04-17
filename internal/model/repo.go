@@ -2,7 +2,7 @@ package model
 
 import "gorm.io/gorm"
 
-// Repos holds all repository interfaces. Injected into Handler, Dispatcher, etc.
+// Repos holds all repository interfaces. Injected into handlers and services.
 type Repos struct {
 	db           *gorm.DB // unexported; used only by WithTx
 	hasFTS       bool
@@ -11,7 +11,6 @@ type Repos struct {
 	Users     UserRepo
 	Files     FileRepo
 	Sessions  SessionRepo
-	Jobs      JobRepo
 	Tasks     TaskRepo
 	Audit     AuditRepo
 	Shares    ShareRepo
@@ -29,7 +28,6 @@ func NewRepos(db *gorm.DB, hasFTS bool, onTaskUpdate TaskUpdateFunc) *Repos {
 		Users:        &gormUserRepo{db: db},
 		Files:        &gormFileRepo{db: db, hasFTS: hasFTS},
 		Sessions:     NewSessionStore(db),
-		Jobs:         &gormJobRepo{db: db, tasks: taskRepo},
 		Tasks:        taskRepo,
 		Audit:        &gormAuditRepo{db: db},
 		Shares:       &gormShareRepo{db: db},
