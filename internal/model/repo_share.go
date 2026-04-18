@@ -11,6 +11,7 @@ type ShareRepo interface {
 	Create(share *Share) error
 	GetByID(shareID string) (*Share, error)
 	ListForFile(ownerID, filePath string) ([]Share, error)
+	ListOwnedByUser(ownerID string) ([]Share, error)
 	ListForUser(targetUserID string) ([]Share, error)
 	ListAsFiles(targetUserID string) ([]ShareFileView, error)
 	Delete(id int64, userID string) (bool, error)
@@ -39,6 +40,13 @@ func (r *gormShareRepo) GetByID(shareID string) (*Share, error) {
 func (r *gormShareRepo) ListForFile(ownerID, filePath string) ([]Share, error) {
 	var shares []Share
 	err := r.db.Where("owner_id = ? AND file_path = ?", ownerID, filePath).
+		Order("created_at DESC").Find(&shares).Error
+	return shares, err
+}
+
+func (r *gormShareRepo) ListOwnedByUser(ownerID string) ([]Share, error) {
+	var shares []Share
+	err := r.db.Where("owner_id = ? AND (expires_at IS NULL OR expires_at > NOW())", ownerID).
 		Order("created_at DESC").Find(&shares).Error
 	return shares, err
 }
