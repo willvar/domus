@@ -1,6 +1,5 @@
 oss:
-  # All three endpoints can be the same value for single-machine / dev setups.
-  # Server endpoint: used by the server for transcode download/upload, HeadObject, Delete.
+  # Server endpoint: used by the server for HeadObject, Delete, etc.
   # Falls back to client_upload_endpoint if not set.
   server_endpoint: ""
   # Client upload endpoint (required): public S3-compatible endpoint for browser direct upload via presigned URL.
@@ -39,14 +38,6 @@ database:
 
 upload:
   max_file_size: 10737418240  # 10GB
-
-transcode:
-  ffmpeg_path: "ffmpeg"
-  ffprobe_path: "ffprobe"
-
-jobs:
-  transcode_concurrency: 2
-  system_concurrency: 4
 
 # SMTP (optional, required for email verification)
 smtp:

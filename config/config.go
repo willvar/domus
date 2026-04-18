@@ -12,22 +12,19 @@ import (
 
 const (
 	UploadChunkSize int64 = 5 * 1024 * 1024
-	TempDir               = "tmp"
 )
 
 type Config struct {
-	OSS       OSSConfig       `yaml:"oss"`
-	Server    ServerConfig    `yaml:"server"`
-	Upload    UploadConfig    `yaml:"upload"`
-	Database  DatabaseConfig  `yaml:"database"`
-	Transcode TranscodeConfig `yaml:"transcode"`
-	Jobs      JobsConfig      `yaml:"jobs"`
-	SMTP      SMTPConfig      `yaml:"smtp"`
-	Log       logger.Config   `yaml:"log"`
+	OSS      OSSConfig      `yaml:"oss"`
+	Server   ServerConfig   `yaml:"server"`
+	Upload   UploadConfig   `yaml:"upload"`
+	Database DatabaseConfig `yaml:"database"`
+	SMTP     SMTPConfig     `yaml:"smtp"`
+	Log      logger.Config  `yaml:"log"`
 }
 
 type OSSConfig struct {
-	ServerEndpoint         string `yaml:"server_endpoint"`          // Server-side read/write (transcode, HeadObject, Delete); falls back to ClientUploadEndpoint
+	ServerEndpoint         string `yaml:"server_endpoint"`          // Server-side read/write (HeadObject, Delete)
 	ClientUploadEndpoint   string `yaml:"client_upload_endpoint"`   // Public endpoint for browser direct upload (presigned PUT)
 	ClientDownloadEndpoint string `yaml:"client_download_endpoint"` // Browser download/preview (CDN or public endpoint)
 	AccessKeyID            string `yaml:"access_key_id"`
@@ -66,16 +63,6 @@ func (d DatabaseConfig) DSN() string {
 		dsn += fmt.Sprintf(" password=%s", d.Password)
 	}
 	return dsn
-}
-
-type TranscodeConfig struct {
-	FFmpegPath  string `yaml:"ffmpeg_path"`
-	FFprobePath string `yaml:"ffprobe_path"`
-}
-
-type JobsConfig struct {
-	TranscodeConcurrency int `yaml:"transcode_concurrency"`
-	SystemConcurrency    int `yaml:"system_concurrency"`
 }
 
 type SMTPConfig struct {
@@ -162,22 +149,6 @@ func Load(path string) (*Config, error) {
 	}
 	if cfg.Database.SSLMode == "" {
 		cfg.Database.SSLMode = "disable"
-	}
-
-	// Transcode defaults
-	if cfg.Transcode.FFmpegPath == "" {
-		cfg.Transcode.FFmpegPath = "ffmpeg"
-	}
-	if cfg.Transcode.FFprobePath == "" {
-		cfg.Transcode.FFprobePath = "ffprobe"
-	}
-
-	// Jobs defaults
-	if cfg.Jobs.TranscodeConcurrency <= 0 {
-		cfg.Jobs.TranscodeConcurrency = 2
-	}
-	if cfg.Jobs.SystemConcurrency <= 0 {
-		cfg.Jobs.SystemConcurrency = 4
 	}
 
 	return cfg, nil
