@@ -179,7 +179,7 @@ const rowTouchCache = new Map()
 function getRowTouch(row: any) {
   if (!rowTouchCache.has(row.path)) {
     rowTouchCache.set(row.path, useTouchHandlers({
-      onDoubleTap: () => {
+      onTap: () => {
         const fileName = row._originalName || row.name
         if (row.is_dir) fs.navigate(row.path)
         else if (fs.getViewerType(fileName)) fs.openViewer(row)
@@ -422,7 +422,11 @@ function handleSearchResultDblClick(item: any) {
     cursor: default;
     transition: background var(--transition-fast);
 
-    &:hover {
+    &:active {
+      background: $hover-white-subtle;
+    }
+
+    @include hover {
       background: $hover-white-subtle;
     }
   }

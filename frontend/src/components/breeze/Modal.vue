@@ -117,7 +117,12 @@ watch(() => props.show, (v) => {
     cursor: pointer;
     padding: 0;
 
-    &:hover {
+    &:active {
+      background: $hover-white-medium;
+      color: var(--breeze-text);
+    }
+
+    @include hover {
       background: $hover-white-medium;
       color: var(--breeze-text);
     }

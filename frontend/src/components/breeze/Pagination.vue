@@ -85,7 +85,12 @@ function go(p: number | string) {
     @include inline-flex-center;
     transition: all var(--transition-fast);
 
-    &:hover:not(:disabled) {
+    &:active:not(:disabled) {
+      background: $hover-white-light;
+      color: var(--breeze-text);
+    }
+
+    @include hover {
       background: $hover-white-light;
       color: var(--breeze-text);
     }

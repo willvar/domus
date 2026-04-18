@@ -1,13 +1,19 @@
 <script setup lang="ts">
 import { ref, computed, onUnmounted } from 'vue'
 import { Modal, Button, Select, FormItem } from '../../barrels/breeze'
+import { useDevice } from '../../composables/useDevice'
 import { usePreferences } from '../../composables/usePreferences'
 import { useI18n } from '../../composables/useI18n'
 import api from '../../composables/useApi'
 import { IconPlus, IconDeleteOutline as IconDelete } from '../../barrels/icons'
 
 const { t } = useI18n()
+const { lastPointerInput } = useDevice()
 const { prefs, update } = usePreferences()
+
+function mouseTitle(title: string): string | undefined {
+  return lastPointerInput.value === 'mouse' ? title : undefined
+}
 
 const show = ref(false)
 const selectedType = ref('builtin')   // 'builtin' | 'custom'
@@ -251,7 +257,7 @@ defineExpose({ open })
         >
           <video v-if="thumb.name.match(/\.(mp4|webm|mov)$/i)" :src="thumb.blobUrl" class="wp-thumb-img" muted />
           <img v-else :src="thumb.blobUrl" class="wp-thumb-img" />
-          <button class="wp-thumb-delete" :title="t('wallpaper.delete')" @click.stop="deleteCustom(thumb)">
+          <button class="wp-thumb-delete" :title="mouseTitle(t('wallpaper.delete'))" @click.stop="deleteCustom(thumb)">
             <IconDelete width="14" height="14" />
           </button>
         </div>
@@ -303,7 +309,12 @@ defineExpose({ open })
   border-radius: 4px;
   display: flex;
 
-  &:hover {
+  &:active {
+    color: var(--breeze-text);
+    background: $hover-white-light;
+  }
+
+  @include hover {
     color: var(--breeze-text);
     background: $hover-white-light;
   }
@@ -348,7 +359,15 @@ defineExpose({ open })
   flex-shrink: 0;
   transition: border-color 0.15s;
 
-  &:hover {
+  &:active {
+    border-color: rgba(255, 255, 255, 0.2);
+
+    .wp-thumb-delete {
+      display: flex;
+    }
+  }
+
+  @include hover {
     border-color: rgba(255, 255, 255, 0.2);
 
     .wp-thumb-delete {
@@ -374,7 +393,12 @@ defineExpose({ open })
   border: 2px dashed var(--breeze-border);
   color: var(--breeze-text-secondary);
 
-  &:hover {
+  &:active {
+    border-color: var(--breeze-accent);
+    color: var(--breeze-accent);
+  }
+
+  @include hover {
     border-color: var(--breeze-accent);
     color: var(--breeze-accent);
   }
@@ -393,7 +417,11 @@ defineExpose({ open })
   display: none;
   line-height: 0;
 
-  &:hover {
+  &:active {
+    background: var(--breeze-danger);
+  }
+
+  @include hover {
     background: var(--breeze-danger);
   }
 }

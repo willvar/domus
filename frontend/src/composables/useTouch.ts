@@ -1,22 +1,15 @@
 /**
  * Touch helpers for mobile support.
- * - Double-tap detection (since dblclick doesn't fire on touch)
+ * - Tap detection (single tap with long-press suppression)
  * - Long-press detection (since contextmenu doesn't fire reliably on touch)
  * - Touch drag (since mousedown/mousemove/mouseup don't fire on touch)
  */
 
 import type { TouchHandlerOptions, TouchDragOptions } from '../types'
 
-const DOUBLE_TAP_DELAY: number = 300
 const LONG_PRESS_DELAY: number = 500
 const LONG_PRESS_MOVE_THRESHOLD: number = 10
 
-let lastTapTime: number = 0
-let lastTapTarget: EventTarget | null = null
-
-/**
- * Returns touch event handlers for an element.
- */
 export function useTouchHandlers(opts: TouchHandlerOptions = {}): {
   onTouchStart: (e: TouchEvent) => void
   onTouchMove: (e: TouchEvent) => void
@@ -58,17 +51,9 @@ export function useTouchHandlers(opts: TouchHandlerOptions = {}): {
 
     if (longPressFired) return
 
-    const now: number = Date.now()
-    const target: EventTarget = e.target!
-
-    if (opts.onDoubleTap && (now - lastTapTime < DOUBLE_TAP_DELAY) && lastTapTarget === target) {
+    if (opts.onTap) {
       e.preventDefault()
-      lastTapTime = 0
-      lastTapTarget = null
-      opts.onDoubleTap(e)
-    } else {
-      lastTapTime = now
-      lastTapTarget = target
+      opts.onTap(e)
     }
   }
 

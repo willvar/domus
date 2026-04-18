@@ -149,7 +149,11 @@ onUnmounted(() => document.removeEventListener('mousedown', onClickOutside))
     cursor: pointer;
     transition: background var(--transition-fast);
 
-    &:hover {
+    &:active {
+      background: $hover-white-light;
+    }
+
+    @include hover {
       background: $hover-white-light;
     }
 

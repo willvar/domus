@@ -134,7 +134,11 @@ const summary = computed(() => {
   }
 
   tr {
-    &:hover td { background: rgba(255, 255, 255, 0.03); }
+    &:active td { background: rgba(255, 255, 255, 0.03); }
+
+    @include hover {
+      td { background: rgba(255, 255, 255, 0.03); }
+    }
     &.is-dir td { color: #7cc7ff; }
   }
 }

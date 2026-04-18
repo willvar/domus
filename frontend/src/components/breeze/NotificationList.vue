@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { defineComponent } from 'vue'
+import { useDevice } from '../../composables/useDevice'
 import { useNotificationState } from '../../composables/useNotification'
 
 const { notifications, typeColors } = useNotificationState()
+const { lastPointerInput } = useDevice()
 
 const ActionSlot = defineComponent({
   props: { render: { type: Function, required: true } },
@@ -10,9 +12,11 @@ const ActionSlot = defineComponent({
 })
 
 function onMouseEnter(n: any) {
+  if (lastPointerInput.value !== 'mouse') return
   if (n.keepAliveOnHover && n._stopTimer) n._stopTimer()
 }
 function onMouseLeave(n: any) {
+  if (lastPointerInput.value !== 'mouse') return
   if (n.keepAliveOnHover && n._startTimer) n._startTimer()
 }
 </script>

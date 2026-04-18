@@ -207,7 +207,12 @@ onUnmounted(() => {
   color: var(--breeze-text-secondary);
   cursor: default;
 
-  &:hover {
+  &:active {
+    color: var(--breeze-text);
+    background: var(--breeze-hover);
+  }
+
+  @include hover {
     color: var(--breeze-text);
     background: var(--breeze-hover);
   }
@@ -235,8 +240,13 @@ onUnmounted(() => {
   border-radius: 3px;
   cursor: default;
 
-  &:hover,
+  &:active,
   &.active {
+    color: var(--breeze-text-secondary);
+    background: var(--breeze-hover);
+  }
+
+  @include hover {
     color: var(--breeze-text-secondary);
     background: var(--breeze-hover);
   }

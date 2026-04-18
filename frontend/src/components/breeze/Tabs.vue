@@ -73,7 +73,11 @@ function select(name: string) {
     transition: all var(--transition-fast);
     white-space: nowrap;
 
-    &:hover {
+    &:active {
+      color: var(--breeze-text);
+    }
+
+    @include hover {
       color: var(--breeze-text);
     }
 

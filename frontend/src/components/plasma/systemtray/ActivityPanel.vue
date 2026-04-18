@@ -516,12 +516,14 @@ onMounted(() => {
   font-size: 12px;
   cursor: default;
 
-  &:hover { background: $hover-white-medium; color: var(--breeze-text, #fcfcfc); }
+  &:active { background: $hover-white-medium; color: var(--breeze-text, #fcfcfc); }
+  @include hover { background: $hover-white-medium; color: var(--breeze-text, #fcfcfc); }
   &:disabled { opacity: 0.5; }
   &--accent { color: var(--breeze-accent, #3daee9); }
   &--danger {
     color: var(--breeze-danger, #da4453);
-    &:hover { background: rgba(218, 68, 83, 0.15); }
+    &:active { background: rgba(218, 68, 83, 0.15); }
+    @include hover { background: rgba(218, 68, 83, 0.15); }
   }
 }
 

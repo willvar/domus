@@ -782,7 +782,7 @@ export interface PanelSize {
 
 /** Options for useTouchHandlers. */
 export interface TouchHandlerOptions {
-  onDoubleTap?: (e: TouchEvent) => void
+  onTap?: (e: TouchEvent) => void
   onLongPress?: (e: TouchEvent) => void
 }
 

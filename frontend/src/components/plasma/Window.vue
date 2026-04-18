@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useWindowManagerStore } from '../../stores/windowManager'
+import { useDevice } from '../../composables/useDevice'
 import { historyClose } from '../../composables/useWindowHistory'
 
 const props = defineProps({
@@ -12,7 +13,12 @@ const props = defineProps({
 const emit = defineEmits(['close'])
 
 const wm = useWindowManagerStore()
+const { lastPointerInput } = useDevice()
 const windowEl = ref<HTMLDivElement | null>(null)
+
+function mouseTitle(title: string): string | undefined {
+  return lastPointerInput.value === 'mouse' ? title : undefined
+}
 
 const win = computed(() => wm.findWindow(props.windowId))
 
@@ -405,14 +411,14 @@ onUnmounted(() => {
       <component :is="icon" v-if="icon" class="plasma-titlebar-icon" width="20" height="20" />
       <span class="plasma-titlebar-title">{{ title }}</span>
       <div class="plasma-titlebar-buttons" @mousedown.stop @touchstart.stop>
-        <button class="plasma-btn plasma-btn-minimize" title="最小化" @click.stop="minimize">
+        <button class="plasma-btn plasma-btn-minimize" :title="mouseTitle('最小化')" @click.stop="minimize">
           <svg width="18" height="18" viewBox="0 0 18 18"><polyline points="4,7 9,12 14,7" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" /></svg>
         </button>
-        <button class="plasma-btn plasma-btn-maximize" :title="win.maximized ? '还原' : '最大化'" @click.stop="toggleMaximize">
+        <button class="plasma-btn plasma-btn-maximize" :title="mouseTitle(win.maximized ? '还原' : '最大化')" @click.stop="toggleMaximize">
           <svg v-if="!win.maximized" width="18" height="18" viewBox="0 0 18 18"><polyline points="4,11 9,6 14,11" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" /></svg>
           <svg v-else width="18" height="18" viewBox="0 0 18 18"><rect x="5" y="5" width="8" height="8" rx="0.5" transform="rotate(45 9 9)" fill="none" stroke="currentColor" stroke-width="1.3" /></svg>
         </button>
-        <button class="plasma-btn plasma-btn-close" title="关闭" @click.stop="close">
+        <button class="plasma-btn plasma-btn-close" :title="mouseTitle('关闭')" @click.stop="close">
           <svg width="18" height="18" viewBox="0 0 18 18"><line x1="5" y1="5" x2="13" y2="13" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /><line x1="13" y1="5" x2="5" y2="13" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" /></svg>
         </button>
       </div>
@@ -507,14 +513,26 @@ onUnmounted(() => {
   padding: 0;
   transition: background 0.15s, color 0.15s;
 
-  &:hover {
+  &:active {
     background: #fcfcfc;
     color: var(--breeze-surface-raised);
   }
 
-  &-close:hover {
+  @include hover {
+    background: #fcfcfc;
+    color: var(--breeze-surface-raised);
+  }
+
+  &-close:active {
     background: #da4453;
     color: var(--breeze-surface-raised);
+  }
+
+  &-close {
+    @include hover {
+      background: #da4453;
+      color: var(--breeze-surface-raised);
+    }
   }
 
   @include mobile {

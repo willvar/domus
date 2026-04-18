@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { toRef } from 'vue'
+import { useDevice } from '../../../composables/useDevice'
 import { usePanelResize } from '../../../composables/usePanelResize'
 import { useTrayPanel } from '../../../composables/useTrayPanel'
 import { IconPinOutline as IconPin, IconPinOffOutline as IconPinOff } from '../../../barrels/icons'
@@ -10,12 +11,17 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['update:show'])
+const { lastPointerInput } = useDevice()
 
 const { panelSize, onMouseDown, onLeftMouseDown } = usePanelResize()
 const { panelRef, pinned, togglePin } = useTrayPanel(
   toRef(props, 'show'),
   () => emit('update:show', false),
 )
+
+function mouseTitle(title: string): string | undefined {
+  return lastPointerInput.value === 'mouse' ? title : undefined
+}
 </script>
 
 <template>
@@ -35,7 +41,7 @@ const { panelRef, pinned, togglePin } = useTrayPanel(
           <button
             class="tray-popup__pin"
             :class="{ 'tray-popup__pin--active': pinned }"
-            :title="pinned ? 'Unpin' : 'Keep Open'"
+            :title="mouseTitle(pinned ? 'Unpin' : 'Keep Open')"
             @click="togglePin"
           >
             <component :is="pinned ? IconPinOff : IconPin" width="14" height="14" />
@@ -68,7 +74,11 @@ const { panelRef, pinned, togglePin } = useTrayPanel(
     cursor: ns-resize;
     flex-shrink: 0;
 
-    &:hover { background: rgba(61, 174, 233, 0.3); }
+    &:active { background: rgba(61, 174, 233, 0.3); }
+
+    @include hover {
+      background: rgba(61, 174, 233, 0.3);
+    }
   }
 
   &__resize-left {
@@ -80,7 +90,11 @@ const { panelRef, pinned, togglePin } = useTrayPanel(
     cursor: ew-resize;
     z-index: 1;
 
-    &:hover { background: rgba(61, 174, 233, 0.3); }
+    &:active { background: rgba(61, 174, 233, 0.3); }
+
+    @include hover {
+      background: rgba(61, 174, 233, 0.3);
+    }
   }
 
   &__header {
@@ -113,7 +127,12 @@ const { panelRef, pinned, togglePin } = useTrayPanel(
     color: var(--breeze-text-secondary, #a1a9b1);
     cursor: default;
 
-    &:hover {
+    &:active {
+      background: $hover-white-medium;
+      color: var(--breeze-text, #fcfcfc);
+    }
+
+    @include hover {
       background: $hover-white-medium;
       color: var(--breeze-text, #fcfcfc);
     }

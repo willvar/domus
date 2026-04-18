@@ -6,6 +6,7 @@ import { useTasksStore } from '../../stores/tasks'
 import { useActivityStore } from '../../stores/activity'
 import { useUploadStore } from '../../stores/upload'
 import { usePendingOpsStore } from '../../stores/pendingOps'
+import { useDevice } from '../../composables/useDevice'
 import { useI18n } from '../../composables/useI18n'
 import { consumeContextMenuSuppress, suppressNextContextMenu } from '../../composables/useContextMenu'
 import { IconViewListOutline as IconActivity, IconAccount, IconCogOutline as IconCog } from '../../barrels/icons'
@@ -16,7 +17,12 @@ const tasksStore = useTasksStore()
 const activityStore = useActivityStore()
 const uploadStore = useUploadStore()
 const pendingOps = usePendingOpsStore()
+const { lastPointerInput } = useDevice()
 const { t, locale, setLocale } = useI18n()
+
+function mouseTitle(title: string): string | undefined {
+  return lastPointerInput.value === 'mouse' ? title : undefined
+}
 
 const props = defineProps({
   showPrefs: { type: Boolean, default: false },
@@ -218,7 +224,7 @@ const activityCount = computed(() => activeCount.value + pendingOps.pendingCount
         :class="{
           'taskbar-item--active': !win.minimized && wm.activeWindowId === win.id,
         }"
-        :title="win.title"
+        :title="mouseTitle(win.title)"
         @click="handleClick(win)"
         @contextmenu.prevent="handleTaskbarContext($event, win)"
       >
@@ -230,7 +236,7 @@ const activityCount = computed(() => activeCount.value + pendingOps.pendingCount
       <button
         class="taskbar-tray-btn"
         :class="{ 'taskbar-tray-btn--active': activityStore.open }"
-        :title="t('activity.title')"
+        :title="mouseTitle(t('activity.title'))"
         @click="toggleTasks"
       >
         <IconActivity width="22" height="22" />
@@ -244,7 +250,7 @@ const activityCount = computed(() => activeCount.value + pendingOps.pendingCount
       <button
         class="taskbar-tray-btn"
         :class="{ 'taskbar-tray-btn--active': props.showPrefs }"
-        :title="t('account.preferences')"
+        :title="mouseTitle(t('account.preferences'))"
         @click="togglePrefs"
       >
         <IconCog width="22" height="22" />
@@ -254,7 +260,7 @@ const activityCount = computed(() => activeCount.value + pendingOps.pendingCount
         ref="userBtnRef"
         class="taskbar-tray-btn"
         :class="{ 'taskbar-tray-btn--active': showUserMenu }"
-        :title="auth.username"
+        :title="mouseTitle(auth.username)"
         @click="toggleUserMenu"
       >
         <img v-if="auth.user?.avatar_url" :src="auth.user.avatar_url" class="tray-avatar" />
@@ -357,7 +363,11 @@ const activityCount = computed(() => activeCount.value + pendingOps.pendingCount
     border-top: 2px solid #3b4248;
     color: var(--breeze-text);
 
-    &:hover {
+    &:active {
+      background: #333840;
+    }
+
+    @include hover {
       background: #333840;
     }
 
@@ -365,7 +375,12 @@ const activityCount = computed(() => activeCount.value + pendingOps.pendingCount
       background: #2a7aab;
       border-top-color: #4db8d9;
 
-      &:hover {
+      &:active {
+        background: #3291c4;
+        border-top-color: #5cc8e8;
+      }
+
+      @include hover {
         background: #3291c4;
         border-top-color: #5cc8e8;
       }
@@ -406,7 +421,11 @@ const activityCount = computed(() => activeCount.value + pendingOps.pendingCount
     background: transparent;
     color: var(--breeze-text-secondary);
 
-    &:hover {
+    &:active {
+      color: var(--breeze-text);
+    }
+
+    @include hover {
       color: var(--breeze-text);
     }
 
