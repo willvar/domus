@@ -387,18 +387,19 @@ func (m *MockAuditRepo) ListLogs(filter AuditFilter) ([]AuditLog, int64, error) 
 // --- MockShareRepo ---
 
 type MockShareRepo struct {
-	CreateFn         func(share *Share) error
-	GetByIDFn        func(shareID string) (*Share, error)
-	ListForFileFn    func(ownerID, filePath string) ([]Share, error)
-	ListForUserFn    func(targetUserID string) ([]Share, error)
-	ListAsFilesFn    func(targetUserID string) ([]ShareFileView, error)
-	DeleteFn         func(id int64, userID string) (bool, error)
-	UpdateFileSizeFn func(shareID string, newSize int64) error
-	DeleteByPathFn   func(ownerID, filePath string) error
-	DeleteByPrefixFn func(ownerID, prefix string) error
-	MoveByPathFn     func(ownerID, oldPath, newPath string) error
-	MoveByPrefixFn   func(ownerID, oldPrefix, newPrefix string) error
-	GetForUserFn     func(filePath, targetUserID string) (*Share, error)
+	CreateFn          func(share *Share) error
+	GetByIDFn         func(shareID string) (*Share, error)
+	ListForFileFn     func(ownerID, filePath string) ([]Share, error)
+	ListOwnedByUserFn func(ownerID string) ([]Share, error)
+	ListForUserFn     func(targetUserID string) ([]Share, error)
+	ListAsFilesFn     func(targetUserID string) ([]ShareFileView, error)
+	DeleteFn          func(id int64, userID string) (bool, error)
+	UpdateFileSizeFn  func(shareID string, newSize int64) error
+	DeleteByPathFn    func(ownerID, filePath string) error
+	DeleteByPrefixFn  func(ownerID, prefix string) error
+	MoveByPathFn      func(ownerID, oldPath, newPath string) error
+	MoveByPrefixFn    func(ownerID, oldPrefix, newPrefix string) error
+	GetForUserFn      func(filePath, targetUserID string) (*Share, error)
 }
 
 func (m *MockShareRepo) Create(share *Share) error {
@@ -416,6 +417,12 @@ func (m *MockShareRepo) GetByID(shareID string) (*Share, error) {
 func (m *MockShareRepo) ListForFile(ownerID, filePath string) ([]Share, error) {
 	if m.ListForFileFn != nil {
 		return m.ListForFileFn(ownerID, filePath)
+	}
+	return []Share{}, nil
+}
+func (m *MockShareRepo) ListOwnedByUser(ownerID string) ([]Share, error) {
+	if m.ListOwnedByUserFn != nil {
+		return m.ListOwnedByUserFn(ownerID)
 	}
 	return []Share{}, nil
 }

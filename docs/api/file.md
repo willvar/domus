@@ -380,6 +380,13 @@
 
 响应：分享记录数组。
 
+### `GET /file/share/owned`
+列出当前用户创建的、仍然有效的所有分享。
+
+鉴权：已登录
+
+响应：分享记录数组，包含 `target_username` 便于前端展示接收者。
+
 ### `DELETE /file/share/:id`
 撤销分享。Owner 与目标用户均可删除。
 

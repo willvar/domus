@@ -828,6 +828,21 @@ func (r *memShareRepo) ListForFile(ownerID, filePath string) ([]Share, error) {
 	return out, nil
 }
 
+func (r *memShareRepo) ListOwnedByUser(ownerID string) ([]Share, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	var out []Share
+	for _, s := range r.data {
+		if s.OwnerID == ownerID && (s.ExpiresAt == nil || s.ExpiresAt.After(now)) {
+			c := *s
+			out = append(out, c)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	return out, nil
+}
+
 func (r *memShareRepo) ListForUser(targetUserID string) ([]Share, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

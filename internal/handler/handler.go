@@ -117,6 +117,7 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 
 	// /file/share (authenticated)
 	file.Post("/share", h.handleCreateShare)
+	file.Get("/share/owned", h.handleListOwnedShares)
 	file.Get("/shares", h.handleListShares)
 	file.Delete("/share/:id", h.handleDeleteShare)
 	file.Get("/shared", h.handleListSharedWithMe)
