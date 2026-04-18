@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, ref, onBeforeUnmount } from 'vue'
 import { useFileSystemStore } from '../../stores/fileSystem'
+import { useDevice } from '../../composables/useDevice'
 import { getFileIcon } from '../../composables/useFileIcon'
 import { openContextMenu } from '../../composables/useContextMenu'
 import { useTouchHandlers } from '../../composables/useTouch'
@@ -18,6 +19,7 @@ const props = defineProps({
 })
 
 const fs = useFileSystemStore()
+const { lastPointerInput } = useDevice()
 
 const isSelected = computed(() => fs.selectedFiles.includes(props.file.path))
 const isRenaming = computed(() => fs.renamingFile === props.file.path)
@@ -108,8 +110,11 @@ const tooltipStyle = ref<Record<string, string>>({})
 let hoverTimer: ReturnType<typeof setTimeout> | null = null
 
 function onMouseEnter(e: MouseEvent) {
+  if (lastPointerInput.value !== 'mouse') return
+  clearTimeout(hoverTimer!)
   const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
   hoverTimer = setTimeout(() => {
+    if (lastPointerInput.value !== 'mouse') return
     tooltipStyle.value = {
       left: rect.right + 8 + 'px',
       top: rect.top + 'px',
@@ -119,6 +124,11 @@ function onMouseEnter(e: MouseEvent) {
 }
 
 function onMouseLeave() {
+  if (lastPointerInput.value !== 'mouse') {
+    showTooltip.value = false
+    clearTimeout(hoverTimer!)
+    return
+  }
   clearTimeout(hoverTimer!)
   hoverTimer = setTimeout(() => {
     showTooltip.value = false
@@ -126,7 +136,13 @@ function onMouseLeave() {
 }
 
 function cancelHideTimer() {
+  if (lastPointerInput.value !== 'mouse') return
   clearTimeout(hoverTimer!)
+}
+
+function hideTooltip(): void {
+  clearTimeout(hoverTimer!)
+  showTooltip.value = false
 }
 
 onBeforeUnmount(() => {
@@ -134,8 +150,9 @@ onBeforeUnmount(() => {
 })
 
 const touch = useTouchHandlers({
-  onDoubleTap: () => handleDblClick(),
+  onTap: () => handleDblClick(),
   onLongPress: (e) => {
+    hideTooltip()
     if (!fs.selectMode) {
       fs.enterSelectMode(props.file.path)
     } else {
@@ -196,7 +213,7 @@ const touch = useTouchHandlers({
     <Teleport to="body">
       <div v-if="showTooltip" class="file-tooltip" :style="tooltipStyle"
         @mouseenter="cancelHideTimer"
-        @mouseleave="showTooltip = false"
+        @mouseleave="hideTooltip"
       >
         <img
           v-if="file.thumbnail_url"
@@ -247,7 +264,11 @@ const touch = useTouchHandlers({
   transition: background var(--transition-fast);
   user-select: none;
 
-  &:hover {
+  &:active {
+    background: var(--breeze-hover);
+  }
+
+  @include hover {
     background: var(--breeze-hover);
   }
 

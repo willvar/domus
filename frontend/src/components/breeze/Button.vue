@@ -69,7 +69,12 @@ function handleClick(e: MouseEvent) {
     border-color: var(--breeze-accent);
     color: #fff;
 
-    &:hover:not(:disabled) {
+    &:active:not(:disabled) {
+      background: var(--breeze-accent-hover);
+      border-color: var(--breeze-accent-hover);
+    }
+
+    @include hover {
       background: var(--breeze-accent-hover);
       border-color: var(--breeze-accent-hover);
     }
@@ -80,7 +85,11 @@ function handleClick(e: MouseEvent) {
     border-color: var(--breeze-danger);
     color: var(--breeze-danger);
 
-    &:hover:not(:disabled) {
+    &:active:not(:disabled) {
+      background: rgba(218, 68, 83, 0.1);
+    }
+
+    @include hover {
       background: rgba(218, 68, 83, 0.1);
     }
   }
@@ -90,13 +99,21 @@ function handleClick(e: MouseEvent) {
     border-color: var(--breeze-warning);
     color: var(--breeze-warning);
 
-    &:hover:not(:disabled) {
+    &:active:not(:disabled) {
+      background: rgba(246, 116, 0, 0.1);
+    }
+
+    @include hover {
       background: rgba(246, 116, 0, 0.1);
     }
   }
 
   &--default {
-    &:hover:not(:disabled) {
+    &:active:not(:disabled) {
+      background: $hover-white-medium;
+    }
+
+    @include hover {
       background: $hover-white-medium;
     }
   }
@@ -106,7 +123,11 @@ function handleClick(e: MouseEvent) {
     background: transparent;
     border: none;
 
-    &:hover:not(:disabled) {
+    &:active:not(:disabled) {
+      background: $hover-white-medium;
+    }
+
+    @include hover {
       background: $hover-white-medium;
     }
   }

@@ -99,7 +99,7 @@ const apps = computed(() => [
 const appTouchMap = new Map<string, ReturnType<typeof useTouchHandlers>>()
 function appTouch(app: { id: string; action: () => void }) {
   if (!appTouchMap.has(app.id)) {
-    appTouchMap.set(app.id, useTouchHandlers({ onDoubleTap: () => app.action() }))
+    appTouchMap.set(app.id, useTouchHandlers({ onTap: () => app.action() }))
   }
   return appTouchMap.get(app.id)
 }
@@ -210,7 +210,11 @@ const desktopTouch = useTouchHandlers({
   border-radius: 6px;
   user-select: none;
 
-  &:hover {
+  &:active {
+    background: $hover-white-light;
+  }
+
+  @include hover {
     background: $hover-white-light;
   }
 

@@ -202,7 +202,8 @@ onUnmounted(() => cm.destroy())
   gap: 4px;
   font-size: 12px;
 
-  &:hover { background: $hover-white-strong; color: #fff; }
+  &:active { background: $hover-white-strong; color: #fff; }
+  @include hover { background: $hover-white-strong; color: #fff; }
   &:disabled { opacity: 0.4; }
   &.edit-btn { color: #8cb4ff; }
   &.save-btn { color: #5cb85c; }
@@ -253,7 +254,11 @@ onUnmounted(() => cm.destroy())
     white-space: nowrap;
     user-select: none;
 
-    &:hover { color: #fff; }
+    &:active { color: #fff; }
+
+    @include hover {
+      color: #fff;
+    }
   }
 
   td {
@@ -266,9 +271,19 @@ onUnmounted(() => cm.destroy())
   }
 
   tbody tr {
-    &:hover td { background: rgba(255, 255, 255, 0.03); }
+    &:active td { background: rgba(255, 255, 255, 0.03); }
+
+    @include hover {
+      td { background: rgba(255, 255, 255, 0.03); }
+    }
     &:nth-child(even) td { background: rgba(255, 255, 255, 0.015); }
-    &:nth-child(even):hover td { background: $hover-white-subtle; }
+    &:nth-child(even):active td { background: $hover-white-subtle; }
+
+    &:nth-child(even) {
+      @include hover {
+        td { background: $hover-white-subtle; }
+      }
+    }
   }
 }
 

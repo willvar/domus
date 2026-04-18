@@ -31,6 +31,14 @@
   box-shadow: $shadow-dropdown;
 }
 
+@mixin hover {
+  @media (hover: hover) {
+    &:hover {
+      @content;
+    }
+  }
+}
+
 @mixin ctx-menu-transition($name: ctx-menu) {
   .#{$name}-enter-active {
     transition: opacity 0.12s ease, transform 0.12s ease;

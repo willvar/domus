@@ -268,7 +268,11 @@ function getRowAttrs(row: any) {
     .breeze-table__row:nth-child(odd) {
       background: var(--breeze-surface);
 
-      &:hover {
+      &:active {
+        background: $hover-white-light;
+      }
+
+      @include hover {
         background: $hover-white-light;
       }
     }
@@ -304,7 +308,11 @@ function getRowAttrs(row: any) {
     &.sortable {
       cursor: pointer;
 
-      &:hover {
+      &:active {
+        background: $hover-white-subtle;
+      }
+
+      @include hover {
         background: $hover-white-subtle;
       }
     }
@@ -329,7 +337,11 @@ function getRowAttrs(row: any) {
     width: 4px;
     cursor: col-resize;
 
-    &:hover {
+    &:active {
+      background: var(--breeze-accent);
+    }
+
+    @include hover {
       background: var(--breeze-accent);
     }
   }
@@ -337,7 +349,11 @@ function getRowAttrs(row: any) {
   &__row {
     transition: background var(--transition-fast);
 
-    &:hover {
+    &:active {
+      background: $hover-white-subtle;
+    }
+
+    @include hover {
       background: $hover-white-subtle;
     }
   }

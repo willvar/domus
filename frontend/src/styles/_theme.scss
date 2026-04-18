@@ -157,7 +157,7 @@ input, textarea, [contenteditable],
   padding-right: env(safe-area-inset-right);
 }
 
-/* Touch-only :active feedback (replaces :hover on touch devices) */
+/* Touch-only :active feedback for legacy selectors */
 @media (hover: none) {
   .viewer-btn:active,
   .nav-btn:active,

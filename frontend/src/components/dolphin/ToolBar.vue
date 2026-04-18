@@ -5,12 +5,18 @@ import { inject } from 'vue'
 import { useFileSystemStore } from '../../stores/fileSystem'
 import { useUploadStore } from '../../stores/upload'
 import { useAuthStore } from '../../stores/auth'
+import { useDevice } from '../../composables/useDevice'
 import { useI18n } from '../../composables/useI18n'
 
 const fs = useFileSystemStore()
 const upload = useUploadStore()
 const auth = useAuthStore()
+const { lastPointerInput } = useDevice()
 const { t } = useI18n()
+
+function mouseTitle(title: string): string | undefined {
+  return lastPointerInput.value === 'mouse' ? title : undefined
+}
 
 const openShareDialog = inject<((path: string) => void) | null>('openShareDialog', null)
 
@@ -130,7 +136,7 @@ function handleSearchKeydown(e: KeyboardEvent) {
         <button
           class="nav-btn"
           :disabled="!fs.canGoBack"
-          :title="t('toolbar.back')"
+          :title="mouseTitle(t('toolbar.back'))"
           @click="fs.goBack"
         >
           <IconChevronLeft width="16" height="16" />
@@ -138,7 +144,7 @@ function handleSearchKeydown(e: KeyboardEvent) {
         <button
           class="nav-btn"
           :disabled="!fs.canGoForward"
-          :title="t('toolbar.forward')"
+          :title="mouseTitle(t('toolbar.forward'))"
           @click="fs.goForward"
         >
           <IconChevronRight width="16" height="16" />
@@ -149,7 +155,7 @@ function handleSearchKeydown(e: KeyboardEvent) {
         ref="viewBtnRef"
         class="nav-btn"
         :class="{ active: showViewMenu }"
-        :title="t(`toolbar.view_${fs.viewMode}`)"
+        :title="mouseTitle(t(`toolbar.view_${fs.viewMode}`))"
         @click="toggleViewMenu"
       >
         <component :is="fs.viewMode === 'icons' ? IconViewGrid : IconViewList" width="16" height="16" />
@@ -189,7 +195,7 @@ function handleSearchKeydown(e: KeyboardEvent) {
       <template v-if="auth.isLoggedIn">
         <button
           class="nav-btn"
-          :title="t('toolbar.upload')"
+          :title="mouseTitle(t('toolbar.upload'))"
           :disabled="fs.isTrash"
           @click="triggerUpload"
         >
@@ -198,7 +204,7 @@ function handleSearchKeydown(e: KeyboardEvent) {
         <button
           v-if="canShare()"
           class="nav-btn"
-          :title="t('share.title')"
+          :title="mouseTitle(t('share.title'))"
           @click="triggerShare"
         >
           <IconShare width="16" height="16" />
@@ -284,15 +290,17 @@ function handleSearchKeydown(e: KeyboardEvent) {
   cursor: default;
   transition: background var(--transition-fast), color var(--transition-fast);
 
-  &:hover:not(:disabled) {
-    background: var(--toolbar-button-hover);
-    color: var(--breeze-text);
-  }
-
   &:active:not(:disabled),
   &.active {
     background: var(--toolbar-button-active);
     color: var(--breeze-text);
+  }
+
+  @include hover {
+    &:not(:disabled) {
+      background: var(--toolbar-button-hover);
+      color: var(--breeze-text);
+    }
   }
 
   &:disabled {
@@ -362,7 +370,12 @@ function handleSearchKeydown(e: KeyboardEvent) {
   color: var(--breeze-text-secondary);
   cursor: default;
 
-  &:hover {
+  &:active {
+    background: var(--toolbar-button-hover);
+    color: var(--breeze-text);
+  }
+
+  @include hover {
     background: var(--toolbar-button-hover);
     color: var(--breeze-text);
   }

@@ -443,8 +443,14 @@ async function disableOTP() {
   overflow: hidden;
   border: 2px solid var(--breeze-border);
 
-  &:hover .profile-avatar-overlay {
+  &:active .profile-avatar-overlay {
     opacity: 1;
+  }
+
+  @include hover {
+    .profile-avatar-overlay {
+      opacity: 1;
+    }
   }
 }
 
@@ -525,7 +531,12 @@ async function disableOTP() {
   cursor: pointer;
   padding: 0;
 
-  &:hover {
+  &:active {
+    background: $hover-white-medium;
+    color: var(--breeze-accent);
+  }
+
+  @include hover {
     background: $hover-white-medium;
     color: var(--breeze-accent);
   }

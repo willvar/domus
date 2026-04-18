@@ -148,7 +148,11 @@ defineExpose({
     flex-shrink: 0;
     padding: 0;
 
-    &:hover {
+    &:active {
+      color: var(--breeze-text);
+    }
+
+    @include hover {
       color: var(--breeze-text);
     }
   }

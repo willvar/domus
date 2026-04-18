@@ -162,7 +162,8 @@ onUnmounted(() => cm.destroy())
   gap: 4px;
   font-size: 12px;
 
-  &:hover { background: $hover-white-strong; color: #fff; }
+  &:active { background: $hover-white-strong; color: #fff; }
+  @include hover { background: $hover-white-strong; color: #fff; }
   &:disabled { opacity: 0.4; }
   &.edit-btn { color: #8cb4ff; }
   &.save-btn { color: #5cb85c; }

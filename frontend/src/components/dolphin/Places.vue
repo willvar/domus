@@ -111,7 +111,12 @@ function handleSelect(key: string) {
   cursor: default;
   transition: background var(--transition-fast), color var(--transition-fast);
 
-  &:hover {
+  &:active {
+    background: var(--breeze-hover);
+    color: var(--breeze-text);
+  }
+
+  @include hover {
     background: var(--breeze-hover);
     color: var(--breeze-text);
   }

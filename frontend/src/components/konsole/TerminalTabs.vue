@@ -161,7 +161,14 @@ function handleMiddleClick(e: MouseEvent, tab: any) {
   cursor: default;
   transition: background 0.12s;
 
-  &:hover {
+  &:active {
+    background: $hover-white-subtle;
+    color: #c8ccd0;
+
+    .konsole-tab-close { opacity: 1; }
+  }
+
+  @include hover {
     background: $hover-white-subtle;
     color: #c8ccd0;
 
@@ -200,7 +207,13 @@ function handleMiddleClick(e: MouseEvent, tab: any) {
   opacity: 0;
   transition: opacity 0.12s, background 0.12s;
 
-  &:hover {
+  &:active {
+    background: rgba(255, 255, 255, 0.12);
+    color: #e0e0e0;
+    opacity: 1;
+  }
+
+  @include hover {
     background: rgba(255, 255, 255, 0.12);
     color: #e0e0e0;
     opacity: 1;
@@ -216,7 +229,12 @@ function handleMiddleClick(e: MouseEvent, tab: any) {
   font-size: 18px;
   flex-shrink: 0;
 
-  &:hover {
+  &:active {
+    background: $hover-white-subtle;
+    color: #e0e0e0;
+  }
+
+  @include hover {
     background: $hover-white-subtle;
     color: #e0e0e0;
   }

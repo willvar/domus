@@ -213,7 +213,16 @@ function tabStyle(tab: any): Record<string, any> {
   position: relative;
   cursor: default;
 
-  &:hover {
+  &:active {
+    background: $hover-white-subtle;
+    color: var(--breeze-text);
+
+    .tab-close {
+      opacity: 1;
+    }
+  }
+
+  @include hover {
     background: $hover-white-subtle;
     color: var(--breeze-text);
 
@@ -259,7 +268,13 @@ function tabStyle(tab: any): Record<string, any> {
     opacity: 0.6;
     transition: opacity 0.15s, background 0.15s;
 
-    &:hover {
+    &:active {
+      background: rgba(255, 255, 255, 0.12);
+      color: var(--breeze-text);
+      opacity: 1;
+    }
+
+    @include hover {
       background: rgba(255, 255, 255, 0.12);
       color: var(--breeze-text);
       opacity: 1;
@@ -283,7 +298,12 @@ function tabStyle(tab: any): Record<string, any> {
     flex-shrink: 0;
     border-right: 1px solid var(--breeze-border);
 
-    &:hover {
+    &:active {
+      background: $hover-white-subtle;
+      color: var(--breeze-text);
+    }
+
+    @include hover {
       background: $hover-white-subtle;
       color: var(--breeze-text);
     }

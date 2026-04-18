@@ -6,6 +6,7 @@ import { useI18n } from '../composables/useI18n'
 import { useCodeMirror } from '../composables/useCodeMirror'
 import { useWorkspaceSync, registerViewerCallback, unregisterViewerCallback } from '../composables/useWorkspaceSync'
 import { usePreferences } from '../composables/usePreferences'
+import { useDevice } from '../composables/useDevice'
 import PlasmaWindow from './plasma/Window.vue'
 import { IconEyeOutline as IconEye, IconContentSave as IconSave, IconClose, IconPencil as IconEdit, IconChevronLeft as IconPrev, IconChevronRight as IconNext, IconMagnifyPlusOutline as IconZoomIn, IconMagnifyMinusOutline as IconZoomOut } from '../barrels/icons'
 
@@ -27,6 +28,11 @@ const props = defineProps({
 const fs = useFileSystemStore()
 const wm = useWindowManagerStore()
 const { t } = useI18n()
+const { isTouchInput, lastPointerInput } = useDevice()
+
+function mouseTitle(title: string): string | undefined {
+  return lastPointerInput.value === 'mouse' ? title : undefined
+}
 
 const state = computed(() => fs.findApp(props.windowId))
 const delegatedViewer = computed(() => state.value ? viewerMap[state.value.type] : null)
@@ -205,6 +211,13 @@ function imgZoomOut() {
 }
 
 function imgOnDblClick() {
+  if (isTouchInput.value) return
+  if (imgFitMode.value && imgScale.value < 1) imgActualSize()
+  else imgFitToWindow()
+}
+
+function imgOnTap() {
+  if (!isTouchInput.value) return
   if (imgFitMode.value && imgScale.value < 1) imgActualSize()
   else imgFitToWindow()
 }
@@ -403,10 +416,10 @@ function onVideoError() {
     <template v-else>
       <div class="viewer-toolbar">
         <template v-if="state.type === 'image'">
-          <button class="viewer-btn" :title="t('preview.fit')" :class="{ active: imgFitMode }" @click="imgFitToWindow">
+          <button class="viewer-btn" :title="mouseTitle(t('preview.fit'))" :class="{ active: imgFitMode }" @click="imgFitToWindow">
             <span>{{ t('preview.fit') }}</span>
           </button>
-          <button class="viewer-btn" :title="t('preview.actualSize')" @click="imgActualSize">
+          <button class="viewer-btn" :title="mouseTitle(t('preview.actualSize'))" @click="imgActualSize">
             <span>1:1</span>
           </button>
           <span class="toolbar-sep" />
@@ -458,7 +471,7 @@ function onVideoError() {
       </div>
 
       <div class="viewer-body" :class="{ 'viewer-body-split': state.type === 'text' && isHtmlPreview && htmlPreviewMode === 'split' }">
-        <div v-if="state.type === 'image' && state.url" ref="imgContainerEl" class="viewer-image-container" @dblclick="imgOnDblClick">
+        <div v-if="state.type === 'image' && state.url" ref="imgContainerEl" class="viewer-image-container" @click="imgOnTap" @dblclick="imgOnDblClick">
           <img ref="imgEl" :src="state.url" :alt="state.file.name" class="viewer-image" draggable="false" @load="imgOnLoad" />
         </div>
         <video v-else-if="state.type === 'video' && state.url" ref="videoEl" :src="state.url" controls autoplay playsinline class="viewer-video" @play="onVideoPlay" @pause="onVideoPause" @seeked="onVideoSeeked" @error="onVideoError" />
@@ -504,7 +517,12 @@ function onVideoError() {
   gap: 4px;
   font-size: 12px;
 
-  &:hover {
+  &:active {
+    background: $hover-white-strong;
+    color: #fff;
+  }
+
+  @include hover {
     background: $hover-white-strong;
     color: #fff;
   }
