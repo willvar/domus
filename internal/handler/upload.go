@@ -34,6 +34,39 @@ func encryptedFileSize(plainSize int64) int64 {
 	return 5 + plainSize + numChunks*overhead
 }
 
+// encryptedMultipartPartCount returns the number of OSS multipart parts the
+// browser uploader will actually produce. Parts can only split between
+// encrypted chunks, so this can be larger than ceil(encryptedSize/partSize).
+func encryptedMultipartPartCount(plainSize, partSize int64) int {
+	if partSize <= 0 {
+		return 1
+	}
+
+	parts := 1
+	used := int64(5) // encryption header lives in the first part
+	chunkPlain := int64(auth.DefaultChunkSize)
+	fullChunkSize := int64(auth.NonceSize + auth.DefaultChunkSize + auth.TagSize)
+
+	placeChunk := func(chunkSize int64) {
+		if used+chunkSize > partSize {
+			parts++
+			used = 0
+		}
+		used += chunkSize
+	}
+
+	fullChunks := plainSize / chunkPlain
+	for i := int64(0); i < fullChunks; i++ {
+		placeChunk(fullChunkSize)
+	}
+
+	if rem := plainSize % chunkPlain; rem > 0 {
+		placeChunk(int64(auth.NonceSize) + rem + int64(auth.TagSize))
+	}
+
+	return parts
+}
+
 // handleUploadDispatch routes POST /file/upload to init, complete, or conflict check.
 func (h *Handler) handleUploadDispatch(c *fiber.Ctx) error {
 	var peek struct {
@@ -188,12 +221,8 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 	}
 
 	// Encrypted file geometry
-	encSize := encryptedFileSize(body.FileSize)
 	partSize := config.UploadChunkSize
-	totalParts := int((encSize + partSize - 1) / partSize)
-	if totalParts < 1 {
-		totalParts = 1
-	}
+	totalParts := encryptedMultipartPartCount(body.FileSize, partSize)
 
 	// Create S3 multipart upload
 	ossUploadID, err := h.Store.CreateMultipartUpload(resolvedPath)
@@ -319,10 +348,7 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 	}
 
 	expectedPartSize := config.UploadChunkSize
-	expectedTotalParts := int((expectedEncryptedSize + expectedPartSize - 1) / expectedPartSize)
-	if expectedTotalParts < 1 {
-		expectedTotalParts = 1
-	}
+	expectedTotalParts := encryptedMultipartPartCount(record.Size, expectedPartSize)
 	if len(body.Parts) != expectedTotalParts {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_parts"})
 	}
