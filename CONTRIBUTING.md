@@ -225,16 +225,43 @@ make build-prod     # 压缩二进制 (需要 UPX)
 cd frontend && npm run build    # 输出到 frontend/dist/
 ```
 
-### 重置实例
+### 实例维护命令
 
-危险操作：会清空 `config.yaml` 指定的 PostgreSQL 数据库，并清空配置中的整个 OSS bucket。
+以下命令都会直接操作 `config.yaml` 指定的 PostgreSQL 数据库和 OSS bucket；其中 `restore` 与 `reset` 属于危险操作。
+
+#### 备份实例
+
+```bash
+zephyr backup -c config.yaml -o backup-20260419.tar.gz
+```
+
+- 执行前必须先停止服务，否则命令会拒绝运行
+- 备份内容包含 `database.sql`、`manifest.json` 和 `objects/`
+- `-o` 可以指向目录，也可以指向 `.tar.gz` / `.tgz` 归档文件
+- 若未显式传入 `-o`，会默认生成 `zephyr-backup-YYYYMMDD-HHMMSS.tar.gz`
+- 备份数据库依赖本机可用的 `pg_dump`
+
+#### 恢复实例
+
+```bash
+zephyr restore -c config.yaml -i backup-20260419.tar.gz --yes
+```
+
+- 执行前必须先停止服务，否则命令会拒绝运行
+- `restore` 会先清空目标数据库和整个 bucket，再导入备份内容，因此必须带 `--yes`
+- 恢复数据库依赖本机可用的 `psql`
+- 恢复前会校验备份中的 `server.encryption_secret` 指纹；若与当前配置不一致，命令会拒绝执行，避免恢复后文件无法解密
+- 恢复完成后，重新执行 `zephyr start -c config.yaml` 即可拉起实例
+
+#### 重置实例
 
 ```bash
 zephyr reset -c config.yaml --yes
 ```
 
 - 执行前请先停止服务，否则命令会拒绝运行
-- reset 不会立即创建 `root`；下一次 `zephyr start` 时会走首次启动逻辑自动初始化
+- `reset` 会清空 `config.yaml` 指定的 PostgreSQL 数据库，并清空配置中的整个 OSS bucket
+- `reset` 不会立即创建 `root`；下一次 `zephyr start` 时会走首次启动逻辑自动初始化
 - 首次启动所需的 root 初始密码仍需通过 `server.root_bootstrap_password_file` 或 `ZEPHYR_ROOT_BOOTSTRAP_PASSWORD` 提供
 
 ## 开发工作流
