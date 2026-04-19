@@ -78,8 +78,12 @@ func Execute() {
 		restart(configPath, daemonMode)
 	case "status":
 		status(configPath)
+	case "backup":
+		backup(configPath, getFlagValue(os.Args[2:], "-o"))
 	case "reset":
 		reset(configPath, hasFlag(os.Args[2:], "--yes"))
+	case "restore":
+		restore(configPath, getFlagValue(os.Args[2:], "-i"), hasFlag(os.Args[2:], "--yes"))
 	case "help", "-h", "--help":
 		printHelp()
 	default:
@@ -588,12 +592,16 @@ func printHelp() {
 	fmt.Println("  stop      停止服务")
 	fmt.Println("  restart   重启服务")
 	fmt.Println("  status    查看服务状态")
+	fmt.Println("  backup    备份数据库和整个 bucket（需先停服务）")
 	fmt.Println("  reset     清空数据库并清空整个 bucket（危险）")
+	fmt.Println("  restore   从备份恢复数据库和整个 bucket（危险，需先停服务）")
 	fmt.Println()
 	fmt.Println("选项:")
 	fmt.Println("  -c string  配置文件路径 (默认: config.yaml)")
 	fmt.Println("  -d         守护进程模式")
-	fmt.Println("  --yes      确认执行危险操作（仅 reset 使用）")
+	fmt.Println("  -o string  备份输出路径（仅 backup 使用）")
+	fmt.Println("  -i string  备份输入路径（仅 restore 使用）")
+	fmt.Println("  --yes      确认执行危险操作（reset / restore 使用）")
 	fmt.Println()
 	fmt.Println("示例:")
 	fmt.Println("  zephyr start")
@@ -601,5 +609,7 @@ func printHelp() {
 	fmt.Println("  zephyr start -c app.yaml")
 	fmt.Println("  zephyr stop")
 	fmt.Println("  zephyr status")
+	fmt.Println("  zephyr backup -c config.yaml -o backup-20260419.tar.gz")
 	fmt.Println("  zephyr reset -c config.yaml --yes")
+	fmt.Println("  zephyr restore -c config.yaml -i backup-20260419.tar.gz --yes")
 }
