@@ -11,3 +11,4 @@ frontend/dist/
 .idea/
 .claude/
 CLAUDE.md
+.git_allowed_signers
