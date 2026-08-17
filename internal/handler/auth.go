@@ -9,10 +9,10 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"zephyr/internal/auth"
-	"zephyr/internal/middleware"
-	"zephyr/internal/model"
-	"zephyr/internal/service"
+	"domus/internal/auth"
+	"domus/internal/middleware"
+	"domus/internal/model"
+	"domus/internal/service"
 )
 
 // --- helpers ---
@@ -319,6 +319,15 @@ func (h *Handler) handleLogout(c *fiber.Ctx) error {
 	secure := strings.EqualFold(c.Protocol(), "https")
 	c.Cookie(&fiber.Cookie{
 		Name:     middleware.SessionCookieName,
+		Value:    "",
+		HTTPOnly: true,
+		Secure:   secure,
+		SameSite: "Lax",
+		MaxAge:   -1,
+		Path:     "/",
+	})
+	c.Cookie(&fiber.Cookie{
+		Name:     middleware.LegacySessionCookieName,
 		Value:    "",
 		HTTPOnly: true,
 		Secure:   secure,

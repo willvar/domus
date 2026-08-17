@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"zephyr/internal/middleware"
+	"domus/internal/middleware"
 )
 
 func TestAdminUpdateUserRoleChangeRevokesSessionsHTTP(t *testing.T) {

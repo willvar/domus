@@ -8,8 +8,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"zephyr/internal/auth"
-	"zephyr/internal/model"
+	"domus/internal/auth"
+	"domus/internal/model"
 )
 
 // mockSessionRepo is a minimal in-memory session store for middleware tests.
@@ -188,5 +188,35 @@ func TestAuthRequired_ValidSession(t *testing.T) {
 	resp, _ := app.Test(req)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestAuthRequiredMigratesLegacySessionCookie(t *testing.T) {
+	sessions := newMockSessionRepo()
+	m := New(sessions, "test")
+	sessionID, _ := sessions.Create("test-user-id", "alice", "user")
+	cookie := auth.SignCookie(sessionID, "test")
+
+	app := fiber.New()
+	app.Get("/protected", m.AuthRequired(), func(c *fiber.Ctx) error {
+		return c.SendStatus(fiber.StatusNoContent)
+	})
+	req := httptest.NewRequest("GET", "/protected", nil)
+	req.AddCookie(&http.Cookie{Name: LegacySessionCookieName, Value: cookie})
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != fiber.StatusNoContent {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	found := false
+	for _, responseCookie := range resp.Cookies() {
+		if responseCookie.Name == SessionCookieName && responseCookie.Value == cookie {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("legacy session was not migrated to domus_session")
 	}
 }

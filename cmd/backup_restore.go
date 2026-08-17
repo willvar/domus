@@ -17,19 +17,20 @@ import (
 	"strings"
 	"time"
 
-	"zephyr/config"
-	"zephyr/internal/model"
-	"zephyr/internal/store"
-	"zephyr/shared/bootstrap"
-	"zephyr/shared/logger"
-	"zephyr/shared/version"
+	"domus/config"
+	"domus/internal/model"
+	"domus/internal/store"
+	"domus/shared/bootstrap"
+	"domus/shared/logger"
+	"domus/shared/version"
 )
 
 const backupManifestVersion = 1
 
 type backupManifest struct {
 	FormatVersion               int                    `json:"format_version"`
-	ZephyrVersion               string                 `json:"zephyr_version"`
+	DomusVersion                string                 `json:"domus_version"`
+	LegacyZephyrVersion         string                 `json:"zephyr_version,omitempty"`
 	CreatedAt                   time.Time              `json:"created_at"`
 	DatabaseName                string                 `json:"database_name"`
 	Bucket                      string                 `json:"bucket"`
@@ -90,7 +91,7 @@ func restore(configPath, inputPath string, confirmed bool) {
 	}); err != nil {
 		logger.Fatal("%v", err)
 	}
-	logger.Info("Restore finished. Run `zephyr start -c %s` to bring the instance back online.", configPath)
+	logger.Info("Restore finished. Run `domus start -c %s` to bring the instance back online.", configPath)
 }
 
 func getFlagValue(args []string, flag string) string {
@@ -103,7 +104,7 @@ func getFlagValue(args []string, flag string) string {
 }
 
 func defaultBackupPath() string {
-	return fmt.Sprintf("zephyr-backup-%s.tar.gz", time.Now().Format("20060102-150405"))
+	return fmt.Sprintf("domus-backup-%s.tar.gz", time.Now().Format("20060102-150405"))
 }
 
 func runBackup(cfg *config.Config, configPath, outputPath string, deps backupDeps) error {
@@ -138,7 +139,7 @@ func backupInstance(cfg *config.Config, configPath, backupDir string, deps backu
 		return fmt.Errorf("service is running (PID: %d). Stop it before backup", pid)
 	}
 
-	logger.Info("Backing up Zephyr instance")
+	logger.Info("Backing up Domus instance")
 	logger.Info("  Config file: %s", configPath)
 	logger.Info("  Database: %s", cfg.Database.DBName)
 	logger.Info("  Bucket: %s", cfg.OSS.Bucket)
@@ -159,7 +160,7 @@ func backupInstance(cfg *config.Config, configPath, backupDir string, deps backu
 
 	manifest := backupManifest{
 		FormatVersion:               backupManifestVersion,
-		ZephyrVersion:               version.Version,
+		DomusVersion:                version.Version,
 		CreatedAt:                   deps.now().UTC(),
 		DatabaseName:                cfg.Database.DBName,
 		Bucket:                      cfg.OSS.Bucket,
@@ -249,7 +250,7 @@ func restoreInstance(cfg *config.Config, configPath, backupDir string, confirmed
 		return fmt.Errorf("backup encryption fingerprint does not match current config")
 	}
 
-	logger.Info("Restoring Zephyr instance")
+	logger.Info("Restoring Domus instance")
 	logger.Info("  Config file: %s", configPath)
 	logger.Info("  Database: %s", cfg.Database.DBName)
 	logger.Info("  Bucket: %s", cfg.OSS.Bucket)
@@ -317,7 +318,7 @@ func prepareBackupOutput(outputPath string) (string, func(), func() error, error
 	}
 
 	if isTarGzPath(outputPath) {
-		stageDir, err := os.MkdirTemp("", "zephyr-backup-*")
+		stageDir, err := os.MkdirTemp("", "domus-backup-*")
 		if err != nil {
 			return "", func() {}, nil, fmt.Errorf("create temporary backup directory: %w", err)
 		}
@@ -342,7 +343,7 @@ func prepareRestoreInput(inputPath string) (string, func(), error) {
 	if !isTarGzPath(inputPath) {
 		return "", func() {}, fmt.Errorf("restore input must be a directory or .tar.gz archive: %s", inputPath)
 	}
-	stageDir, err := os.MkdirTemp("", "zephyr-restore-*")
+	stageDir, err := os.MkdirTemp("", "domus-restore-*")
 	if err != nil {
 		return "", func() {}, fmt.Errorf("create temporary restore directory: %w", err)
 	}
@@ -399,6 +400,9 @@ func readManifest(path string) (backupManifest, error) {
 		return manifest, err
 	}
 	err = json.Unmarshal(data, &manifest)
+	if manifest.DomusVersion == "" {
+		manifest.DomusVersion = manifest.LegacyZephyrVersion
+	}
 	return manifest, err
 }
 
@@ -565,7 +569,8 @@ func extractTarGz(inputPath, destDir string) error {
 			if err := os.MkdirAll(targetPath, 0o755); err != nil {
 				return fmt.Errorf("create directory %s: %w", targetPath, err)
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		// A NUL type flag is the historical alternate regular-file marker.
+		case tar.TypeReg, byte(0):
 			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 				return fmt.Errorf("create parent directory for %s: %w", targetPath, err)
 			}

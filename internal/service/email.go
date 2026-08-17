@@ -8,7 +8,7 @@ import (
 	"net"
 	"net/smtp"
 
-	"zephyr/config"
+	"domus/config"
 )
 
 // EmailSender abstracts email delivery so implementations can be swapped
@@ -33,7 +33,7 @@ func (s *smtpEmailSender) Configured() bool {
 }
 
 func (s *smtpEmailSender) SendVerification(to, code string) error {
-	subject := "Zephyr Verification Code"
+	subject := "Domus Verification Code"
 	body := fmt.Sprintf("Your verification code is: %s\nValid for 5 minutes.", code)
 	msg := fmt.Sprintf("From: %s\r\nTo: %s\r\nSubject: %s\r\nMIME-Version: 1.0\r\nContent-Type: text/plain; charset=UTF-8\r\n\r\n%s",
 		s.cfg.From, to, subject, body)

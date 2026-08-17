@@ -12,10 +12,10 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"zephyr/internal/auth"
-	"zephyr/internal/middleware"
-	"zephyr/internal/model"
-	"zephyr/internal/store"
+	"domus/internal/auth"
+	"domus/internal/middleware"
+	"domus/internal/model"
+	"domus/internal/store"
 )
 
 // fillThumbnail populates presigned URL + plaintext DEK for client-side decryption.
@@ -192,10 +192,10 @@ func (h *Handler) handleRename(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
+	session := c.Locals("session").(*model.Session)
 
 	// Block rename for non-ready files
 	if !body.IsDir {
-		session := c.Locals("session").(*model.Session)
 		if rec, err := h.Repos.Files.Get(session.UserID, oldResolved); err == nil && rec.Status != "ready" {
 			return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
 		}
@@ -206,11 +206,10 @@ func (h *Handler) handleRename(c *fiber.Ctx) error {
 		return err
 	}
 
-	if err := h.Store.RenameObject(oldResolved, newResolved, body.IsDir); err != nil {
+	if err := movePathViaStore(h, session.UserID, oldResolved, newResolved, body.IsDir, nil); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "rename_failed"})
 	}
 
-	session := c.Locals("session").(*model.Session)
 	if body.IsDir {
 		_ = h.Repos.Files.MoveByPrefix(session.UserID, oldResolved, newResolved)
 		_ = h.Repos.Shares.MoveByPrefix(session.UserID, oldResolved, newResolved)
@@ -258,6 +257,7 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 	var srcSize int64
 	var srcContentHash string
 	var srcWrappedDEK string
+	var srcObjectKey string
 	if !body.IsDir {
 		srcRecord, err := h.Repos.Files.Get(session.UserID, srcResolved)
 		if err != nil {
@@ -269,6 +269,7 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 		srcSize = srcRecord.Size
 		srcContentHash = srcRecord.ContentHash
 		srcWrappedDEK = srcRecord.WrappedDEK
+		srcObjectKey = srcRecord.StorageKey()
 	}
 
 	// Check if SSE is requested
@@ -288,19 +289,20 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 			if body.IsDir {
 				copyErr = h.Store.RecursiveCopy(srcResolved, dstResolved, progress)
 			} else {
-				copyErr = h.Store.CopyObject(srcResolved, dstResolved)
+				copyErr = h.Store.CopyObject(srcObjectKey, dstResolved)
 				if copyErr == nil {
 					progress(1, 1, srcResolved)
 				}
 			}
 
+			if copyErr == nil && body.IsDir {
+				copyErr = h.cloneDirFiles(session.UserID, srcResolved, dstResolved)
+			}
 			if copyErr != nil {
 				data, _ := json.Marshal(fiber.Map{"error": copyErr.Error()})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			} else {
-				if body.IsDir {
-					h.cloneDirFiles(session.UserID, srcResolved, dstResolved)
-				} else {
+				if !body.IsDir {
 					dstName := filepath.Base(dstResolved)
 					ct := mime.TypeByExtension(filepath.Ext(dstResolved))
 					var copyOpts []model.UpsertFileOpts
@@ -322,9 +324,11 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 		if err := h.Store.RecursiveCopy(srcResolved, dstResolved, nil); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "copy_failed"})
 		}
-		h.cloneDirFiles(session.UserID, srcResolved, dstResolved)
+		if err := h.cloneDirFiles(session.UserID, srcResolved, dstResolved); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "copy_failed"})
+		}
 	} else {
-		if err := h.Store.CopyObject(srcResolved, dstResolved); err != nil {
+		if err := h.Store.CopyObject(srcObjectKey, dstResolved); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "copy_failed"})
 		}
 		dstName := filepath.Base(dstResolved)
@@ -396,7 +400,7 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 				_ = w.Flush()
 			}
 
-			moveErr := movePathViaStore(h, srcResolved, dstResolved, body.IsDir, progress)
+			moveErr := movePathViaStore(h, session.UserID, srcResolved, dstResolved, body.IsDir, progress)
 
 			if moveErr != nil {
 				data, _ := json.Marshal(fiber.Map{"error": moveErr.Error()})
@@ -411,7 +415,7 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 		return nil
 	}
 
-	if err := movePathViaStore(h, srcResolved, dstResolved, body.IsDir, nil); err != nil {
+	if err := movePathViaStore(h, session.UserID, srcResolved, dstResolved, body.IsDir, nil); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "move_failed"})
 	}
 	syncMovedFileRecords(h, session.UserID, srcResolved, dstResolved, body.SrcPath, body.DstPath, body.IsDir)
@@ -457,7 +461,7 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 			if fileRecord.OSSUploadID != "" {
 				_ = h.Store.AbortMultipartUpload(fileRecord.Path, fileRecord.OSSUploadID)
 			}
-			_ = h.Store.DeleteObject(fileRecord.Path)
+			_ = h.deleteFileStorage(session.UserID, fileRecord)
 			_ = h.Repos.Files.Delete(session.UserID, resolvedPath)
 			_ = h.Repos.Shares.DeleteByPath(session.UserID, resolvedPath)
 			h.Audit.LogFromCtx(c, "file_delete", path, "", "success", 0)
@@ -476,12 +480,10 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 					_ = w.Flush()
 				}
-				if err := h.Store.RecursiveDelete(resolvedPath, progress); err != nil {
+				if err := h.permanentlyDeletePathWithProgress(session.UserID, resolvedPath, true, progress); err != nil {
 					data, _ := json.Marshal(fiber.Map{"error": err.Error()})
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 				} else {
-					_ = h.Repos.Files.DeleteByPrefix(session.UserID, resolvedPath)
-					_ = h.Repos.Shares.DeleteByPrefix(session.UserID, resolvedPath)
 					data, _ := json.Marshal(fiber.Map{"done": true})
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 				}
@@ -525,7 +527,7 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 				_ = w.Flush()
 			}
-			moveErr := movePathViaStore(h, resolvedPath, dstResolved, isDir, progress)
+			moveErr := movePathViaStore(h, session.UserID, resolvedPath, dstResolved, isDir, progress)
 			if moveErr != nil {
 				data, _ := json.Marshal(fiber.Map{"error": moveErr.Error()})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
@@ -539,7 +541,7 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 		return nil
 	}
 
-	if err := movePathViaStore(h, resolvedPath, dstResolved, isDir, nil); err != nil {
+	if err := movePathViaStore(h, session.UserID, resolvedPath, dstResolved, isDir, nil); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
 	}
 	syncMovedFileRecords(h, session.UserID, resolvedPath, dstResolved, path, dstAppPath, isDir)
@@ -580,7 +582,7 @@ func (h *Handler) handleFileAccess(c *fiber.Ctx) error {
 		return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
 	}
 
-	presignedURL, err := h.Store.GeneratePresignedURL(resolvedPath, 4*time.Hour)
+	presignedURL, err := h.Store.GeneratePresignedURL(fileRecord.StorageKey(), 4*time.Hour)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "presign_failed"})
 	}

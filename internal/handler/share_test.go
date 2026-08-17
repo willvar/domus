@@ -12,9 +12,9 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"zephyr/internal/auth"
-	"zephyr/internal/middleware"
-	"zephyr/internal/model"
+	"domus/internal/auth"
+	"domus/internal/middleware"
+	"domus/internal/model"
 )
 
 const testServerEncryptionSecret = "0000000000000000000000000000000000000000000000000000000000000000"

@@ -1,0 +1,47 @@
+# Minimal configuration for `domus workspace serve`. Do not copy database,
+# OSS, session, or encryption credentials into this file.
+workspace:
+  control_socket: "/run/domus-workspace/control.sock"
+  socket_group: "domus"
+  state_root: "/var/lib/domus-workspace"
+  dofs_control_socket: "/run/domus/dofs.sock"
+  dofs_mount_root: "/var/lib/domus/dofs/mounts"
+
+  # Docker access is intentionally limited to a local Unix socket. The daemon
+  # itself is privileged; user containers never receive this socket.
+  docker_host: "unix:///var/run/docker.sock"
+  image: "domus-workspace:0.1.0"
+  pull_policy: "never"
+  container_prefix: "domus-workspace"
+
+  uid: 1000
+  gid: 1000
+  network_mode: "bridge"
+  read_only_rootfs: true
+
+  memory_bytes: 1073741824
+  memory_swap_bytes: 1073741824
+  nano_cpus: 1000000000
+  pids_limit: 256
+  tmpfs_size_bytes: 67108864
+  shm_size_bytes: 67108864
+  max_running: 32
+  max_sessions_per_user: 4
+
+  idle_timeout_seconds: 1800
+  reconcile_interval_seconds: 30
+  operation_timeout_seconds: 120
+  exec_timeout_seconds: 900
+  exec_output_limit_bytes: 16777216
+  stop_timeout_seconds: 10
+  shutdown_timeout_seconds: 30
+
+  shell: ["/bin/bash"]
+  keepalive:
+    - "/bin/sh"
+    - "-c"
+    - "trap 'exit 0' TERM INT; while :; do sleep 3600 & wait $!; done"
+
+log:
+  level: "info"
+  file: ""

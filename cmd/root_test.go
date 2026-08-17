@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"zephyr/config"
-	"zephyr/internal/store"
+	"domus/config"
+	"domus/internal/store"
 )
 
 type resetTestStore struct {
@@ -70,9 +70,9 @@ func (s *resetTestStore) HeadObject(key string) (*store.HeadResult, error) { ret
 
 func testResetConfig() *config.Config {
 	return &config.Config{
-		Server:   config.ServerConfig{PidFile: "zephyr.pid"},
-		Database: config.DatabaseConfig{DBName: "zephyr_test"},
-		OSS:      config.OSSConfig{Bucket: "zephyr-bucket"},
+		Server:   config.ServerConfig{PidFile: "domus.pid"},
+		Database: config.DatabaseConfig{DBName: "domus_test"},
+		OSS:      config.OSSConfig{Bucket: "domus-bucket"},
 	}
 }
 
@@ -116,13 +116,13 @@ func TestResetInstanceSuccess(t *testing.T) {
 		getStatus: func(pidFile string) (bool, int, error) { return false, 0, nil },
 		resetDB: func(cfg config.DatabaseConfig) error {
 			calledDB = true
-			if cfg.DBName != "zephyr_test" {
+			if cfg.DBName != "domus_test" {
 				t.Fatalf("unexpected db name: %s", cfg.DBName)
 			}
 			return nil
 		},
 		newStore: func(cfg config.OSSConfig) (store.FileStore, error) {
-			if cfg.Bucket != "zephyr-bucket" {
+			if cfg.Bucket != "domus-bucket" {
 				t.Fatalf("unexpected bucket: %s", cfg.Bucket)
 			}
 			return st, nil
@@ -181,5 +181,29 @@ func TestResetInstanceStopsOnDBFailure(t *testing.T) {
 	}
 	if calledStore {
 		t.Fatal("bucket cleanup should not be called when database reset fails")
+	}
+}
+
+func TestLoadRootBootstrapPasswordLegacyEnvironmentFallback(t *testing.T) {
+	t.Setenv(rootBootstrapPasswordEnvKey, "")
+	t.Setenv(legacyRootPasswordEnvKey, "legacy-secret")
+	password, err := loadRootBootstrapPassword(&config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if password != "legacy-secret" {
+		t.Fatalf("password = %q", password)
+	}
+}
+
+func TestLoadRootBootstrapPasswordPrefersDomusEnvironment(t *testing.T) {
+	t.Setenv(rootBootstrapPasswordEnvKey, "domus-secret")
+	t.Setenv(legacyRootPasswordEnvKey, "legacy-secret")
+	password, err := loadRootBootstrapPassword(&config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if password != "domus-secret" {
+		t.Fatalf("password = %q", password)
 	}
 }

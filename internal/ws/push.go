@@ -1,5 +1,7 @@
 package ws
 
+import "encoding/base64"
+
 // Push event helpers — all send to specific targets via the Hub.
 
 // PushTaskUpdate sends a task progress/status update to all connections of a user.
@@ -30,47 +32,26 @@ func (h *Hub) PushDirChanged(resolvedPath, appPath, changeType string) {
 	})
 }
 
-// PushSessionOutput sends terminal output to a specific connection.
-func (h *Hub) PushSessionOutput(connID, sessionID, data string) {
+// PushSessionOutputBytes preserves arbitrary TTY bytes across the JSON event
+// transport. Go strings are UTF-8-normalized by encoding/json, so terminal
+// output uses an explicit base64 field and the browser writes a Uint8Array.
+func (h *Hub) PushSessionOutputBytes(connID, sessionID string, data []byte) {
 	h.SendToConn(connID, map[string]any{
 		"event": "session.output",
 		"data": map[string]any{
-			"session_id": sessionID,
-			"data":       data,
+			"session_id":  sessionID,
+			"data_base64": base64.StdEncoding.EncodeToString(data),
 		},
 	})
 }
 
-// PushSessionDone signals that a vsh command has finished executing.
-func (h *Hub) PushSessionDone(connID, sessionID, cwd string) {
-	h.SendToConn(connID, map[string]any{
-		"event": "session.done",
-		"data": map[string]any{
-			"session_id": sessionID,
-			"cwd":        cwd,
-		},
-	})
-}
-
-// PushSessionExit signals that a session has ended (SSH disconnect or vsh exit).
+// PushSessionExit signals that a container TTY session has ended.
 func (h *Hub) PushSessionExit(connID, sessionID, reason string) {
 	h.SendToConn(connID, map[string]any{
 		"event": "session.exit",
 		"data": map[string]any{
 			"session_id": sessionID,
 			"reason":     reason,
-		},
-	})
-}
-
-// PushSessionSSH signals SSH mode changes.
-// status: "connecting" | "connected" | "disconnected"
-func (h *Hub) PushSessionSSH(connID, sessionID, status string) {
-	h.SendToConn(connID, map[string]any{
-		"event": "session.ssh",
-		"data": map[string]any{
-			"session_id": sessionID,
-			"status":     status,
 		},
 	})
 }

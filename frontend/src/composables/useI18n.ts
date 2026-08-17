@@ -4,10 +4,11 @@ import type { AxiosError } from 'axios'
 import type { Locale, Messages } from '../types'
 import zh from '../i18n/zh'
 import en from '../i18n/en'
+import { readMigratedStorage } from '../utils/storageCompat'
 
 const messages: Messages = { zh, en }
 
-const savedLocale: string | null = localStorage.getItem('zephyr_locale')
+const savedLocale: string | null = readMigratedStorage('domus_locale', 'zephyr_locale')
 const browserLang: Locale = navigator.language?.startsWith('zh') ? 'zh' : 'en'
 const locale: Ref<Locale> = ref((savedLocale as Locale) || browserLang)
 
@@ -43,7 +44,7 @@ export function useI18n(): {
 
   function setLocale(lang: Locale): void {
     locale.value = lang
-    localStorage.setItem('zephyr_locale', lang)
+    localStorage.setItem('domus_locale', lang)
   }
 
   const currentLocale: ComputedRef<Locale> = computed(() => locale.value)

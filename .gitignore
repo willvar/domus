@@ -3,10 +3,15 @@ config.yaml
 config.dev.yaml
 tmp/
 dist/
+domus.db
+domus
+# Pre-rename local artifacts may still exist during an in-place upgrade.
 zephyr.db
 zephyr
 frontend/node_modules/
 frontend/dist/
+frontend/test-results/
+frontend/playwright-report/
 *.pid
 .idea/
 .claude/

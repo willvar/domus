@@ -5,7 +5,7 @@ import (
 	"path"
 	"strings"
 
-	"zephyr/internal/ws"
+	"domus/internal/ws"
 )
 
 // registerWSActions registers only realtime/session WebSocket handlers.
@@ -21,7 +21,6 @@ func (h *Handler) registerWSActions() {
 	r.Handle("session.input", h.wsSessionInput)
 	r.Handle("session.resize", h.wsSessionResize)
 	r.Handle("session.close", h.wsSessionClose)
-	r.Handle("session.complete", h.wsSessionComplete)
 
 	// --- Workspace sync ---
 	r.Handle("workspace.event", h.wsWorkspaceEvent)

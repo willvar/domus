@@ -106,6 +106,54 @@
 {"ok": true, "new_size": 105}
 ```
 
+## 服务端预览与转码
+
+启用 Linux 用户工作区后，如果完成上传时没有提供浏览器生成的缩略图，服务端会为
+图片、视频和 PDF 异步创建 `preview` 任务。任务在该用户复用的容器中通过 DOFS
+读写；失败不改变原文件的 `ready` 状态，客户端仍可直接预览原文件。
+缩略图元数据仅在源文件的 ID、路径、所有者和 generation 全部未变时才会
+原子附加；并发覆盖或删除会使旧预览任务失败并清理其派生文件。附加成功后的
+隐藏缩略图记录归源文件所有：源文件被覆盖或删除时会在同一数据库事务中进入
+tombstone，并在 DOFS 打开的句柄排空后回收对象；浏览器上传的缩略图采用相同规则。
+
+### `POST /file/transcode`
+
+用固定配置异步转码一个 ready 媒体文件。接口不接受任意命令或 FFmpeg 参数。
+
+鉴权：已登录
+
+请求体：
+
+```json
+{
+  "path": "/home/alice/movie.mov",
+  "profile": "video-720p"
+}
+```
+
+支持的 `profile`：
+
+- `video-720p`：最大宽度 1280 的 H.264/AAC MP4；
+- `audio-mp3`：从音频或视频提取 MP3。
+
+成功接受返回 `202`：
+
+```json
+{
+  "task_id": "uuid",
+  "output_path": "/home/alice/movie-a1b2c3d4.720p.mp4",
+  "profile": "video-720p"
+}
+```
+
+输出文件名带任务 UUID 前缀片段以避免并发冲突。进度和最终状态通过 `/task/`
+及 `task.update` 获取；`DELETE /task/:id` 可取消。常见错误：
+
+- `400 invalid_request` / `unsupported_transcode_profile` / `unsupported_media_type`；
+- `404 not_found`；
+- `429 media_job_capacity`；
+- `503 workspace_unavailable`。
+
 ### `PUT /file/shared/:share_id/content/diff`
 修改共享文件内容，仅写权限共享可用。
 
@@ -308,10 +356,17 @@
 }
 ```
 
+`parts` 为旧版客户端兼容字段。对于 multipart 上传，服务端会通过 OSS
+`ListParts` 校验实际分片数、总大小与 ETag，并使用 OSS 返回的权威数据完成上传；
+因此浏览器无需通过 CORS 读取 `ETag` 响应头。
+
 响应：
 ```json
 {"ok": true}
 ```
+
+若未提供 `thumbnail_upload_id` 且工作区已启用，服务端可能在响应后创建异步
+`preview` 任务；这不会改变本接口已经成功完成上传的语义。
 
 ### `GET /file/upload/presign`
 批量获取上传分片 presigned URL。

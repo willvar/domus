@@ -15,6 +15,7 @@ import { useWindowManagerStore } from '../stores/windowManager'
 import { useWorkspaceSync } from '../composables/useWorkspaceSync'
 import { Button } from '../barrels/breeze'
 import { useI18n } from '../composables/useI18n'
+import { readMigratedStorage } from '../utils/storageCompat'
 
 // Critical path — needed on first render
 import PlasmaDesktop from '../components/plasma/Desktop.vue'
@@ -39,10 +40,11 @@ const { t } = useI18n()
 useKeyboard()
 
 // --- Tray panel size (shared across all tray panels) ---
-const PANEL_SIZE_KEY = 'zephyr_tray_panel_size'
+const PANEL_SIZE_KEY = 'domus_tray_panel_size'
+const LEGACY_PANEL_SIZE_KEY = 'zephyr_tray_panel_size'
 function loadPanelSize() {
   try {
-    const raw = localStorage.getItem(PANEL_SIZE_KEY)
+    const raw = readMigratedStorage(PANEL_SIZE_KEY, LEGACY_PANEL_SIZE_KEY)
     if (raw) return JSON.parse(raw)
   } catch { /* ignore */ }
   return { width: 360, height: 420 }

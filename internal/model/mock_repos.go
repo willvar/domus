@@ -1,6 +1,11 @@
 package model
 
-import "time"
+import (
+	"io"
+	"time"
+
+	"gorm.io/gorm"
+)
 
 // MockRepos returns a Repos filled with all-default mock implementations.
 func MockRepos() *Repos {
@@ -125,6 +130,18 @@ func (m *MockUserRepo) SetWrappedKEK(userID, wrappedKEK string) error {
 type MockFileRepo struct {
 	UpsertFn                         func(userID, path, name string, isDir bool, size int64, contentType, contentHash string, opts ...UpsertFileOpts) error
 	GetFn                            func(userID, path string) (*FileRecord, error)
+	GetByIDFn                        func(userID string, id int64) (*FileRecord, error)
+	GetByStorageKeyFn                func(userID, objectKey string) (*FileRecord, error)
+	CommitGenerationFn               func(userID string, id, expectedGeneration int64, objectKey string, size int64) (bool, error)
+	CreateDOFSNodeFn                 func(userID, path, name, wrappedDEK string, isDir bool) (*FileRecord, error)
+	FinalizeDOFSFileFn               func(userID string, id int64, objectKey string) (bool, error)
+	AbortDOFSFileFn                  func(userID string, id int64) error
+	RemoveDOFSNodeFn                 func(userID, path string, isDir bool) (*FileRecord, error)
+	RenameDOFSNodeFn                 func(userID, oldPath, newPath, newName string, isDir, replace bool) (*FileRecord, *FileRecord, error)
+	ListCreatingDOFSNodesFn          func(userID string) ([]FileRecord, error)
+	ListDeletedDOFSNodesFn           func(userID string) ([]FileRecord, error)
+	PurgeDeletedDOFSNodeFn           func(userID string, id int64) (bool, error)
+	AcquireDOFSMountLeaseFn          func(userID string) (io.Closer, error)
 	DeleteFn                         func(userID, path string) error
 	DeleteByPrefixFn                 func(userID, prefix string) error
 	ListByPrefixFn                   func(userID, prefix string) ([]FileRecord, error)
@@ -133,6 +150,8 @@ type MockFileRepo struct {
 	MoveFn                           func(userID, oldPath, newPath, newName string) error
 	MoveByPrefixFn                   func(userID, oldPrefix, newPrefix string) error
 	UpdateThumbnailFn                func(userID, path, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) error
+	UpdateThumbnailIfGenerationFn    func(userID, path string, fileID, generation int64, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) (bool, error)
+	UpdateContentTypeFn              func(userID, path, contentType string) error
 	UpdateSearchVectorFn             func(userID, path, text string) error
 	SearchFilesFn                    func(userID, query string, limit int) ([]SearchFileResult, error)
 	HasFullTextSearchFn              func() bool
@@ -156,6 +175,87 @@ func (m *MockFileRepo) Get(userID, path string) (*FileRecord, error) {
 		return m.GetFn(userID, path)
 	}
 	return &FileRecord{UserID: userID, Path: path, Name: path, Status: "ready"}, nil
+}
+func (m *MockFileRepo) GetByID(userID string, id int64) (*FileRecord, error) {
+	if m.GetByIDFn != nil {
+		return m.GetByIDFn(userID, id)
+	}
+	return &FileRecord{ID: id, UserID: userID, Status: "ready"}, nil
+}
+func (m *MockFileRepo) GetByStorageKey(userID, objectKey string) (*FileRecord, error) {
+	if m.GetByStorageKeyFn != nil {
+		return m.GetByStorageKeyFn(userID, objectKey)
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+func (m *MockFileRepo) CommitGeneration(userID string, id, expectedGeneration int64, objectKey string, size int64) (bool, error) {
+	if m.CommitGenerationFn != nil {
+		return m.CommitGenerationFn(userID, id, expectedGeneration, objectKey, size)
+	}
+	return true, nil
+}
+func (m *MockFileRepo) CreateDOFSNode(userID, path, name, wrappedDEK string, isDir bool) (*FileRecord, error) {
+	if m.CreateDOFSNodeFn != nil {
+		return m.CreateDOFSNodeFn(userID, path, name, wrappedDEK, isDir)
+	}
+	status := "creating"
+	if isDir {
+		status = "ready"
+	}
+	return &FileRecord{ID: 1, UserID: userID, Path: path, Name: name, IsDir: isDir, WrappedDEK: wrappedDEK, Status: status}, nil
+}
+func (m *MockFileRepo) FinalizeDOFSFile(userID string, id int64, objectKey string) (bool, error) {
+	if m.FinalizeDOFSFileFn != nil {
+		return m.FinalizeDOFSFileFn(userID, id, objectKey)
+	}
+	return true, nil
+}
+func (m *MockFileRepo) AbortDOFSFile(userID string, id int64) error {
+	if m.AbortDOFSFileFn != nil {
+		return m.AbortDOFSFileFn(userID, id)
+	}
+	return nil
+}
+func (m *MockFileRepo) RemoveDOFSNode(userID, path string, isDir bool) (*FileRecord, error) {
+	if m.RemoveDOFSNodeFn != nil {
+		return m.RemoveDOFSNodeFn(userID, path, isDir)
+	}
+	return &FileRecord{ID: 1, UserID: userID, Path: path, IsDir: isDir, Status: "deleted"}, nil
+}
+func (m *MockFileRepo) RenameDOFSNode(userID, oldPath, newPath, newName string, isDir, replace bool) (*FileRecord, *FileRecord, error) {
+	if m.RenameDOFSNodeFn != nil {
+		return m.RenameDOFSNodeFn(userID, oldPath, newPath, newName, isDir, replace)
+	}
+	return &FileRecord{ID: 1, UserID: userID, Path: newPath, Name: newName, IsDir: isDir, Status: "ready"}, nil, nil
+}
+func (m *MockFileRepo) ListCreatingDOFSNodes(userID string) ([]FileRecord, error) {
+	if m.ListCreatingDOFSNodesFn != nil {
+		return m.ListCreatingDOFSNodesFn(userID)
+	}
+	return nil, nil
+}
+func (m *MockFileRepo) ListDeletedDOFSNodes(userID string) ([]FileRecord, error) {
+	if m.ListDeletedDOFSNodesFn != nil {
+		return m.ListDeletedDOFSNodesFn(userID)
+	}
+	return nil, nil
+}
+func (m *MockFileRepo) PurgeDeletedDOFSNode(userID string, id int64) (bool, error) {
+	if m.PurgeDeletedDOFSNodeFn != nil {
+		return m.PurgeDeletedDOFSNodeFn(userID, id)
+	}
+	return true, nil
+}
+
+type mockDOFSLease struct{}
+
+func (mockDOFSLease) Close() error { return nil }
+
+func (m *MockFileRepo) AcquireDOFSMountLease(userID string) (io.Closer, error) {
+	if m.AcquireDOFSMountLeaseFn != nil {
+		return m.AcquireDOFSMountLeaseFn(userID)
+	}
+	return mockDOFSLease{}, nil
 }
 func (m *MockFileRepo) Delete(userID, path string) error {
 	if m.DeleteFn != nil {
@@ -202,6 +302,20 @@ func (m *MockFileRepo) MoveByPrefix(userID, oldPrefix, newPrefix string) error {
 func (m *MockFileRepo) UpdateThumbnail(userID, path, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) error {
 	if m.UpdateThumbnailFn != nil {
 		return m.UpdateThumbnailFn(userID, path, thumbnailKey, thumbnailWrappedDEK, width, height, duration)
+	}
+	return nil
+}
+
+func (m *MockFileRepo) UpdateThumbnailIfGeneration(userID, path string, fileID, generation int64, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) (bool, error) {
+	if m.UpdateThumbnailIfGenerationFn != nil {
+		return m.UpdateThumbnailIfGenerationFn(userID, path, fileID, generation, thumbnailKey, thumbnailWrappedDEK, width, height, duration)
+	}
+	return true, nil
+}
+
+func (m *MockFileRepo) UpdateContentType(userID, path, contentType string) error {
+	if m.UpdateContentTypeFn != nil {
+		return m.UpdateContentTypeFn(userID, path, contentType)
 	}
 	return nil
 }

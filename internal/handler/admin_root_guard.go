@@ -1,6 +1,6 @@
 package handler
 
-import "zephyr/internal/model"
+import "domus/internal/model"
 
 func ensureNotDemotingLastRoot(users model.UserRepo, user *model.User, newRole string) (blockedCode string, err error) {
 	if user.Role != "root" || newRole == "root" {

@@ -1,0 +1,33 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 3 ]; then
+  echo "usage: domus-transcode PROFILE INPUT OUTPUT" >&2
+  exit 64
+fi
+
+profile=$1
+input=$2
+output=$3
+case "$input" in /workspace/*) ;; *) echo "input must be inside /workspace" >&2; exit 64 ;; esac
+case "$output" in /workspace/*) ;; *) echo "output must be inside /workspace" >&2; exit 64 ;; esac
+if [ "$input" = "$output" ]; then
+  echo "input and output must differ" >&2
+  exit 64
+fi
+
+case "$profile" in
+  video-720p)
+    exec ffmpeg -nostdin -hide_banner -loglevel error -y -i "$input" \
+      -map 0:v:0 -map 0:a:0? -vf "scale='min(1280,iw)':-2" \
+      -c:v libx264 -preset medium -crf 23 -c:a aac -b:a 128k -movflags +faststart "$output"
+    ;;
+  audio-mp3)
+    exec ffmpeg -nostdin -hide_banner -loglevel error -y -i "$input" \
+      -vn -c:a libmp3lame -q:a 3 "$output"
+    ;;
+  *)
+    echo "unsupported transcode profile: $profile" >&2
+    exit 64
+    ;;
+esac

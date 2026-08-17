@@ -7,11 +7,29 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
 
-	"zephyr/internal/auth"
-	"zephyr/internal/model"
+	"domus/internal/auth"
+	"domus/internal/model"
 )
 
-const SessionCookieName = "zephyr_session"
+const (
+	SessionCookieName       = "domus_session"
+	LegacySessionCookieName = "zephyr_session"
+)
+
+func sessionCookie(c *fiber.Ctx) (string, bool) {
+	if value := c.Cookies(SessionCookieName); value != "" {
+		return value, false
+	}
+	return c.Cookies(LegacySessionCookieName), true
+}
+
+func migrateLegacySessionCookie(c *fiber.Ctx, value string) {
+	c.Cookie(&fiber.Cookie{
+		Name: SessionCookieName, Value: value, HTTPOnly: true,
+		Secure: strings.EqualFold(c.Protocol(), "https"), SameSite: "Lax",
+		MaxAge: 86400 * 7, Path: "/",
+	})
+}
 
 // Middleware holds dependencies for HTTP middleware.
 type Middleware struct {
@@ -30,7 +48,7 @@ func New(sessions model.SessionRepo, sessionSecret string) *Middleware {
 // AuthRequired checks for valid session with HMAC signature verification.
 func (m *Middleware) AuthRequired() fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		cookieValue := c.Cookies(SessionCookieName)
+		cookieValue, legacy := sessionCookie(c)
 		if cookieValue == "" {
 			return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
 		}
@@ -47,6 +65,9 @@ func (m *Middleware) AuthRequired() fiber.Handler {
 
 		c.Locals("session", session)
 		c.Locals("sessionID", sessionID)
+		if legacy {
+			migrateLegacySessionCookie(c, cookieValue)
+		}
 		return c.Next()
 	}
 }
@@ -77,7 +98,7 @@ func (m *Middleware) WebSocketUpgrade() fiber.Handler {
 			return fiber.ErrUpgradeRequired
 		}
 
-		cookieValue := c.Cookies(SessionCookieName)
+		cookieValue, legacy := sessionCookie(c)
 		if cookieValue == "" {
 			return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
 		}
@@ -94,6 +115,9 @@ func (m *Middleware) WebSocketUpgrade() fiber.Handler {
 
 		c.Locals("session", session)
 		c.Locals("sessionID", sessionID)
+		if legacy {
+			migrateLegacySessionCookie(c, cookieValue)
+		}
 		return c.Next()
 	}
 }

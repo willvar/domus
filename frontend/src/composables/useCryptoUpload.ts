@@ -328,6 +328,7 @@ export async function writeEncryptedFile(path: string, data: ArrayBuffer, conten
   await api.post('/file/upload', {
     upload_id: init.upload_id,
     dek: dek.hex,
+    encrypted_size: encrypted.byteLength,
     parts: [{ part_number: 1, etag }],
   })
 }
@@ -351,4 +352,3 @@ function uint64BE(n: number): Uint8Array {
   new DataView(buf.buffer).setBigUint64(0, BigInt(n), false)
   return buf
 }
-

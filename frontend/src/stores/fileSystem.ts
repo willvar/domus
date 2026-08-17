@@ -12,6 +12,7 @@ import { useMessage } from '../composables/useMessage'
 import { usePreferences } from '../composables/usePreferences'
 import { useWorkspaceSync } from '../composables/useWorkspaceSync'
 import { useServiceWorker } from '../composables/useServiceWorker'
+import { readMigratedStorage } from '../utils/storageCompat'
 import type {
   FileListItem,
   FileTab,
@@ -200,7 +201,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const sortBy = bindActiveTabField<string>('sortBy', 'name')
   const sortOrder = bindActiveTabField<string>('sortOrder', 'asc')
   const searchQuery = bindActiveTabField<string>('searchQuery', '')
-  const showHidden: Ref<boolean> = ref(localStorage.getItem('zephyr_show_hidden') === '1')
+  const showHidden: Ref<boolean> = ref(readMigratedStorage('domus_show_hidden', 'zephyr_show_hidden') === '1')
 
   // --- Search state ---
   const searchMode: Ref<boolean> = ref(false)
@@ -305,7 +306,8 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   // --- Tab operations ---
   function createTab(path?: string, { remote }: RemoteFlag = {}): string {
     const id: string = nextTabId()
-    const initialPath: string = path || `/home/${auth.username}/`
+    const requestedPath: string = path || `/home/${auth.username}/`
+    const initialPath: string = requestedPath === '__shared__/' ? requestedPath : normalizeDirPath(requestedPath)
     const tab: FileTab = {
       id,
       path: initialPath,
@@ -397,8 +399,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   // --- Navigation ---
   async function navigate(path: string, addToHistory: boolean = true, { remote }: RemoteFlag = {}): Promise<void> {
-    path = path || '/'
-    if (path !== '/' && !path.endsWith('/')) path += '/'
+    path = path === '__shared__/' ? path : normalizeDirPath(path)
 
     // Exit search mode when navigating
     if (searchMode.value) {
@@ -676,6 +677,15 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     clipboard.value = {
       items: buildClipboardItems(),
       mode: 'cut',
+    }
+  }
+
+  async function transcodeFile(file: FileListItem, profile: 'video-720p' | 'audio-mp3'): Promise<void> {
+    try {
+      await api.post('/file/transcode', { path: file.path, profile })
+      message.success(t('transcode.queued', { name: file.name }))
+    } catch (e: any) {
+      message.error(te(e))
     }
   }
 
@@ -1374,12 +1384,14 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   // Listen for directory change push events
   ws.on('dir.changed', ({ path }: { path: string }) => {
+    const changedPath = path === '__shared__/' ? path : normalizeDirPath(path)
     // Invalidate cache for this directory
-    cache.delete(path)
+    cache.delete(changedPath)
     // Refresh all tabs viewing this directory
     for (const tab of tabs.value) {
-      if (tab.path === path) {
-        loadFilesForTab(tab, path)
+      const tabPath = tab.path === '__shared__/' ? tab.path : normalizeDirPath(tab.path)
+      if (tabPath === changedPath) {
+        loadFilesForTab(tab, changedPath)
       }
     }
   })
@@ -1429,13 +1441,15 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
     for (const st of serializedTabs) {
       const id: string = nextTabId()
+      const requestedPath = st.path || `/home/${auth.username}/`
+      const restoredPath = requestedPath === '__shared__/' ? requestedPath : normalizeDirPath(requestedPath)
       const tab: FileTab = {
         id,
-        path: st.path || `/home/${auth.username}/`,
+        path: restoredPath,
         files: [],
         selectedFiles: [],
         lastSelectedIndex: -1,
-        history: [st.path || `/home/${auth.username}/`],
+        history: [restoredPath],
         historyIndex: 0,
         viewMode: (st.viewMode as FileTab['viewMode']) || 'icons',
         sortBy: (st.sortBy as FileTab['sortBy']) || 'name',
@@ -1533,7 +1547,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     showHidden,
     toggleHidden(): void {
       showHidden.value = !showHidden.value
-      localStorage.setItem('zephyr_show_hidden', showHidden.value ? '1' : '0')
+      localStorage.setItem('domus_show_hidden', showHidden.value ? '1' : '0')
     },
     searchMode,
     searchResults,
@@ -1562,6 +1576,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     toggleSelect,
     copySelected,
     cutSelected,
+    transcodeFile,
     paste,
     createFolder,
     startRename,

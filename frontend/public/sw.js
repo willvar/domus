@@ -1,4 +1,4 @@
-// Zephyr Service Worker — Client-side AES-GCM decryption with Range support.
+// Domus Service Worker — Client-side AES-GCM decryption with Range support.
 //
 // Architecture:
 //   Main thread sends KEK (Key Encryption Key) via postMessage.
@@ -11,8 +11,10 @@
 const HEADER_SIZE = 5 // [1 byte version][4 bytes chunk_size]
 const NONCE_SIZE = 12
 const TAG_SIZE = 16
-const CACHE_NAME = 'zephyr-decrypt'
+const CACHE_NAME = 'domus-decrypt'
+const LEGACY_CACHE_NAME = 'zephyr-decrypt'
 const CACHE_CLEANUP_DELAY = 5 * 60 * 1000 // 5 minutes
+const MAX_CACHEABLE_BYTES = 64 * 1024 * 1024
 
 
 // --- State ---
@@ -23,7 +25,9 @@ const chunkAccum = new Map() // contentHash → { chunks: Map<idx, Uint8Array>, 
 
 // --- Lifecycle ---
 self.addEventListener('install', () => self.skipWaiting())
-self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()))
+self.addEventListener('activate', (event) => event.waitUntil(
+  Promise.all([self.clients.claim(), caches.delete(LEGACY_CACHE_NAME)])
+))
 
 // --- Message handling ---
 self.addEventListener('message', async (event) => {
@@ -90,7 +94,7 @@ function cacheKey(contentHash) {
 
 // --- Chunk accumulator: collects decrypted chunks across multiple Range requests ---
 function getAccum(meta) {
-  if (!meta.contentHash || !meta.chunkSize) return null
+  if (!meta.contentHash || !meta.chunkSize || !meta.size || meta.size > MAX_CACHEABLE_BYTES) return null
   let acc = chunkAccum.get(meta.contentHash)
   if (!acc) {
     acc = { chunks: new Map(), totalChunks: Math.ceil(meta.size / meta.chunkSize) }
@@ -194,7 +198,10 @@ async function handleDecrypt(request, meta) {
 
 // --- Stream decrypt: progressive decryption returned as ReadableStream ---
 function streamDecryptResponse(meta) {
-  const plainParts = [] // collect for caching
+  let collectForCache = Boolean(
+    meta.contentHash && (!meta.size || meta.size <= MAX_CACHEABLE_BYTES)
+  )
+  const plainParts = []
   let totalPlain = 0
 
   const stream = new ReadableStream({
@@ -249,8 +256,17 @@ function streamDecryptResponse(meta) {
               meta.dek, ciphertext
             ))
             controller.enqueue(plaintext)
-            plainParts.push(plaintext)
             totalPlain += plaintext.length
+            if (collectForCache) {
+              if (totalPlain <= MAX_CACHEABLE_BYTES) {
+                plainParts.push(plaintext)
+              } else {
+                // Unknown/malformed sizes must not turn the browser process
+                // into an unbounded plaintext cache.
+                collectForCache = false
+                plainParts.length = 0
+              }
+            }
             chunkIdx++
           } catch {
             controller.error(new Error('decrypt failed'))
@@ -263,7 +279,7 @@ function streamDecryptResponse(meta) {
         controller.close()
 
         // Cache the full plaintext in background
-        if (meta.contentHash && plainParts.length > 0) {
+        if (collectForCache && plainParts.length > 0) {
           const full = concatAll(plainParts)
           const blob = new Blob([full], { type: meta.contentType || 'application/octet-stream' })
           const cacheResp = new Response(blob, {
@@ -420,21 +436,21 @@ function streamDecryptRange(meta, pStart, pEnd) {
 
 // --- Serve a Range slice ---
 function handleRangeFromCache(meta, rangeHeader, cached) {
-  return cached.arrayBuffer().then(buf => {
-    const fullData = new Uint8Array(buf)
-    const { start, end } = parseRange(rangeHeader, fullData.byteLength)
+  return cached.blob().then(blob => {
+    const { start, end } = parseRange(rangeHeader, blob.size)
     if (start === null) {
       return new Response('Invalid range', {
-        status: 416, headers: { 'Content-Range': `bytes */${fullData.byteLength}` }
+        status: 416, headers: { 'Content-Range': `bytes */${blob.size}` }
       })
     }
-    return serveRange(meta, rangeHeader, fullData.slice(start, end + 1), start, end)
+    const slice = blob.slice(start, end + 1, meta.contentType || blob.type)
+    return serveRange(meta, slice, start, end, blob.size)
   })
 }
 
-function serveRange(meta, rangeHeader, data, start, end) {
-  const total = meta.size || (end + 1)
-  const contentLength = data.byteLength
+function serveRange(meta, data, start, end, cachedSize) {
+  const total = meta.size || cachedSize
+  const contentLength = end - start + 1
 
   // If the range covers the entire file, return 200 instead of 206.
   // This ensures <video> elements properly initialise their media source.

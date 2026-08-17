@@ -1,6 +1,6 @@
 package main
 
-import "zephyr/cmd"
+import "domus/cmd"
 
 func main() {
 	cmd.Execute()

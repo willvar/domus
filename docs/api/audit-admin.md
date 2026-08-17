@@ -58,6 +58,11 @@
 
 响应：`201 Created`，返回用户对象。
 
+启用 Workspace 执行面时，用户名必须匹配
+`[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}`；否则返回
+`400 workspace_incompatible_username`。这是动态 Unix 身份文件与用户 home
+路径的安全约束。
+
 ### `PUT /audit/user/:id`
 更新用户角色或密码。
 

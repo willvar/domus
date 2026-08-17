@@ -5,7 +5,7 @@
 ## 连接
 
 - URL：`/ws`
-- 鉴权：HTTP Upgrade 时要求有效 `zephyr_session` Cookie
+- 鉴权：HTTP Upgrade 时要求有效 `domus_session` Cookie（升级兼容旧 `zephyr_session`）
 - 非 WebSocket Upgrade 请求会被拒绝
 - 未登录或会话失效时返回 `401`
 
@@ -114,14 +114,16 @@
   "data": {
     "session_id": "...",
     "cwd": "/home/alice/",
-    "user": "alice",
-    "history": []
+    "user": "alice"
   }
 }
 ```
 
+后续 `session.input` 始终是原始终端字节，容器内 Shell 自己处理提示符、历史、
+补全、管道、重定向和 Ctrl+C。工作区启动失败会返回
+`workspace_unavailable`，不存在其他执行模式。
+
 常见错误：
-- `encryption_key_unavailable`
 - `too_many_sessions`
 - 以及底层会话层返回的其他错误
 
@@ -188,34 +190,6 @@
 成功响应：
 ```json
 {"id": "5", "action": "session.close", "ok": true, "data": {}}
-```
-
-### `session.complete`
-请求命令补全。
-
-请求：
-```json
-{
-  "id": "6",
-  "action": "session.complete",
-  "data": {
-    "session_id": "...",
-    "line": "cd Do"
-  }
-}
-```
-
-成功响应：
-```json
-{
-  "id": "6",
-  "action": "session.complete",
-  "ok": true,
-  "data": {
-    "matches": ["Documents/"],
-    "prefix": "Do"
-  }
-}
 ```
 
 ### `workspace.event`
@@ -313,28 +287,20 @@
 ### `session.output`
 终端输出数据。
 
+工作区终端将容器的原始字节作为 Base64 发送，避免 UTF-8 解码破坏
+交互式程序的输出：
+
 ```json
 {
   "event": "session.output",
   "data": {
     "session_id": "...",
-    "data": "total 0\n"
+    "data_base64": "/wBB"
   }
 }
 ```
 
-### `session.done`
-一次命令执行完成。
-
-```json
-{
-  "event": "session.done",
-  "data": {
-    "session_id": "...",
-    "cwd": "/home/alice/"
-  }
-}
-```
+客户端应将 `data_base64` 解码为字节后写入终端。
 
 ### `session.exit`
 会话结束。
@@ -348,24 +314,6 @@
   }
 }
 ```
-
-### `session.ssh`
-SSH 状态变化。
-
-```json
-{
-  "event": "session.ssh",
-  "data": {
-    "session_id": "...",
-    "status": "connected"
-  }
-}
-```
-
-`status` 常见值：
-- `connecting`
-- `connected`
-- `disconnected`
 
 ### `workspace.event`
 同用户其他连接广播来的工作区事件。

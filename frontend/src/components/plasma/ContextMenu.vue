@@ -24,6 +24,15 @@ const dangerKeys = new Set(['delete', 'empty_trash', 'permanent_delete'])
 
 const pickWallpaper = inject<(() => void) | null>('pickWallpaper', null)
 
+function mediaKind(fileName: string, contentType?: string): 'video' | 'audio' | '' {
+  if (contentType?.startsWith('video/')) return 'video'
+  if (contentType?.startsWith('audio/')) return 'audio'
+  const extension = fileName.toLowerCase().split('.').pop() || ''
+  if (['mp4', 'mkv', 'mov', 'webm', 'avi', 'm4v'].includes(extension)) return 'video'
+  if (['mp3', 'wav', 'flac', 'm4a', 'aac', 'ogg', 'opus'].includes(extension)) return 'audio'
+  return ''
+}
+
 const options = computed(() => {
   const items: Array<{ label?: string; key?: string; type?: string }> = []
 
@@ -72,6 +81,13 @@ const options = computed(() => {
       const vtype = fs.getViewerType(targetFile.value.name)
       if (vtype !== 'text') {
         items.push({ label: t('menu.open_as_text'), key: 'open_as_text' })
+      }
+      const kind = mediaKind(targetFile.value.name, targetFile.value.content_type)
+      if (kind === 'video') {
+        items.push({ label: t('menu.transcode_video_720p'), key: 'transcode_video_720p' })
+        items.push({ label: t('menu.transcode_audio_mp3'), key: 'transcode_audio_mp3' })
+      } else if (kind === 'audio') {
+        items.push({ label: t('menu.transcode_audio_mp3'), key: 'transcode_audio_mp3' })
       }
     }
 
@@ -162,6 +178,12 @@ function handleSelect(key: string) {
       break
     case 'open_as_text':
       if (targetFile.value) fs.openViewer(targetFile.value, { forceType: 'text' })
+      break
+    case 'transcode_video_720p':
+      if (targetFile.value) void fs.transcodeFile(targetFile.value, 'video-720p')
+      break
+    case 'transcode_audio_mp3':
+      if (targetFile.value) void fs.transcodeFile(targetFile.value, 'audio-mp3')
       break
     case 'copy': fs.copySelected(); break
     case 'cut': fs.cutSelected(); break

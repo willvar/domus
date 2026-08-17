@@ -196,6 +196,7 @@ function handleSearchKeydown(e: KeyboardEvent) {
         <button
           class="nav-btn"
           :title="mouseTitle(t('toolbar.upload'))"
+          :aria-label="t('toolbar.upload')"
           :disabled="fs.isTrash"
           @click="triggerUpload"
         >

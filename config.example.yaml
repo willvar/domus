@@ -17,12 +17,41 @@ oss:
 
 server:
   port: 8080
-  pid_file: "zephyr.pid"
+  pid_file: "domus.pid"
   cors_origins: ""  # optional, comma-separated origins for CORS when frontend and backend use different origins
-  # example: "http://localhost:5173,https://zephyr.willvar.cn"
+  # example: "http://localhost:5173,https://domus.willvar.cn"
   # session_secret and encryption_secret are auto-generated on first startup
-  # first startup root password: prefer a 0600 secret file; fallback env is ZEPHYR_ROOT_BOOTSTRAP_PASSWORD
+  # first startup root password: prefer a 0600 secret file; fallback env is DOMUS_ROOT_BOOTSTRAP_PASSWORD
+  # ZEPHYR_ROOT_BOOTSTRAP_PASSWORD remains accepted during upgrades.
   root_bootstrap_password_file: ""
+
+# Linux-only DOFS data plane. Run it as a separate foreground systemd service
+# with `domus dofs serve -c /etc/domus/config.yaml`.
+dofs:
+  # Keep the mount tree and plaintext writeback state on separate, private host
+  # paths. state_root should be backed by an encrypted local volume.
+  mount_root: "/var/lib/domus/dofs/mounts"
+  state_root: "/var/lib/domus/dofs/state"
+  control_socket: "/run/domus/dofs.sock"
+  # Empty means owner-only (0600). Set to the trusted Domus service group to
+  # allow a separately-accounted control-plane process to request mounts.
+  # The supplied workspace unit runs with primary group `domus`, so production
+  # deployments use that group. `domus dev` overrides this to owner-only.
+  socket_group: "domus"
+  # UID/GID presented inside the FUSE filesystem and user containers.
+  uid: 1000
+  gid: 1000
+  allow_other: true
+  writable: true
+  max_mounts: 32  # also bounds pinned PostgreSQL advisory-lock sessions
+  reconcile_interval_seconds: 30
+  mount_timeout_seconds: 60
+  shutdown_timeout_seconds: 30
+
+# Required Linux container execution plane. The web process only consumes this
+# Unix socket and never receives access to Docker's root-equivalent socket.
+workspace:
+  control_socket: "/run/domus-workspace/control.sock"
 
 log:
   level: "info"
@@ -33,7 +62,7 @@ database:
   port: 5432
   user: "postgres"
   password: ""
-  dbname: "zephyr"
+  dbname: "domus"
   sslmode: "disable"
 
 upload:

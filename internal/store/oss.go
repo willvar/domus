@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"zephyr/config"
+	"domus/config"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -246,6 +246,13 @@ func (c *OSSClient) DeleteObject(key string) error {
 	return c.serverClient.RemoveObject(context.Background(), c.bucketName, key, minio.RemoveObjectOptions{})
 }
 
+// DeleteObjectPrefix removes every object below a DOFS inode generation root.
+// It is kept outside FileStore so existing callers and test doubles do not
+// need a second spelling for RecursiveDelete.
+func (c *OSSClient) DeleteObjectPrefix(prefix string) error {
+	return c.RecursiveDelete(prefix, nil)
+}
+
 // DeleteObjects deletes multiple objects
 func (c *OSSClient) DeleteObjects(keys []string) error {
 	if len(keys) == 0 {
@@ -409,6 +416,38 @@ func (c *OSSClient) GetObjectContent(key string) (io.ReadCloser, error) {
 		return nil, err
 	}
 	return obj, nil
+}
+
+// GetObjectRange reads the inclusive byte range [start, end] from an object.
+// It intentionally is not part of FileStore yet: DOFS consumes this narrower
+// capability without forcing every existing FileStore test double to implement
+// range reads.
+func (c *OSSClient) GetObjectRange(key string, start, end int64) (io.ReadCloser, error) {
+	if start < 0 || end < start {
+		return nil, fmt.Errorf("invalid object range [%d,%d]", start, end)
+	}
+
+	opts := minio.GetObjectOptions{}
+	if err := opts.SetRange(start, end); err != nil {
+		return nil, fmt.Errorf("set object range [%d,%d]: %w", start, end, err)
+	}
+	obj, err := c.serverClient.GetObject(context.Background(), c.bucketName, key, opts)
+	if err != nil {
+		return nil, err
+	}
+	return obj, nil
+}
+
+// PutObject streams an object of a known size. DOFS uses this capability to
+// upload encrypted generations without buffering an entire file in memory.
+func (c *OSSClient) PutObject(key string, reader io.Reader, size int64) error {
+	if size < 0 {
+		return fmt.Errorf("invalid object size %d", size)
+	}
+	_, err := c.serverClient.PutObject(
+		context.Background(), c.bucketName, key, reader, size, minio.PutObjectOptions{},
+	)
+	return err
 }
 
 // PutObjectBytes writes binary data to an object
