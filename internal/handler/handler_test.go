@@ -13,11 +13,11 @@ import (
 
 	"encoding/hex"
 
-	"zephyr/config"
-	"zephyr/internal/auth"
-	"zephyr/internal/middleware"
-	"zephyr/internal/model"
-	"zephyr/internal/service"
+	"domus/config"
+	"domus/internal/auth"
+	"domus/internal/middleware"
+	"domus/internal/model"
+	"domus/internal/service"
 )
 
 func TestLogin_Success(t *testing.T) {
@@ -115,6 +115,9 @@ func TestMe(t *testing.T) {
 	if result["username"] != "root" {
 		t.Fatalf("expected admin, got %v", result["username"])
 	}
+	if _, exists := result["workspace_enabled"]; exists {
+		t.Fatalf("workspace_enabled should not be exposed in the single-architecture API: %v", result["workspace_enabled"])
+	}
 }
 
 func TestLogout(t *testing.T) {
@@ -127,6 +130,15 @@ func TestLogout(t *testing.T) {
 	resp, _ := app.Test(req)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	cleared := map[string]bool{}
+	for _, responseCookie := range resp.Cookies() {
+		if (responseCookie.Name == middleware.SessionCookieName || responseCookie.Name == middleware.LegacySessionCookieName) && responseCookie.MaxAge < 0 {
+			cleared[responseCookie.Name] = true
+		}
+	}
+	if !cleared[middleware.SessionCookieName] || !cleared[middleware.LegacySessionCookieName] {
+		t.Fatalf("logout did not clear both session cookie names: %v", cleared)
 	}
 
 	req2 := httptest.NewRequest("GET", "/user/", nil)
@@ -229,6 +241,7 @@ func TestRegisterRoutes_WithNilHub(t *testing.T) {
 		Config: cfg, Repos: repos, Store: &MockFileStore{},
 		Email: &service.MockEmailSender{},
 		Audit: auditWorker, Challenges: challenges, Mid: mid,
+		Workspace: cleanupWorkspaceService{}, Terminal: newTestTerminalManager(),
 	}
 
 	app := fiber.New()

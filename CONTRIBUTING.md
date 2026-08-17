@@ -1,6 +1,6 @@
 # 贡献指南
 
-感谢你对 Zephyr 项目的关注！本文档将帮助你快速了解项目结构、搭建开发环境并参与贡献。
+感谢你对 Domus 项目的关注！本文档将帮助你快速了解项目结构、搭建开发环境并参与贡献。
 
 ## 目录
 
@@ -18,7 +18,7 @@
 
 ## 项目概述
 
-Zephyr 是一个全栈云文件管理平台，提供 Plasma 桌面风格的 Web UI。核心功能包括：
+Domus 是一个全栈云文件管理平台，提供 Plasma 桌面风格的 Web UI。核心功能包括：
 
 - 用户认证（密码 + TOTP 两步验证 + 邮箱验证）
 - 文件管理（上传、下载、搜索、回收站）
@@ -46,9 +46,9 @@ Zephyr 是一个全栈云文件管理平台，提供 Plasma 桌面风格的 Web 
 ## 项目结构
 
 ```
-zephyr/
+domus/
 ├── cmd/                        # CLI 入口
-│   └── zephyr/main.go          # 程序主入口
+│   └── domus/main.go          # 程序主入口
 │   └── root.go                 # CLI 命令定义 (start/stop/restart/status)
 ├── config/                     # 配置解析
 │   └── config.go               # YAML 配置加载与默认值
@@ -70,7 +70,7 @@ zephyr/
 │   │   ├── task.go             #   用户任务查询与控制
 │   │   ├── workspace.go        #   工作区快照保存 / 读取
 │   │   ├── indexer.go          #   全文搜索索引
-│   │   ├── vsh.go              #   浏览器终端与 SSH 会话
+│   │   ├── terminal.go         #   浏览器原始 TTY 会话
 │   │   ├── admin.go            #   管理员用户管理
 │   │   └── ws_handlers.go      #   仅实时订阅 / 会话类 WS 动作
 │   ├── middleware/             # 中间件
@@ -90,6 +90,9 @@ zephyr/
 │   │   └── email.go            #   邮件服务 (SMTP)
 │   ├── store/                  # 外部存储抽象
 │   │   └── oss.go              #   阿里云 OSS 客户端
+│   ├── dofs/                   # OSS 加密文件的宿主机 FUSE 数据面
+│   ├── terminal/               # 浏览器 TTY 会话管理
+│   ├── workspace/              # Docker 工作区控制面与运行时
 │   └── ws/                     # WebSocket 基础设施
 │       ├── hub.go              #   连接中心、目录订阅
 │       ├── conn.go             #   单连接处理
@@ -156,9 +159,10 @@ zephyr/
 | 依赖 | 最低版本 | 说明 |
 |------|---------|------|
 | Go | 1.26+ | 后端编译 |
-| Node.js | 18+ | 前端构建 |
+| Node.js | 20+ | 前端构建与 Playwright E2E |
 | PostgreSQL | 14+ | 数据库 |
-| FFmpeg / FFprobe | - | 媒体转码（可选，不用则跳过） |
+| FUSE 3 | - | DOFS 挂载，需 `/dev/fuse` 与 `fusermount3` |
+| Docker Engine | - | 每用户可复用 Linux 工作区 |
 | 阿里云 OSS | - | 文件存储（需配置 Access Key） |
 | golangci-lint | - | Go 代码检查（可选） |
 
@@ -167,12 +171,12 @@ zephyr/
 1. **克隆仓库**
 
 ```bash
-git clone <repo-url> && cd zephyr
+git clone <repo-url> && cd domus
 ```
 
 2. **配置数据库**
 
-确保 PostgreSQL 运行中，Zephyr 会在首次启动时自动创建数据库。
+确保 PostgreSQL 运行中，Domus 会在首次启动时自动创建数据库。
 
 3. **创建配置文件**
 
@@ -197,19 +201,50 @@ cd frontend && npm install && cd ..
 
 5. **启动开发环境**
 
-分别启动后端和前端开发服务器：
+先确认 `/etc/fuse.conf` 有未注释的 `user_allow_other`，当前用户可访问 Docker
+Unix socket。然后用一条命令启动完整开发栈：
 
 ```bash
-# 终端 1：后端
+# DOFS + Workspace Manager + Web + Vite
 make dev
-
-# 终端 2：前端 (Vite dev server, 端口 5173)
-cd frontend && npm run dev
 ```
 
-后端默认端口 `8080`，前端开发服务器端口 `5173`。
+`make dev` 会构建 Workspace 镜像，并在 `tmp/dev` 下生成权限为 `0600` 的合并
+配置和本地运行状态；Ctrl+C 会按 Frontend、Web、Workspace、DOFS 的顺序关闭。
+后端默认端口由 `config.yaml` 决定，前端开发服务器默认使用 `8089`，并自动注入
+正确的后端 API 地址。只调试 Web 且外部两项服务已经运行时可使用 `make dev-web`，
+它不会回退到旧执行架构。本地四个子进程使用当前开发者
+账号；生产环境仍必须使用 systemd 单元中相互隔离的 `domus` 与
+`domus-workspace` 服务账号。
 
-> 首次启动时，如果库里还没有用户，系统会自动创建 root 用户；初始密码必须由部署者提供（推荐 `server.root_bootstrap_password_file` 指向 0600 secret 文件，也可使用环境变量 `ZEPHYR_ROOT_BOOTSTRAP_PASSWORD`）。
+> 首次启动时，如果库里还没有用户，系统会自动创建 root 用户；初始密码必须由部署者提供（推荐 `server.root_bootstrap_password_file` 指向 0600 secret 文件，也可使用环境变量 `DOMUS_ROOT_BOOTSTRAP_PASSWORD`）。
+
+真实浏览器 E2E 使用 Playwright，并复用同一套本地配置、PostgreSQL 与 OSS：
+
+```bash
+make test-e2e
+```
+
+当前用例覆盖登录、浏览器加密上传、OSS 分片写入、文本解密读回，以及 PDF 经
+DOFS + 用户 Workspace 生成服务端缩略图、缩略图解密显示、PDF 原件解密预览和
+缓存 Range 响应、派生文件级联清理；终端用例还会验证真实容器会话及 resize
+消息不会形成反馈环。默认登录 `root` 并读取 `tmp/dev/root-bootstrap-password`；
+密码已变更时可设置 `DOMUS_E2E_PASSWORD`，已有 `make dev` 实例可通过
+`E2E_REUSE_SERVERS=1 make test-e2e` 复用。
+
+Playwright 始终使用隔离的临时浏览器 profile，并屏蔽测试窗口/标签状态向同账号
+交互式桌面的保存和广播；上传、OSS、任务、DOFS 和 Workspace 容器仍是真实链路。
+需要针对本机系统 Chrome 做 headed 稳定性回归时可运行：
+
+```bash
+DOMUS_E2E_BROWSER_EXECUTABLE=/opt/google/chrome/chrome \
+DOMUS_E2E_HEADED=1 \
+DOMUS_E2E_ENABLE_ZERO_COPY=1 \
+DOMUS_E2E_PREVIEW_STABILITY_MS=30000 \
+make test-e2e
+```
+
+E2E 使用真实外部资源，因此不并入普通 `make test`。
 
 ### 构建
 
@@ -232,37 +267,37 @@ cd frontend && npm run build    # 输出到 frontend/dist/
 #### 备份实例
 
 ```bash
-zephyr backup -c config.yaml -o backup-20260419.tar.gz
+domus backup -c config.yaml -o backup-20260419.tar.gz
 ```
 
 - 执行前必须先停止服务，否则命令会拒绝运行
 - 备份内容包含 `database.sql`、`manifest.json` 和 `objects/`
 - `-o` 可以指向目录，也可以指向 `.tar.gz` / `.tgz` 归档文件
-- 若未显式传入 `-o`，会默认生成 `zephyr-backup-YYYYMMDD-HHMMSS.tar.gz`
+- 若未显式传入 `-o`，会默认生成 `domus-backup-YYYYMMDD-HHMMSS.tar.gz`
 - 备份数据库依赖本机可用的 `pg_dump`
 
 #### 恢复实例
 
 ```bash
-zephyr restore -c config.yaml -i backup-20260419.tar.gz --yes
+domus restore -c config.yaml -i backup-20260419.tar.gz --yes
 ```
 
 - 执行前必须先停止服务，否则命令会拒绝运行
 - `restore` 会先清空目标数据库和整个 bucket，再导入备份内容，因此必须带 `--yes`
 - 恢复数据库依赖本机可用的 `psql`
 - 恢复前会校验备份中的 `server.encryption_secret` 指纹；若与当前配置不一致，命令会拒绝执行，避免恢复后文件无法解密
-- 恢复完成后，重新执行 `zephyr start -c config.yaml` 即可拉起实例
+- 恢复完成后，重新执行 `domus start -c config.yaml` 即可拉起实例
 
 #### 重置实例
 
 ```bash
-zephyr reset -c config.yaml --yes
+domus reset -c config.yaml --yes
 ```
 
 - 执行前请先停止服务，否则命令会拒绝运行
 - `reset` 会清空 `config.yaml` 指定的 PostgreSQL 数据库，并清空配置中的整个 OSS bucket
-- `reset` 不会立即创建 `root`；下一次 `zephyr start` 时会走首次启动逻辑自动初始化
-- 首次启动所需的 root 初始密码仍需通过 `server.root_bootstrap_password_file` 或 `ZEPHYR_ROOT_BOOTSTRAP_PASSWORD` 提供
+- `reset` 不会立即创建 `root`；下一次 `domus start` 时会走首次启动逻辑自动初始化
+- 首次启动所需的 root 初始密码仍需通过 `server.root_bootstrap_password_file` 或 `DOMUS_ROOT_BOOTSTRAP_PASSWORD` 提供
 
 ## 开发工作流
 
@@ -301,6 +336,8 @@ cd frontend && npm install       # 前端依赖
 
 - `docs/api/README.md` — 项目的主接口文档入口，统一组织 HTTP 接口与 WebSocket 协议
 - `API.md` — 根目录兼容入口，便于从仓库首页快速跳转
+- `docs/dofs.md` / `docs/workspace.md` — 用户文件数据面与隔离执行面的架构
+- `docs/dofs-production.md` / `docs/workspace-production.md` — Linux 生产部署与运维边界
 
 若后端路由或 WebSocket 动作发生变化，请同步更新 `docs/api/` 下对应文档。
 
@@ -316,7 +353,7 @@ cd frontend && npm install       # 前端依赖
 - 数据库操作封装在 `model/` 层
 - 权限使用位掩码：`PermRead(1)`, `PermUpload(2)`, `PermEdit(4)`, `PermDelete(8)`
 - **不造新轮子**：新增功能时必须复用已有的代码路径。如果发现现有流程不满足需求，应先改进现有流程而非另起炉灶
-- **用户文件区操作规范**：后端不直接操作用户文件区，用户区的读写通常由前端指令驱动。当后端确实需要操作用户文件时（如 SSH known_hosts 自动写入），必须沿照前端操作文件的完整流程，包括加密、数据库记录、目录通知。禁止直接操作存储池
+- **用户文件区操作规范**：普通后端逻辑不得绕过文件模型直接操作存储池。服务端预览、转码和容器命令只能通过用户对应的 DOFS 挂载读写；DOFS 负责加密、generation CAS、数据库记录和恢复语义
 
 ### Vue 前端
 
@@ -376,6 +413,17 @@ HTTP 请求
           → store（OSS 文件存储）
 ```
 
+终端和服务端媒体任务统一走 Linux 受限执行面：
+
+```text
+authenticated handler / terminal manager
+  → permission-protected workspace Unix socket
+    → per-user Docker container
+      → exact /workspace bind
+        → host DOFS FUSE mount
+          → encrypted OSS objects
+```
+
 ### HTTP / WebSocket 边界
 
 - **HTTP 负责普通 query / command**：文件列表、搜索、创建目录、重命名、复制、移动、删除、文本保存、用户资料、安全设置、分享、任务列表、工作区持久化、管理员操作等，都走普通 HTTP API。
@@ -420,5 +468,5 @@ HTTP 请求
 - 文件加密使用用户独立密钥（由 `encryption_secret` + 用户 ID 派生）
 - 权限控制使用位掩码组合（Read=1, Upload=2, Edit=4, Delete=8）
 - `session_secret` 和 `encryption_secret` 首次启动自动生成，务必妥善保管 `config.yaml`
-- 首次启动若需要自动初始化 `root`，请通过 `server.root_bootstrap_password_file` 或 `ZEPHYR_ROOT_BOOTSTRAP_PASSWORD` 提供初始密码，避免从日志泄露凭据
+- 首次启动若需要自动初始化 `root`，请通过 `server.root_bootstrap_password_file` 或 `DOMUS_ROOT_BOOTSTRAP_PASSWORD` 提供初始密码，避免从日志泄露凭据
 - CORS 来源需在配置中显式指定

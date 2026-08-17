@@ -6,7 +6,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"zephyr/internal/model"
+	"domus/internal/model"
+	workspaceRuntime "domus/internal/workspace"
 )
 
 func (h *Handler) handleListUsers(c *fiber.Ctx) error {
@@ -32,6 +33,9 @@ func (h *Handler) handleCreateUser(c *fiber.Ctx) error {
 
 	if body.Username == "" || body.Password == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "username_password_required"})
+	}
+	if !workspaceRuntime.ValidIdentityName(body.Username) {
+		return c.Status(400).JSON(fiber.Map{"error": "workspace_incompatible_username"})
 	}
 	if body.Role == "" {
 		body.Role = "user"

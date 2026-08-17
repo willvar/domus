@@ -48,7 +48,7 @@
 ```
 
 ## `POST /auth`
-第二阶段登录，验证 challenge 并设置 `zephyr_session` Cookie。
+第二阶段登录，验证 challenge 并设置 `domus_session` Cookie。旧的 `zephyr_session` 在升级期间仍可验证，并会自动换发新 Cookie。
 
 鉴权：无需登录
 

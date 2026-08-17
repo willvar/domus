@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { Ref } from 'vue'
 import type { FileListItem } from '../types'
+import { readMigratedStorage } from '../utils/storageCompat'
 
 export type MobileTabKey = 'files' | 'recent' | 'shared' | 'me'
 export type MobileFileDisplayMode = 'list' | 'grid'
@@ -25,11 +26,12 @@ type SheetState =
   | { kind: 'create' }
   | { kind: 'file'; item: FileListItem }
 
-const RECENT_KEY = 'zephyr_mobile_recent'
+const RECENT_KEY = 'domus_mobile_recent'
+const LEGACY_RECENT_KEY = 'zephyr_mobile_recent'
 
 function loadRecent(): RecentMobileItem[] {
   try {
-    const raw = localStorage.getItem(RECENT_KEY)
+    const raw = readMigratedStorage(RECENT_KEY, LEGACY_RECENT_KEY)
     return raw ? JSON.parse(raw) : []
   } catch {
     return []

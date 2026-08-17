@@ -1,4 +1,4 @@
-# Zephyr 接口文档入口
+# Domus 接口文档入口
 
 接口文档已迁移到 `docs/api/` 目录。
 
@@ -14,7 +14,7 @@
 - [审计与管理 `/audit` + `/admin`](./docs/api/audit-admin.md)
 - [文件 / 上传 / 分享 `/file`](./docs/api/file.md)
 - [任务 `/task`](./docs/api/jobs-tasks.md)
-- [工作区 `/workspace`](./docs/api/workspace.md)
+- [桌面布局工作区 `/workspace`](./docs/api/workspace.md)
 
 ### WebSocket
 - [WebSocket 协议](./docs/api/websocket.md)

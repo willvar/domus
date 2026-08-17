@@ -1,4 +1,4 @@
-# Zephyr 接口文档
+# Domus 接口文档
 
 这里是项目当前的主接口文档入口，统一组织 HTTP 接口与 WebSocket 协议说明。
 
@@ -19,7 +19,7 @@
 - [审计与管理 `/audit` + `/admin`](./audit-admin.md)
 - [文件 / 上传 / 分享 `/file`](./file.md)
 - [任务 `/task`](./jobs-tasks.md)
-- [工作区 `/workspace`](./workspace.md)
+- [桌面布局工作区 `/workspace`](./workspace.md)
 
 ### WebSocket
 - [WebSocket 协议](./websocket.md)
@@ -28,7 +28,7 @@
 
 ### 基础
 - HTTP 基础路径：无统一 `/api` 前缀，以下路径均直接挂在服务根路径下。
-- 鉴权方式：登录成功后服务端设置会话 Cookie `zephyr_session`。
+- 鉴权方式：登录成功后服务端设置会话 Cookie `domus_session`；升级期间仍接受旧的 `zephyr_session`，并在成功鉴权后自动迁移。
 - 需要登录的接口：依赖该 Cookie。
 - Root 管理接口：除登录外，还要求当前用户角色为 `root`。
 

@@ -1,15 +1,33 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
+	"time"
 
-	"zephyr/internal/middleware"
-	"zephyr/internal/model"
-	"zephyr/internal/ws"
+	"domus/config"
+	"domus/internal/middleware"
+	"domus/internal/model"
+	workspaceRuntime "domus/internal/workspace"
+	"domus/internal/ws"
 )
+
+type cleanupWorkspaceService struct {
+	workspaceRuntime.Service
+	remove func(context.Context, string) (workspaceRuntime.Status, error)
+}
+
+func (s cleanupWorkspaceService) Remove(ctx context.Context, userID string) (workspaceRuntime.Status, error) {
+	if s.remove == nil {
+		return workspaceRuntime.Status{UserID: userID, State: "removed"}, nil
+	}
+	return s.remove(ctx, userID)
+}
 
 type userDeleteFixture struct {
 	filePath        string
@@ -174,12 +192,13 @@ func TestDeleteUserCompletelyIgnoresStorageCleanupError(t *testing.T) {
 		t.Fatalf("upsert file: %v", err)
 	}
 
-	var calledPrefix string
+	var calledPrefixes []string
 	h := &Handler{
-		Repos: repos,
+		Repos:     repos,
+		Workspace: cleanupWorkspaceService{},
 		Store: &MockFileStore{
 			RecursiveDeleteFn: func(prefix string, _ func(done, total int, current string)) error {
-				calledPrefix = prefix
+				calledPrefixes = append(calledPrefixes, prefix)
 				return errors.New("mock storage failure")
 			},
 		},
@@ -189,10 +208,142 @@ func TestDeleteUserCompletelyIgnoresStorageCleanupError(t *testing.T) {
 	if err := h.deleteUserCompletely(victim); err != nil {
 		t.Fatalf("deleteUserCompletely should not fail on storage cleanup error: %v", err)
 	}
-	if calledPrefix != victim.Username+"/" {
-		t.Fatalf("expected cleanup prefix %q, got %q", victim.Username+"/", calledPrefix)
+	wantPrefixes := []string{victim.Username + "/", model.DOFSObjectRoot(victim.ID)}
+	if !reflect.DeepEqual(calledPrefixes, wantPrefixes) {
+		t.Fatalf("expected cleanup prefixes %q, got %q", wantPrefixes, calledPrefixes)
 	}
 	if _, err := repos.Users.GetByID(victim.ID); err == nil {
 		t.Fatal("expected user to be deleted even when storage cleanup fails")
+	}
+}
+
+func TestDeleteUserCompletelyStopsWorkspaceBeforeDeletingIdentity(t *testing.T) {
+	repos := model.NewMemRepos(nil)
+	victim, _ := repos.Users.Create("victim-workspace", "pass", "user", "")
+	workspaceCalled := false
+	h := &Handler{
+		Repos: repos,
+		Workspace: cleanupWorkspaceService{remove: func(_ context.Context, userID string) (workspaceRuntime.Status, error) {
+			workspaceCalled = true
+			if userID != victim.ID {
+				t.Fatalf("Remove() userID = %q, want %q", userID, victim.ID)
+			}
+			if _, err := repos.Users.GetByID(victim.ID); err != nil {
+				t.Fatalf("user identity was deleted before workspace teardown: %v", err)
+			}
+			return workspaceRuntime.Status{UserID: userID, State: "stopped"}, nil
+		}},
+	}
+	if err := h.deleteUserCompletely(victim); err != nil {
+		t.Fatal(err)
+	}
+	if !workspaceCalled {
+		t.Fatal("workspace teardown was not called")
+	}
+	if _, err := repos.Users.GetByID(victim.ID); err == nil {
+		t.Fatal("user was not deleted after workspace teardown")
+	}
+}
+
+func TestDeleteUserCompletelyDrainsMediaBeforeWorkspace(t *testing.T) {
+	repos := model.NewMemRepos(nil)
+	victim, _ := repos.Users.Create("victim-media", "pass", "user", "")
+	sessionID, err := repos.Sessions.Create(victim.ID, victim.Username, victim.Role)
+	if err != nil {
+		t.Fatal(err)
+	}
+	drained := make(chan struct{})
+	h := &Handler{
+		Config: &config.Config{Workspace: config.WorkspaceConfig{
+			MaxSessionsPerUser: 4, OperationTimeoutSeconds: 5,
+		}},
+		Repos: repos,
+	}
+	jobContext, cancel, ok := h.reserveMediaJob(victim.ID, "active-media")
+	if !ok {
+		t.Fatal("failed to reserve media job")
+	}
+	go func() {
+		<-jobContext.Done()
+		h.releaseMediaJob(victim.ID, "active-media")
+		close(drained)
+	}()
+	h.Workspace = cleanupWorkspaceService{remove: func(_ context.Context, userID string) (workspaceRuntime.Status, error) {
+		if repos.Sessions.Get(sessionID) != nil {
+			t.Fatal("user session remained valid during workspace teardown")
+		}
+		select {
+		case <-drained:
+		default:
+			t.Fatal("workspace teardown ran before media cleanup completed")
+		}
+		return workspaceRuntime.Status{UserID: userID, State: "stopped"}, nil
+	}}
+	if err := h.deleteUserCompletely(victim); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+	select {
+	case <-drained:
+	case <-time.After(time.Second):
+		t.Fatal("media job was not drained")
+	}
+}
+
+func TestDeleteUserCompletelyGivesWorkspaceAFreshTimeout(t *testing.T) {
+	repos := model.NewMemRepos(nil)
+	victim, _ := repos.Users.Create("victim-fresh-timeout", "pass", "user", "")
+	h := &Handler{
+		Config: &config.Config{Workspace: config.WorkspaceConfig{
+			MaxSessionsPerUser: 4, OperationTimeoutSeconds: 1,
+		}},
+		Repos: repos,
+	}
+	jobContext, cancel, ok := h.reserveMediaJob(victim.ID, "slow-media-cleanup")
+	if !ok {
+		t.Fatal("failed to reserve media job")
+	}
+	go func() {
+		<-jobContext.Done()
+		time.Sleep(250 * time.Millisecond)
+		h.releaseMediaJob(victim.ID, "slow-media-cleanup")
+	}()
+	h.Workspace = cleanupWorkspaceService{remove: func(ctx context.Context, userID string) (workspaceRuntime.Status, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("workspace teardown context has no deadline")
+		}
+		if remaining := time.Until(deadline); remaining < 850*time.Millisecond {
+			t.Fatalf("workspace teardown inherited spent media deadline: %v remaining", remaining)
+		}
+		return workspaceRuntime.Status{UserID: userID, State: "stopped"}, nil
+	}}
+	if err := h.deleteUserCompletely(victim); err != nil {
+		t.Fatal(err)
+	}
+	cancel()
+}
+
+func TestDeleteUserCompletelyFailsClosedWhenWorkspaceTeardownFails(t *testing.T) {
+	repos := model.NewMemRepos(nil)
+	victim, _ := repos.Users.Create("victim-workspace-fail", "pass", "user", "")
+	h := &Handler{
+		Config: &config.Config{Workspace: config.WorkspaceConfig{MaxSessionsPerUser: 4}},
+		Repos:  repos,
+		Workspace: cleanupWorkspaceService{remove: func(context.Context, string) (workspaceRuntime.Status, error) {
+			return workspaceRuntime.Status{}, errors.New("workspace unavailable")
+		}},
+	}
+	if err := h.deleteUserCompletely(victim); err == nil || !strings.Contains(err.Error(), "stop user workspace") {
+		t.Fatalf("deleteUserCompletely() error = %v", err)
+	}
+	if _, err := repos.Users.GetByID(victim.ID); err != nil {
+		t.Fatalf("user was deleted despite workspace teardown failure: %v", err)
+	}
+	if _, cancel, ok := h.reserveMediaJob(victim.ID, "after-failed-delete"); !ok {
+		t.Fatal("failed deletion left the surviving user blocked from media jobs")
+	} else {
+		cancel()
+		h.releaseMediaJob(victim.ID, "after-failed-delete")
 	}
 }

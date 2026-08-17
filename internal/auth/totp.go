@@ -23,8 +23,8 @@ func GenerateTOTPSecret() (string, error) {
 
 // GenerateTOTPURI returns an otpauth:// URI for QR code generation.
 func GenerateTOTPURI(secret, username string) string {
-	return fmt.Sprintf("otpauth://totp/Zephyr:%s?secret=%s&issuer=%s&digits=6&period=30",
-		url.PathEscape(username), secret, "Zephyr")
+	return fmt.Sprintf("otpauth://totp/Domus:%s?secret=%s&issuer=%s&digits=6&period=30",
+		url.PathEscape(username), secret, "Domus")
 }
 
 // ValidateTOTP checks a 6-digit TOTP code against the secret, allowing ±1 time step drift.

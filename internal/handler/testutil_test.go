@@ -10,14 +10,19 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"zephyr/config"
-	"zephyr/internal/auth"
-	"zephyr/internal/middleware"
-	"zephyr/internal/model"
-	"zephyr/internal/service"
-	"zephyr/internal/store"
-	"zephyr/internal/ws"
+	"domus/config"
+	"domus/internal/auth"
+	"domus/internal/middleware"
+	"domus/internal/model"
+	"domus/internal/service"
+	"domus/internal/store"
+	"domus/internal/terminal"
+	"domus/internal/ws"
 )
+
+func newTestTerminalManager() *terminal.Manager {
+	return terminal.NewManager(cleanupWorkspaceService{}, 4)
+}
 
 func setupTestApp(t *testing.T) (*fiber.App, *model.Repos, func(username, password string) string) {
 	t.Helper()
@@ -61,6 +66,8 @@ func setupTestApp(t *testing.T) (*fiber.App, *model.Repos, func(username, passwo
 		Challenges: challenges,
 		Mid:        mid,
 		Hub:        hub,
+		Workspace:  cleanupWorkspaceService{},
+		Terminal:   newTestTerminalManager(),
 	}
 
 	app := fiber.New()
@@ -108,6 +115,7 @@ type MockFileStore struct {
 	RenameObjectFn         func(oldKey, newKey string, isDir bool) error
 	PutObjectBytesFn       func(key string, data []byte) error
 	HeadObjectFn           func(key string) (*store.HeadResult, error)
+	AbortMultipartUploadFn func(key, uploadID string) error
 }
 
 func (m *MockFileStore) ListObjects(prefix, marker string, limit int) (*store.ListResult, error) {
@@ -228,6 +236,9 @@ func (m *MockFileStore) CompleteMultipartUpload(key, uploadID string, parts []st
 	return nil
 }
 func (m *MockFileStore) AbortMultipartUpload(key, uploadID string) error {
+	if m.AbortMultipartUploadFn != nil {
+		return m.AbortMultipartUploadFn(key, uploadID)
+	}
 	return nil
 }
 func (m *MockFileStore) ListParts(key, uploadID string) ([]store.PartInfo, error) {

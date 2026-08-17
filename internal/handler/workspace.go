@@ -3,8 +3,8 @@ package handler
 import (
 	"encoding/json"
 
+	"domus/internal/model"
 	"github.com/gofiber/fiber/v2"
-	"zephyr/internal/model"
 )
 
 func (h *Handler) handleWorkspaceSave(c *fiber.Ctx) error {

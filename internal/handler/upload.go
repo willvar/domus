@@ -12,11 +12,12 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 
-	"zephyr/config"
-	"zephyr/internal/auth"
-	"zephyr/internal/middleware"
-	"zephyr/internal/model"
-	"zephyr/internal/store"
+	"domus/config"
+	"domus/internal/auth"
+	"domus/internal/middleware"
+	"domus/internal/model"
+	"domus/internal/store"
+	workspaceRuntime "domus/internal/workspace"
 )
 
 // presignExpiry is the lifetime of presigned upload URLs.
@@ -65,6 +66,37 @@ func encryptedMultipartPartCount(plainSize, partSize int64) int {
 	}
 
 	return parts
+}
+
+// authoritativeCompleteParts validates the parts reported by OSS and converts
+// them to the shape required by CompleteMultipartUpload. Completion deliberately
+// does not trust browser-supplied ETags: browsers can only read that response
+// header when a bucket exposes it through CORS, while the server can always get
+// the authoritative value from ListParts.
+func authoritativeCompleteParts(parts []store.PartInfo, expectedCount int, expectedSize int64) ([]store.CompletePart, bool) {
+	if len(parts) != expectedCount || expectedSize <= 0 {
+		return nil, false
+	}
+
+	completeParts := make([]store.CompletePart, len(parts))
+	var totalSize int64
+	for i, part := range parts {
+		if part.PartNumber != i+1 || strings.TrimSpace(part.ETag) == "" || part.Size <= 0 {
+			return nil, false
+		}
+		if totalSize > expectedSize-part.Size {
+			return nil, false
+		}
+		totalSize += part.Size
+		completeParts[i] = store.CompletePart{
+			PartNumber: part.PartNumber,
+			ETag:       part.ETag,
+		}
+	}
+	if totalSize != expectedSize {
+		return nil, false
+	}
+	return completeParts, true
 }
 
 // handleUploadDispatch routes POST /file/upload to init, complete, or conflict check.
@@ -190,7 +222,9 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 	if err == nil && existing != nil {
 		switch body.ConflictStrategy {
 		case "replace":
-			_ = h.Repos.Files.Delete(session.UserID, resolvedPath)
+			if err := h.permanentlyDeletePath(session.UserID, resolvedPath, false); err != nil {
+				return c.Status(500).JSON(fiber.Map{"error": "replace_cleanup_failed"})
+			}
 		case "rename":
 			resolvedDir, dirErr := middleware.ResolvePath(c, dirPath)
 			if dirErr != nil {
@@ -347,20 +381,29 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		})
 	}
 
-	expectedPartSize := config.UploadChunkSize
-	expectedTotalParts := encryptedMultipartPartCount(record.Size, expectedPartSize)
-	if len(body.Parts) != expectedTotalParts {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_parts"})
-	}
-	for i, part := range body.Parts {
-		if part.PartNumber != i+1 || strings.TrimSpace(part.ETag) == "" {
+	expectedTotalParts := encryptedMultipartPartCount(record.Size, config.UploadChunkSize)
+	completeParts := body.Parts // Legacy fallback for records without a multipart upload ID.
+	if record.OSSUploadID != "" {
+		listedParts, err := h.Store.ListParts(record.Path, record.OSSUploadID)
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "verify_parts_failed"})
+		}
+		var valid bool
+		completeParts, valid = authoritativeCompleteParts(listedParts, expectedTotalParts, expectedEncryptedSize)
+		if !valid {
 			return c.Status(400).JSON(fiber.Map{"error": "invalid_parts"})
 		}
-	}
-
-	if record.OSSUploadID != "" {
-		if err := h.Store.CompleteMultipartUpload(record.Path, record.OSSUploadID, body.Parts); err != nil {
+		if err := h.Store.CompleteMultipartUpload(record.Path, record.OSSUploadID, completeParts); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "complete_multipart_failed"})
+		}
+	} else {
+		if len(completeParts) != expectedTotalParts {
+			return c.Status(400).JSON(fiber.Map{"error": "invalid_parts"})
+		}
+		for i, part := range completeParts {
+			if part.PartNumber != i+1 || strings.TrimSpace(part.ETag) == "" {
+				return c.Status(400).JSON(fiber.Map{"error": "invalid_parts"})
+			}
 		}
 	}
 
@@ -435,6 +478,20 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 
 	if record.TaskID != "" {
 		_ = h.Repos.Tasks.UpdateStatus(record.TaskID, "completed")
+	}
+
+	// Browser-generated encrypted thumbnails remain the fast path. When the
+	// browser could not produce one (PDFs, unsupported codecs, constrained
+	// clients), the reusable user workspace generates it asynchronously through
+	// the same DOFS namespace. Failure is non-fatal: direct client-side preview
+	// of the original file remains available.
+	if body.ThumbnailUploadID == "" {
+		if finalized, getErr := h.Repos.Files.Get(session.UserID, record.Path); getErr == nil {
+			h.enqueueServerPreview(
+				workspaceRuntime.Identity{UserID: session.UserID, Username: session.Username},
+				*finalized,
+			)
+		}
 	}
 
 	if h.Hub != nil {

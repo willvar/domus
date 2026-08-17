@@ -5,7 +5,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"zephyr/internal/model"
+	"domus/internal/model"
 )
 
 func (h *Handler) handleListTasks(c *fiber.Ctx) error {
@@ -40,20 +40,34 @@ func (h *Handler) cancelTask(session *model.Session, taskID string) error {
 	if task.UserID != session.UserID && session.Role != "root" {
 		return fiber.NewError(fiber.StatusForbidden, "access_denied")
 	}
+	ownerUsername := session.Username
+	if task.UserID != session.UserID {
+		// A root user may cancel another user's task. All cleanup must still be
+		// scoped to the immutable task owner, never to the acting session.
+		ownerUsername = ""
+		if owner, ownerErr := h.Repos.Users.GetByID(task.UserID); ownerErr == nil {
+			ownerUsername = owner.Username
+		}
+	}
 
 	if task.Type == "upload" {
-		files, _ := h.Repos.Files.ListByPrefix(session.UserID, "")
+		files, _ := h.Repos.Files.ListByPrefix(task.UserID, "")
 		for _, f := range files {
 			if f.TaskID == taskID && f.Status == "uploading" {
 				if f.OSSUploadID != "" {
 					_ = h.Store.AbortMultipartUpload(f.Path, f.OSSUploadID)
 				}
 				_ = h.Store.DeleteObject(f.Path)
-				_ = h.Repos.Files.Delete(session.UserID, f.Path)
-				h.notifyParentDir(session.Username, f.Path)
+				_ = h.Repos.Files.Delete(task.UserID, f.Path)
+				if ownerUsername != "" {
+					h.notifyParentDir(ownerUsername, f.Path)
+				}
 				break
 			}
 		}
+	}
+	if task.Type == "preview" || task.Type == "transcode" {
+		h.cancelMediaJob(taskID)
 	}
 
 	return h.Repos.Tasks.UpdateStatus(taskID, "cancelled")

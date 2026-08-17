@@ -1,7 +1,7 @@
 import type { Component } from 'vue'
 
 // =============================================================================
-// Zephyr Shared TypeScript Type Definitions
+// Domus Shared TypeScript Type Definitions
 // =============================================================================
 
 // -----------------------------------------------------------------------------
@@ -464,10 +464,8 @@ export interface WSPushEventMap {
   'dir.changed': { path: string; change_type: string }
   'task.update': TaskUpdateEvent
   'session.expired': void
-  'session.output': { session_id: string; data: string }
-  'session.done': { session_id: string; exit_code: number }
-  'session.exit': { session_id: string }
-  'session.ssh': { session_id: string; [key: string]: unknown }
+  'session.output': { session_id: string; data_base64: string }
+  'session.exit': { session_id: string; reason?: string }
   'workspace.event': WorkspaceSyncEvent
 }
 
@@ -503,7 +501,6 @@ export type WSAction =
   | 'session.input'
   | 'session.resize'
   | 'session.close'
-  | 'session.complete'
   // Workspace sync
   | 'workspace.event'
 

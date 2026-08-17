@@ -9,9 +9,9 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 
-	"zephyr/internal/auth"
-	"zephyr/internal/middleware"
-	"zephyr/internal/model"
+	"domus/internal/auth"
+	"domus/internal/middleware"
+	"domus/internal/model"
 )
 
 const maxShareExpirySeconds int64 = 365 * 24 * 60 * 60
@@ -277,8 +277,19 @@ func (h *Handler) handleShareInfo(c *fiber.Ctx) error {
 		return c.Status(410).JSON(fiber.Map{"error": "share_expired"})
 	}
 
-	// Generate presigned URL for the encrypted file
-	presignedURL, err := h.Store.GeneratePresignedURL(share.FilePath, 4*time.Hour)
+	objectKey := share.FilePath
+	fileSize := share.FileSize
+	if fileRecord, recordErr := h.Repos.Files.Get(share.OwnerID, share.FilePath); recordErr == nil {
+		if fileRecord.Status != "ready" {
+			return c.Status(404).JSON(fiber.Map{"error": "file_not_found"})
+		}
+		objectKey = fileRecord.StorageKey()
+		fileSize = fileRecord.Size
+	}
+
+	// Generate a URL for the current immutable generation rather than assuming
+	// the logical path is also the physical object key.
+	presignedURL, err := h.Store.GeneratePresignedURL(objectKey, 4*time.Hour)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "presign_failed"})
 	}
@@ -299,7 +310,7 @@ func (h *Handler) handleShareInfo(c *fiber.Ctx) error {
 
 	return c.JSON(fiber.Map{
 		"url":          presignedURL,
-		"size":         share.FileSize,
+		"size":         fileSize,
 		"name":         share.FileName,
 		"content_type": share.ContentType,
 		"chunk_size":   auth.DefaultChunkSize,

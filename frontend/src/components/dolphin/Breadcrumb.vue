@@ -31,7 +31,7 @@ function startEdit() {
 
 function commitEdit() {
   editing.value = false
-  let p = editPath.value.replace(/^\/+/, '')
+  const p = editPath.value.trim() || '/'
   if (p !== fs.currentPath) {
     fs.navigate(p)
   }

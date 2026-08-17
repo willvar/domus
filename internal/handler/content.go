@@ -4,16 +4,16 @@ import (
 	"bytes"
 	"encoding/hex"
 	"io"
-	"mime"
-	"path/filepath"
+	"log"
 	"sort"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/google/uuid"
 
-	"zephyr/internal/auth"
-	"zephyr/internal/middleware"
-	"zephyr/internal/model"
+	"domus/internal/auth"
+	"domus/internal/middleware"
+	"domus/internal/model"
 )
 
 // Edit represents a single edit operation for diff-based content update.
@@ -28,13 +28,14 @@ type patchError string
 func (e patchError) Error() string { return string(e) }
 
 const (
-	errInvalidEdit       patchError = "invalid_edit"
-	errEditOutOfBounds   patchError = "edit_out_of_bounds"
-	errOverlappingEdits  patchError = "overlapping_edits"
-	errInvalidResultSize patchError = "invalid_result_size"
-	errReadFileFailed    patchError = "read_file_failed"
-	errPipelineFailed    patchError = "pipeline_failed"
-	errSaveFileFailed    patchError = "save_file_failed"
+	errInvalidEdit        patchError = "invalid_edit"
+	errEditOutOfBounds    patchError = "edit_out_of_bounds"
+	errOverlappingEdits   patchError = "overlapping_edits"
+	errInvalidResultSize  patchError = "invalid_result_size"
+	errReadFileFailed     patchError = "read_file_failed"
+	errPipelineFailed     patchError = "pipeline_failed"
+	errSaveFileFailed     patchError = "save_file_failed"
+	errGenerationConflict patchError = "generation_conflict"
 )
 
 // applyEdits reads from r, applies edits (sorted by offset, non-overlapping),
@@ -100,19 +101,19 @@ func validatePatchEdits(baseSize int64, edits []Edit) (int64, error) {
 	return newSize, nil
 }
 
-func (h *Handler) patchEncryptedContent(objectPath, wrappedDEK string, kek []byte, edits []Edit) error {
+func (h *Handler) patchEncryptedContent(objectPath, wrappedDEK string, kek []byte, edits []Edit) ([]byte, error) {
 	wrappedDEKBytes, err := hex.DecodeString(wrappedDEK)
 	if err != nil {
-		return &wsError{Code: "internal_error"}
+		return nil, &wsError{Code: "internal_error"}
 	}
 	dek, err := auth.UnwrapDEK(kek, wrappedDEKBytes)
 	if err != nil {
-		return &wsError{Code: "internal_error"}
+		return nil, &wsError{Code: "internal_error"}
 	}
 
 	reader, err := h.Store.GetObjectContent(objectPath)
 	if err != nil {
-		return errReadFileFailed
+		return nil, errReadFileFailed
 	}
 
 	decR, decW := io.Pipe()
@@ -146,10 +147,38 @@ func (h *Handler) patchEncryptedContent(objectPath, wrappedDEK string, kek []byt
 	<-done3
 
 	if pipelineErr != nil {
-		return errPipelineFailed
+		return nil, errPipelineFailed
 	}
-	if err := h.Store.PutObjectBytes(objectPath, encryptedBuf.Bytes()); err != nil {
+	return encryptedBuf.Bytes(), nil
+}
+
+func (h *Handler) publishPatchedGeneration(userID string, record *model.FileRecord, encrypted []byte, newSize int64) error {
+	targetKey := model.DOFSGenerationObjectKey(userID, record.ID, record.Generation+1, uuid.NewString())
+	if err := h.Store.PutObjectBytes(targetKey, encrypted); err != nil {
+		_ = h.Store.DeleteObject(targetKey)
 		return errSaveFileFailed
+	}
+	switched, err := h.Repos.Files.CommitGeneration(userID, record.ID, record.Generation, targetKey, newSize)
+	if err != nil {
+		// A connection error can be returned after PostgreSQL committed. Verify
+		// before deleting the only object referenced by a possibly-current row.
+		if current, getErr := h.Repos.Files.GetByID(userID, record.ID); getErr == nil {
+			if current.Generation == record.Generation+1 && current.StorageKey() == targetKey {
+				if cleanupErr := h.cleanupThumbnailStorage(userID, record); cleanupErr != nil {
+					log.Printf("[content] deferred cleanup for retired thumbnail %q: %v", record.ThumbnailKey, cleanupErr)
+				}
+				return nil
+			}
+			_ = h.Store.DeleteObject(targetKey)
+		}
+		return errSaveFileFailed
+	}
+	if !switched {
+		_ = h.Store.DeleteObject(targetKey)
+		return errGenerationConflict
+	}
+	if cleanupErr := h.cleanupThumbnailStorage(userID, record); cleanupErr != nil {
+		log.Printf("[content] deferred cleanup for retired thumbnail %q: %v", record.ThumbnailKey, cleanupErr)
 	}
 	return nil
 }
@@ -196,18 +225,21 @@ func (h *Handler) handlePatchContent(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
-	if err := h.patchEncryptedContent(resolvedPath, fileRecord.WrappedDEK, kek, body.Edits); err != nil {
+	encrypted, err := h.patchEncryptedContent(fileRecord.StorageKey(), fileRecord.WrappedDEK, kek, body.Edits)
+	if err == nil {
+		err = h.publishPatchedGeneration(session.UserID, fileRecord, encrypted, newSize)
+	}
+	if err != nil {
 		code := err.Error()
 		if wse, ok := err.(*wsError); ok {
 			code = wse.Code
 		}
-		return c.Status(500).JSON(fiber.Map{"error": code})
+		status := 500
+		if err == errGenerationConflict {
+			status = 409
+		}
+		return c.Status(status).JSON(fiber.Map{"error": code})
 	}
-
-	// Update file record
-	fileName := filepath.Base(resolvedPath)
-	ct := mime.TypeByExtension(filepath.Ext(resolvedPath))
-	_ = h.Repos.Files.Upsert(session.UserID, resolvedPath, fileName, false, newSize, ct, "")
 
 	// Notify WebSocket subscribers of the parent directory
 	if parent := parentDirOf(resolvedPath); parent != "" {
@@ -273,17 +305,21 @@ func (h *Handler) handleSharePatchContent(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
-	if err := h.patchEncryptedContent(share.FilePath, fileRecord.WrappedDEK, ownerKEK, body.Edits); err != nil {
+	encrypted, err := h.patchEncryptedContent(fileRecord.StorageKey(), fileRecord.WrappedDEK, ownerKEK, body.Edits)
+	if err == nil {
+		err = h.publishPatchedGeneration(share.OwnerID, fileRecord, encrypted, newSize)
+	}
+	if err != nil {
 		code := err.Error()
 		if wse, ok := err.(*wsError); ok {
 			code = wse.Code
 		}
-		return c.Status(500).JSON(fiber.Map{"error": code})
+		status := 500
+		if err == errGenerationConflict {
+			status = 409
+		}
+		return c.Status(status).JSON(fiber.Map{"error": code})
 	}
-
-	fileName := filepath.Base(share.FilePath)
-	ct := mime.TypeByExtension(filepath.Ext(share.FilePath))
-	_ = h.Repos.Files.Upsert(share.OwnerID, share.FilePath, fileName, false, newSize, ct, "")
 
 	share.FileSize = newSize
 	_ = h.Repos.Shares.UpdateFileSize(share.ShareID, newSize)

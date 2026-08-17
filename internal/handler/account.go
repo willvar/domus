@@ -6,9 +6,9 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"zephyr/internal/auth"
-	"zephyr/internal/model"
-	"zephyr/internal/service"
+	"domus/internal/auth"
+	"domus/internal/model"
+	"domus/internal/service"
 )
 
 func isValidEmail(email string) bool {
@@ -30,6 +30,12 @@ func (h *Handler) handleStorageUsage(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
+	generationSize, generationCount, err := h.Store.GetTotalSize(model.DOFSObjectRoot(user.ID))
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+	}
+	size += generationSize
+	count += generationCount
 
 	return c.JSON(fiber.Map{
 		"size":  size,

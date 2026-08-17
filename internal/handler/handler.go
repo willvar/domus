@@ -1,24 +1,27 @@
 package handler
 
 import (
+	"context"
 	"encoding/hex"
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
 
-	"zephyr/config"
-	"zephyr/internal/auth"
-	"zephyr/internal/middleware"
-	"zephyr/internal/model"
-	"zephyr/internal/service"
-	"zephyr/internal/store"
-	"zephyr/internal/vsh"
-	"zephyr/internal/ws"
+	"domus/config"
+	"domus/internal/auth"
+	"domus/internal/middleware"
+	"domus/internal/model"
+	"domus/internal/service"
+	"domus/internal/store"
+	"domus/internal/terminal"
+	workspaceRuntime "domus/internal/workspace"
+	"domus/internal/ws"
 )
 
 // avatarCacheMaxBytes is the total memory budget for the decrypted avatar LRU cache.
@@ -39,13 +42,29 @@ type Handler struct {
 	Challenges *auth.ChallengeManager
 	Mid        *middleware.Middleware
 	Hub        *ws.Hub
-	Vsh        *vsh.ShellManager
+	Terminal   *terminal.Manager
+	Workspace  workspaceRuntime.Service
 
 	avatarCache *lru.Cache[string, *avatarEntry]
+
+	mediaMu         sync.Mutex
+	mediaJobs       map[string]context.CancelFunc
+	mediaJobUsers   map[string]string
+	mediaJobsByUser map[string]int
+	mediaIdleByUser map[string]chan struct{}
+	mediaBlocked    map[string]bool
+	mediaWG         sync.WaitGroup
+	mediaClosing    bool
 }
 
 // RegisterRoutes registers all API routes on the Fiber app.
 func (h *Handler) RegisterRoutes(app *fiber.App) {
+	if h.Workspace == nil {
+		panic("handler: workspace service is required")
+	}
+	if h.Terminal == nil {
+		panic("handler: terminal manager is required")
+	}
 	if h.Hub == nil {
 		h.Hub = ws.NewHub()
 	}
@@ -101,6 +120,7 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	file.Get("/access", h.handleFileAccess)
 	file.Put("/content/diff", h.handlePatchContent)
 	file.Put("/shared/:share_id/content/diff", h.handleSharePatchContent)
+	file.Post("/transcode", h.handleTranscode)
 	file.Post("/mkdir", h.handleMkdir)
 	file.Post("/rename", h.handleRename)
 	file.Post("/copy", h.handleCopy)
@@ -196,21 +216,58 @@ func (h *Handler) generateWrappedKEK() (string, error) {
 
 // cloneDirFiles copies file records from srcPrefix to dstPrefix,
 // preserving WrappedDEK, plaintext size, and other metadata.
-func (h *Handler) cloneDirFiles(userID, srcPrefix, dstPrefix string) {
+func (h *Handler) cloneDirFiles(userID, srcPrefix, dstPrefix string) error {
 	records, err := h.Repos.Files.ListByPrefix(userID, srcPrefix)
 	if err != nil {
-		return
+		return err
 	}
+	thumbnailCopies := make(map[string]string, len(records))
+	for _, r := range records {
+		if r.IsDir {
+			continue
+		}
+		newPath := dstPrefix + strings.TrimPrefix(r.Path, srcPrefix)
+		thumbnailCopies[r.StorageKey()] = newPath
+	}
+	type thumbnailUpdate struct {
+		path, key, wrappedDEK string
+		width, height         int
+		duration              float64
+	}
+	thumbnailUpdates := make([]thumbnailUpdate, 0)
 	for _, r := range records {
 		newPath := dstPrefix + strings.TrimPrefix(r.Path, srcPrefix)
 		newName := filepath.Base(strings.TrimSuffix(newPath, "/"))
+		if !r.IsDir && r.StorageKey() != r.Path {
+			if err := h.Store.CopyObject(r.StorageKey(), newPath); err != nil {
+				return err
+			}
+		}
 		var opts []model.UpsertFileOpts
 		if r.WrappedDEK != "" {
 			opts = append(opts, model.UpsertFileOpts{WrappedDEK: r.WrappedDEK})
 		}
-		_ = h.Repos.Files.Upsert(userID, newPath, newName, r.IsDir, r.Size, r.ContentType, r.ContentHash, opts...)
+		if err := h.Repos.Files.Upsert(userID, newPath, newName, r.IsDir, r.Size, r.ContentType, r.ContentHash, opts...); err != nil {
+			return err
+		}
 		if r.ThumbnailKey != "" {
-			_ = h.Repos.Files.UpdateThumbnail(userID, newPath, r.ThumbnailKey, r.ThumbnailWrappedDEK, r.MediaWidth, r.MediaHeight, r.MediaDuration)
+			if copiedThumbnailKey, ok := thumbnailCopies[r.ThumbnailKey]; ok {
+				thumbnailUpdates = append(thumbnailUpdates, thumbnailUpdate{
+					path: newPath, key: copiedThumbnailKey, wrappedDEK: r.ThumbnailWrappedDEK,
+					width: r.MediaWidth, height: r.MediaHeight, duration: r.MediaDuration,
+				})
+			}
 		}
 	}
+	// Attach metadata only after every copied thumbnail row and object exists;
+	// a partial directory copy never publishes a dangling preview pointer.
+	for _, update := range thumbnailUpdates {
+		if err := h.Repos.Files.UpdateThumbnail(
+			userID, update.path, update.key, update.wrappedDEK,
+			update.width, update.height, update.duration,
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }

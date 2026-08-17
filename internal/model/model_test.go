@@ -1,7 +1,10 @@
 package model
 
 import (
+	"context"
+	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,7 +17,7 @@ func setupTestDB(t *testing.T) (*gorm.DB, *Repos) {
 	t.Helper()
 	dsn := os.Getenv("TEST_DATABASE_DSN")
 	if dsn == "" {
-		dsn = "host=localhost port=5432 user=postgres password= dbname=zephyr_test_model sslmode=disable"
+		dsn = "host=localhost port=5432 user=postgres password= dbname=domus_test_model sslmode=disable"
 	}
 	testDB, err := gorm.Open(postgres.Open(dsn), &gorm.Config{
 		Logger: gormlogger.Default.LogMode(gormlogger.Silent),
@@ -143,6 +146,253 @@ func TestDeleteUser(t *testing.T) {
 	_, err = repos.Users.GetByID(user.ID)
 	if err == nil {
 		t.Fatal("expected error after deletion")
+	}
+}
+
+func TestFileGenerationCASAndLogicalMove(t *testing.T) {
+	_, repos := setupTestDB(t)
+	user, _ := repos.Users.Create("generation-owner", "pass", "user", "")
+	oldPath := user.Username + "/home/" + user.Username + "/note.txt"
+	if err := repos.Files.Upsert(user.ID, oldPath, "note.txt", false, 4, "text/plain", "hash"); err != nil {
+		t.Fatal(err)
+	}
+	record, err := repos.Files.Get(user.ID, oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Generation != 1 || record.StorageKey() != oldPath {
+		t.Fatalf("unexpected initial generation: %+v", record)
+	}
+
+	target := DOFSGenerationObjectKey(user.ID, record.ID, 2, "tx")
+	switched, err := repos.Files.CommitGeneration(user.ID, record.ID, 1, target, 9)
+	if err != nil || !switched {
+		t.Fatalf("commit generation: switched=%v err=%v", switched, err)
+	}
+	if switched, err := repos.Files.CommitGeneration(user.ID, record.ID, 1, target+"-stale", 10); err != nil || switched {
+		t.Fatalf("stale CAS: switched=%v err=%v", switched, err)
+	}
+
+	newPath := user.Username + "/home/" + user.Username + "/renamed.txt"
+	if err := repos.Files.Move(user.ID, oldPath, newPath, "renamed.txt"); err != nil {
+		t.Fatal(err)
+	}
+	moved, err := repos.Files.Get(user.ID, newPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved.Generation != 2 || moved.StorageKey() != target || moved.LegacyObjectKey != oldPath || moved.Size != 9 {
+		t.Fatalf("logical move changed immutable generation: %+v", moved)
+	}
+}
+
+func TestThumbnailRecordsRetireTransactionally(t *testing.T) {
+	_, repos := setupTestDB(t)
+	user, err := repos.Users.Create("thumbnail-owner", "pass", "user", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := user.Username + "/home/" + user.Username + "/"
+	sourcePath := root + "photo.jpg"
+	firstPath := root + ".user/thumbnails/first.webp"
+	secondPath := root + ".user/derived/second.jpg"
+	if err := repos.Files.Upsert(user.ID, sourcePath, "photo.jpg", false, 10, "image/jpeg", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := repos.Files.Upsert(user.ID, firstPath, "first.webp", false, 2, "image/webp", ""); err != nil {
+		t.Fatal(err)
+	}
+	first, err := repos.Files.Get(user.ID, firstPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repos.Files.Upsert(
+		user.ID, secondPath, "second.jpg", false, 3, "image/jpeg", "",
+		UpsertFileOpts{ObjectKey: DOFSGenerationObjectKey(user.ID, first.ID+1, 1, "preview")},
+	); err != nil {
+		t.Fatal(err)
+	}
+	second, err := repos.Files.Get(user.ID, secondPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repos.Files.UpdateThumbnail(user.ID, sourcePath, first.StorageKey(), "wrapped-1", 10, 10, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := repos.Files.UpdateThumbnail(user.ID, sourcePath, second.StorageKey(), "wrapped-2", 20, 20, 0); err != nil {
+		t.Fatal(err)
+	}
+	retiredFirst, err := repos.Files.GetByID(user.ID, first.ID)
+	if err != nil || retiredFirst.Status != "deleted" {
+		t.Fatalf("replaced thumbnail = %+v, %v", retiredFirst, err)
+	}
+	source, err := repos.Files.Get(user.ID, sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := DOFSGenerationObjectKey(user.ID, source.ID, source.Generation+1, "edit")
+	switched, err := repos.Files.CommitGeneration(user.ID, source.ID, source.Generation, target, 11)
+	if err != nil || !switched {
+		t.Fatalf("CommitGeneration() = %v, %v", switched, err)
+	}
+	current, err := repos.Files.GetByID(user.ID, source.ID)
+	if err != nil || current.ThumbnailKey != "" || current.ThumbnailWrappedDEK != "" {
+		t.Fatalf("updated source = %+v, %v", current, err)
+	}
+	retiredSecond, err := repos.Files.GetByStorageKey(user.ID, second.StorageKey())
+	if err != nil || retiredSecond.ID != second.ID || retiredSecond.Status != "deleted" {
+		t.Fatalf("generation thumbnail = %+v, %v", retiredSecond, err)
+	}
+}
+
+func TestDOFSNamespaceTransactions(t *testing.T) {
+	_, repos := setupTestDB(t)
+	user, err := repos.Users.Create("dofs-owner", "pass", "user", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := user.Username + "/home/" + user.Username + "/"
+	directory, err := repos.Files.CreateDOFSNode(user.ID, root+"projects/", "projects", "", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	file, err := repos.Files.CreateDOFSNode(user.ID, directory.Path+"note.txt", "note.txt", "wrapped", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := repos.Files.CreateDOFSNode(user.ID, directory.Path+"note.txt/", "note.txt", "", true); !errors.Is(err, ErrFileExists) {
+		t.Fatalf("cross-type sibling collision error = %v", err)
+	}
+	physical := DOFSGenerationObjectKey(user.ID, file.ID, 1, "create")
+	if published, err := repos.Files.FinalizeDOFSFile(user.ID, file.ID, physical); err != nil || !published {
+		t.Fatalf("finalize file: published=%v err=%v", published, err)
+	}
+
+	newDirectoryPath := root + "archive/"
+	renamed, replaced, err := repos.Files.RenameDOFSNode(user.ID, directory.Path, newDirectoryPath, "archive", true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replaced != nil || renamed.ID != directory.ID || renamed.Path != newDirectoryPath {
+		t.Fatalf("unexpected rename result: renamed=%+v replaced=%+v", renamed, replaced)
+	}
+	movedFile, err := repos.Files.Get(user.ID, newDirectoryPath+"note.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if movedFile.ID != file.ID || movedFile.StorageKey() != physical {
+		t.Fatalf("rename changed inode/object identity: %+v", movedFile)
+	}
+	if _, err := repos.Files.RemoveDOFSNode(user.ID, newDirectoryPath, true); !errors.Is(err, ErrDirectoryNotEmpty) {
+		t.Fatalf("non-empty rmdir error = %v", err)
+	}
+	tombstone, err := repos.Files.RemoveDOFSNode(user.ID, movedFile.Path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tombstone.Status != "deleted" || tombstone.StorageKey() != physical {
+		t.Fatalf("unexpected tombstone: %+v", tombstone)
+	}
+	if switched, err := repos.Files.CommitGeneration(user.ID, file.ID, 1, physical+"-open-write", 7); err != nil || !switched {
+		t.Fatalf("commit through unlinked inode: switched=%v err=%v", switched, err)
+	}
+	if purged, err := repos.Files.PurgeDeletedDOFSNode(user.ID, file.ID); err != nil || !purged {
+		t.Fatalf("purge tombstone: purged=%v err=%v", purged, err)
+	}
+	if _, err := repos.Files.RemoveDOFSNode(user.ID, newDirectoryPath, true); err != nil {
+		t.Fatalf("remove empty directory: %v", err)
+	}
+}
+
+func TestDOFSNamespaceConcurrentCrossTypeCreateIsSerialized(t *testing.T) {
+	testDB, repos := setupTestDB(t)
+	// A previous development build may have created this unreleased unique
+	// index. The production-compatible implementation must not depend on it.
+	if err := testDB.Exec("DROP INDEX IF EXISTS idx_file_user_parent_name").Error; err != nil {
+		t.Fatal(err)
+	}
+	user, err := repos.Users.Create("dofs-create-race", "pass", "user", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := user.Username + "/home/" + user.Username + "/"
+	start := make(chan struct{})
+	errorsCh := make(chan error, 2)
+	var workers sync.WaitGroup
+	for _, directory := range []bool{false, true} {
+		workers.Add(1)
+		go func(isDir bool) {
+			defer workers.Done()
+			<-start
+			filePath := parent + "same-name"
+			if isDir {
+				filePath += "/"
+			}
+			_, createErr := repos.Files.CreateDOFSNode(user.ID, filePath, "same-name", "wrapped", isDir)
+			errorsCh <- createErr
+		}(directory)
+	}
+	close(start)
+	workers.Wait()
+	close(errorsCh)
+
+	var created, conflicts int
+	for createErr := range errorsCh {
+		switch {
+		case createErr == nil:
+			created++
+		case errors.Is(createErr, ErrFileExists):
+			conflicts++
+		default:
+			t.Fatalf("unexpected concurrent create error: %v", createErr)
+		}
+	}
+	if created != 1 || conflicts != 1 {
+		t.Fatalf("created=%d conflicts=%d, want 1/1", created, conflicts)
+	}
+}
+
+func TestDOFSWritableMountLeaseIsExclusiveAndReleasable(t *testing.T) {
+	_, repos := setupTestDB(t)
+	user, err := repos.Users.Create("dofs-lease-owner", "pass", "user", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := repos.Files.AcquireDOFSMountLease(user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checker, ok := first.(interface{ Check(context.Context) error })
+	if !ok {
+		_ = first.Close()
+		t.Fatal("PostgreSQL DOFS lease does not expose a health check")
+	}
+	checkContext, cancelCheck := context.WithTimeout(context.Background(), time.Second)
+	if err := checker.Check(checkContext); err != nil {
+		cancelCheck()
+		_ = first.Close()
+		t.Fatalf("lease health check: %v", err)
+	}
+	cancelCheck()
+	if _, err := repos.Files.AcquireDOFSMountLease(user.ID); !errors.Is(err, ErrDOFSMountBusy) {
+		_ = first.Close()
+		t.Fatalf("second lease error = %v, want ErrDOFSMountBusy", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	closedCheckContext, cancelClosedCheck := context.WithTimeout(context.Background(), time.Second)
+	if err := checker.Check(closedCheckContext); err == nil {
+		cancelClosedCheck()
+		t.Fatal("closed lease health check unexpectedly succeeded")
+	}
+	cancelClosedCheck()
+	second, err := repos.Files.AcquireDOFSMountLease(user.ID)
+	if err != nil {
+		t.Fatalf("lease after release: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 

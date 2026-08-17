@@ -17,29 +17,32 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 
-	"zephyr/config"
-	"zephyr/internal/auth"
-	"zephyr/internal/handler"
-	"zephyr/internal/middleware"
-	"zephyr/internal/model"
-	"zephyr/internal/service"
-	"zephyr/internal/store"
-	"zephyr/internal/vsh"
-	"zephyr/internal/ws"
-	"zephyr/shared/bootstrap"
-	"zephyr/shared/logger"
-	"zephyr/shared/stats"
-	"zephyr/shared/version"
+	"domus/config"
+	"domus/internal/auth"
+	"domus/internal/handler"
+	"domus/internal/middleware"
+	"domus/internal/model"
+	"domus/internal/service"
+	"domus/internal/store"
+	"domus/internal/terminal"
+	workspaceRuntime "domus/internal/workspace"
+	"domus/internal/ws"
+	"domus/shared/bootstrap"
+	"domus/shared/logger"
+	"domus/shared/stats"
+	"domus/shared/version"
 )
 
 const (
-	daemonEnvKey                = "ZEPHYR_DAEMON"
-	rootBootstrapPasswordEnvKey = "ZEPHYR_ROOT_BOOTSTRAP_PASSWORD"
+	daemonEnvKey                = "DOMUS_DAEMON"
+	legacyDaemonEnvKey          = "ZEPHYR_DAEMON"
+	rootBootstrapPasswordEnvKey = "DOMUS_ROOT_BOOTSTRAP_PASSWORD"
+	legacyRootPasswordEnvKey    = "ZEPHYR_ROOT_BOOTSTRAP_PASSWORD"
 )
 
 // Execute 执行 CLI
 func Execute() {
-	version.Check("zephyr")
+	version.Check("domus")
 
 	// 初始化日志（默认 info 级别，输出到控制台）
 	_ = logger.Init("info", "")
@@ -84,6 +87,12 @@ func Execute() {
 		reset(configPath, hasFlag(os.Args[2:], "--yes"))
 	case "restore":
 		restore(configPath, getFlagValue(os.Args[2:], "-i"), hasFlag(os.Args[2:], "--yes"))
+	case "dofs":
+		dofsCommand(configPath, os.Args[2:])
+	case "workspace":
+		workspaceCommand(configPath, os.Args[2:])
+	case "dev":
+		devCommand(configPath, os.Args[2:])
 	case "help", "-h", "--help":
 		printHelp()
 	default:
@@ -117,7 +126,7 @@ func start(configPath string, daemonMode bool) {
 
 	// 守护进程模式
 	if daemonMode {
-		if !bootstrap.IsDaemonChild(daemonEnvKey) {
+		if !bootstrap.IsDaemonChild(daemonEnvKey) && !bootstrap.IsDaemonChild(legacyDaemonEnvKey) {
 			pid, err := bootstrap.StartDaemon([]string{"start", "-c", configPath, "-d"}, daemonEnvKey)
 			if err != nil {
 				if running, p, _ := bootstrap.GetStatus(cfg.Server.PidFile); running {
@@ -225,7 +234,7 @@ func reset(configPath string, confirmed bool) {
 	}); err != nil {
 		logger.Fatal("%v", err)
 	}
-	logger.Info("Reset finished. Run `zephyr start -c %s` to reinitialize the instance.", configPath)
+	logger.Info("Reset finished. Run `domus start -c %s` to reinitialize the instance.", configPath)
 }
 
 type resetDeps struct {
@@ -246,7 +255,7 @@ func resetInstance(cfg *config.Config, configPath string, confirmed bool, deps r
 		return fmt.Errorf("reset is destructive. Re-run with --yes to clear database %q and bucket %q", cfg.Database.DBName, cfg.OSS.Bucket)
 	}
 
-	logger.Info("Resetting Zephyr instance")
+	logger.Info("Resetting Domus instance")
 	logger.Info("  Config file: %s", configPath)
 	logger.Info("  Database: %s", cfg.Database.DBName)
 	logger.Info("  Bucket: %s", cfg.OSS.Bucket)
@@ -377,26 +386,38 @@ func runServer(cfg *config.Config, configPath string) {
 
 	// Initialize services
 	mid := middleware.New(repos.Sessions, cfg.Server.SessionSecret)
+	workspaceClient := workspaceRuntime.ControlClient{
+		SocketPath: cfg.Workspace.ControlSocket,
+		Timeout: time.Duration(max(
+			cfg.Workspace.OperationTimeoutSeconds,
+			cfg.Workspace.ExecTimeoutSeconds+30,
+		)) * time.Second,
+	}
+	workspaceContext, cancelWorkspace := context.WithTimeout(
+		context.Background(), time.Duration(cfg.Workspace.OperationTimeoutSeconds)*time.Second,
+	)
+	health, healthErr := workspaceClient.Health(workspaceContext, true)
+	cancelWorkspace()
+	if healthErr != nil && health.Status != "degraded" {
+		logger.Fatal("Workspace manager is unavailable: %v", healthErr)
+	}
+	if health.ProtocolVersion != workspaceRuntime.ControlProtocolVersion {
+		logger.Fatal("Workspace control protocol mismatch: daemon=%d server=%d", health.ProtocolVersion, workspaceRuntime.ControlProtocolVersion)
+	}
+	if healthErr != nil {
+		logger.Info("Workspace manager starts degraded; reconciliation remains active: %v", healthErr)
+	}
+	logger.Info("Workspace manager ready via %s", cfg.Workspace.ControlSocket)
 
-	// Initialize virtual shell manager
-	shellMgr := vsh.NewShellManager(fileStore, repos)
-	shellMgr.DirNotify = func(resolvedPath, appPath, changeType string) {
-		hub.PushDirChanged(resolvedPath, appPath, changeType)
+	terminalMgr := terminal.NewManager(workspaceClient, cfg.Workspace.MaxSessionsPerUser)
+	terminalMgr.OnPushBytes = func(connID, sessionID string, data []byte) {
+		hub.PushSessionOutputBytes(connID, sessionID, data)
 	}
-	shellMgr.OnPushOutput = func(connID, sessionID, data string) {
-		hub.PushSessionOutput(connID, sessionID, data)
-	}
-	shellMgr.OnPushDone = func(connID, sessionID, cwd string) {
-		hub.PushSessionDone(connID, sessionID, cwd)
-	}
-	shellMgr.OnPushExit = func(connID, sessionID, reason string) {
+	terminalMgr.OnPushExit = func(connID, sessionID, reason string) {
 		hub.PushSessionExit(connID, sessionID, reason)
 	}
-	shellMgr.OnPushSSH = func(connID, sessionID, status string) {
-		hub.PushSessionSSH(connID, sessionID, status)
-	}
 	hub.OnConnClose = func(connID string) {
-		shellMgr.CloseByConn(connID)
+		terminalMgr.CloseByConn(connID)
 	}
 
 	// Initialize handler
@@ -409,7 +430,8 @@ func runServer(cfg *config.Config, configPath string) {
 		Challenges: challenges,
 		Mid:        mid,
 		Hub:        hub,
-		Vsh:        shellMgr,
+		Terminal:   terminalMgr,
+		Workspace:  workspaceClient,
 	}
 
 	// Clean orphan uploads at startup, then periodically
@@ -475,38 +497,46 @@ func runServer(cfg *config.Config, configPath string) {
 	// 优雅关闭
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(quit)
+	shutdownStarted := make(chan struct{})
+	shutdownComplete := make(chan struct{})
 
 	go func() {
 		<-quit
+		close(shutdownStarted)
+		defer close(shutdownComplete)
 		logger.Info("Shutting down service...")
 
+		// Stop admitting requests first. The listener shutdown is independent of
+		// media cleanup so one slow derived-file removal cannot consume every
+		// remaining shutdown stage's deadline.
+		if err := app.ShutdownWithTimeout(10 * time.Second); err != nil {
+			logger.Info("Failed to stop HTTP service cleanly: %v", err)
+		}
 		hub.CloseAll()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		done := make(chan error, 1)
-		go func() {
-			done <- app.Shutdown()
-		}()
-
-		select {
-		case err := <-done:
-			if err != nil {
-				logger.Info("Failed to shutdown service: %v", err)
-			}
-		case <-ctx.Done():
-			logger.Info("Shutdown timeout")
+		mediaTimeout := time.Duration(max(45, cfg.Workspace.ShutdownTimeoutSeconds)) * time.Second
+		mediaContext, cancelMedia := context.WithTimeout(context.Background(), mediaTimeout)
+		if err := h.ShutdownMediaJobs(mediaContext); err != nil {
+			logger.Info("Failed to stop media jobs cleanly: %v", err)
 		}
-
-		svc.Stop()
-		os.Exit(0)
+		cancelMedia()
 	}()
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
-	logger.Info("Zephyr v%s started on %s", version.Version, addr)
-	if err := app.Listen(addr); err != nil {
-		logger.Fatal("Failed to start service: %v", err)
+	logger.Info("Domus v%s started on %s", version.Version, addr)
+	listenErr := app.Listen(addr)
+	select {
+	case <-shutdownStarted:
+		<-shutdownComplete
+		if listenErr != nil {
+			logger.Info("HTTP listener stopped during shutdown: %v", listenErr)
+		}
+		return
+	default:
+	}
+	if listenErr != nil {
+		logger.Fatal("Failed to start service: %v", listenErr)
 	}
 }
 
@@ -534,7 +564,10 @@ func loadRootBootstrapPassword(cfg *config.Config) (string, error) {
 
 	password := strings.TrimSpace(os.Getenv(rootBootstrapPasswordEnvKey))
 	if password == "" {
-		return "", fmt.Errorf("set server.root_bootstrap_password_file or %s before first startup", rootBootstrapPasswordEnvKey)
+		password = strings.TrimSpace(os.Getenv(legacyRootPasswordEnvKey))
+	}
+	if password == "" {
+		return "", fmt.Errorf("set server.root_bootstrap_password_file or %s before first startup (legacy %s is also accepted)", rootBootstrapPasswordEnvKey, legacyRootPasswordEnvKey)
 	}
 	return password, nil
 }
@@ -582,10 +615,10 @@ func cleanOrphanUploads(s store.FileStore, repos *model.Repos) {
 }
 
 func printHelp() {
-	fmt.Printf("%s %s v%s\n", "zephyr", "文件管理服务", version.Version)
+	fmt.Printf("%s %s v%s\n", "domus", "文件管理服务", version.Version)
 	fmt.Println()
 	fmt.Println("用法:")
-	fmt.Println("  zephyr <command> [options]")
+	fmt.Println("  domus <command> [options]")
 	fmt.Println()
 	fmt.Println("命令:")
 	fmt.Println("  start     启动服务")
@@ -595,6 +628,9 @@ func printHelp() {
 	fmt.Println("  backup    备份数据库和整个 bucket（需先停服务）")
 	fmt.Println("  reset     清空数据库并清空整个 bucket（危险）")
 	fmt.Println("  restore   从备份恢复数据库和整个 bucket（危险，需先停服务）")
+	fmt.Println("  dofs      管理 DOFS 挂载服务或执行单用户挂载（Linux）")
+	fmt.Println("  workspace 管理按用户隔离的容器执行服务（Linux）")
+	fmt.Println("  dev       启动完整本地开发栈（Linux）")
 	fmt.Println()
 	fmt.Println("选项:")
 	fmt.Println("  -c string  配置文件路径 (默认: config.yaml)")
@@ -604,12 +640,18 @@ func printHelp() {
 	fmt.Println("  --yes      确认执行危险操作（reset / restore 使用）")
 	fmt.Println()
 	fmt.Println("示例:")
-	fmt.Println("  zephyr start")
-	fmt.Println("  zephyr start -d")
-	fmt.Println("  zephyr start -c app.yaml")
-	fmt.Println("  zephyr stop")
-	fmt.Println("  zephyr status")
-	fmt.Println("  zephyr backup -c config.yaml -o backup-20260419.tar.gz")
-	fmt.Println("  zephyr reset -c config.yaml --yes")
-	fmt.Println("  zephyr restore -c config.yaml -i backup-20260419.tar.gz --yes")
+	fmt.Println("  domus start")
+	fmt.Println("  domus start -d")
+	fmt.Println("  domus start -c app.yaml")
+	fmt.Println("  domus stop")
+	fmt.Println("  domus status")
+	fmt.Println("  domus backup -c config.yaml -o backup-20260419.tar.gz")
+	fmt.Println("  domus reset -c config.yaml --yes")
+	fmt.Println("  domus restore -c config.yaml -i backup-20260419.tar.gz --yes")
+	fmt.Println("  domus dofs mount -c config.yaml --user root --mountpoint /mnt/dofs-root")
+	fmt.Println("  domus dofs serve -c /etc/domus/config.yaml")
+	fmt.Println("  domus dofs status -c /etc/domus/config.yaml")
+	fmt.Println("  domus workspace serve -c /etc/domus/workspace.yaml")
+	fmt.Println("  domus workspace health -c /etc/domus/workspace.yaml --ready")
+	fmt.Println("  domus dev -c config.yaml --runtime-root ./tmp/dev")
 }

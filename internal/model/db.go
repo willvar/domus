@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"zephyr/config"
+	"domus/config"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"

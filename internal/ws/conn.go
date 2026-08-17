@@ -9,7 +9,7 @@ import (
 	"github.com/fasthttp/websocket"
 	"github.com/google/uuid"
 
-	"zephyr/internal/model"
+	"domus/internal/model"
 )
 
 const (
@@ -31,6 +31,7 @@ type Conn struct {
 	hub  *Hub
 	raw  *websocket.Conn
 	send chan []byte
+	done chan struct{}
 
 	subs   map[string]struct{} // subscribed directory paths (resolved OSS paths)
 	subsMu sync.Mutex
@@ -48,23 +49,50 @@ func newConn(hub *Hub, raw *websocket.Conn, session *model.Session, sessionID st
 		hub:       hub,
 		raw:       raw,
 		send:      make(chan []byte, sendBufSize),
+		done:      make(chan struct{}),
 		subs:      make(map[string]struct{}),
 	}
 }
 
-// WriteJSON marshals v and queues it for sending. Non-blocking; drops if buffer full.
+// WriteJSON marshals v and queues it reliably. Request responses must never be
+// silently dropped: terminal input uses request/response acknowledgements to
+// detect a broken browser connection.
 func (c *Conn) WriteJSON(v any) {
-	if atomic.LoadInt32(&c.closed) != 0 {
-		return
-	}
 	data, err := json.Marshal(v)
 	if err != nil {
 		return
 	}
+	c.enqueue(data, true)
+}
+
+// enqueue keeps best-effort application notifications non-blocking while
+// applying bounded backpressure to ordered terminal traffic and responses. A
+// client that cannot drain reliable data within writeWait is disconnected so
+// the caller observes failure instead of a silently corrupted byte stream.
+func (c *Conn) enqueue(data []byte, reliable bool) bool {
+	if atomic.LoadInt32(&c.closed) != 0 {
+		return false
+	}
+	if !reliable {
+		select {
+		case <-c.done:
+			return false
+		case c.send <- data:
+			return true
+		default:
+			return false
+		}
+	}
+	timer := time.NewTimer(writeWait)
+	defer timer.Stop()
 	select {
+	case <-c.done:
+		return false
 	case c.send <- data:
-	default:
-		// Buffer full, drop message
+		return true
+	case <-timer.C:
+		c.Close()
+		return false
 	}
 }
 
@@ -89,8 +117,10 @@ func (c *Conn) Close() {
 	if !atomic.CompareAndSwapInt32(&c.closed, 0, 1) {
 		return
 	}
-	close(c.send)
-	_ = c.raw.Close()
+	close(c.done)
+	if c.raw != nil {
+		_ = c.raw.Close()
+	}
 	c.hub.unregister(c)
 }
 
@@ -124,12 +154,9 @@ func (c *Conn) writePump() {
 
 	for {
 		select {
-		case msg, ok := <-c.send:
-			if !ok {
-				// Channel closed
-				_ = c.raw.WriteMessage(websocket.CloseMessage, nil)
-				return
-			}
+		case <-c.done:
+			return
+		case msg := <-c.send:
 			_ = c.raw.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.raw.WriteMessage(websocket.TextMessage, msg); err != nil {
 				return

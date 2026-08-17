@@ -1,0 +1,39 @@
+[Unit]
+Description=Domus Object File System data plane
+Documentation=file:///usr/share/doc/domus/dofs-production.md
+Wants=network-online.target
+After=network-online.target
+Before=domus.service
+ConditionPathExists=/dev/fuse
+RequiresMountsFor=/var/lib/domus/dofs/state
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=domus
+Group=domus
+SupplementaryGroups=domus-runtime
+UMask=0077
+RuntimeDirectory=domus
+RuntimeDirectoryMode=0750
+StateDirectory=domus
+StateDirectoryMode=0700
+ExecStart=/usr/local/bin/domus dofs serve -c /etc/domus/config.yaml
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=90s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+KillMode=mixed
+LimitNOFILE=1048576
+LimitCORE=0
+OOMScoreAdjust=-250
+
+# DOFS mounts must be created in the host mount namespace so dockerd can bind
+# them into user containers. Do not add PrivateTmp, ProtectSystem,
+# ProtectHome, RootDirectory, BindPaths, InaccessiblePaths, or other systemd
+# filesystem namespacing directives to this unit.
+PrivateMounts=no
+
+[Install]
+WantedBy=multi-user.target

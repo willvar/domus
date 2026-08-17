@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"zephyr/config"
-	"zephyr/internal/store"
+	"domus/config"
+	"domus/internal/store"
 )
 
 type backupTestStore struct {
@@ -151,10 +151,10 @@ func TestBackupInstanceWritesManifestDatabaseAndObjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read manifest: %v", err)
 	}
-	if manifest.DatabaseName != "zephyr_test" {
+	if manifest.DatabaseName != "domus_test" {
 		t.Fatalf("unexpected database name: %s", manifest.DatabaseName)
 	}
-	if manifest.Bucket != "zephyr-bucket" {
+	if manifest.Bucket != "domus-bucket" {
 		t.Fatalf("unexpected bucket: %s", manifest.Bucket)
 	}
 	if manifest.ObjectCount != 2 {
@@ -174,6 +174,21 @@ func TestBackupInstanceWritesManifestDatabaseAndObjects(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(backupDir, "database.sql")); err != nil {
 		t.Fatalf("expected database dump file: %v", err)
+	}
+}
+
+func TestReadManifestAcceptsLegacyZephyrVersionField(t *testing.T) {
+	manifestPath := filepath.Join(t.TempDir(), "manifest.json")
+	data := []byte(`{"format_version":1,"zephyr_version":"0.9.0"}`)
+	if err := os.WriteFile(manifestPath, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := readManifest(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if manifest.DomusVersion != "0.9.0" {
+		t.Fatalf("migrated version = %q", manifest.DomusVersion)
 	}
 }
 

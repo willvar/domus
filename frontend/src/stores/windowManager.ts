@@ -6,6 +6,7 @@ import { useI18n } from '../composables/useI18n'
 import { useWorkspaceSync } from '../composables/useWorkspaceSync'
 import { IconFolderHome, IconAccountCircle, IconConsole } from '../barrels/icons'
 import type { WindowState, WindowGeo, OpenWindowOptions, RemoteFlag } from '../types'
+import { readMigratedStorage } from '../utils/storageCompat'
 
 export const FILES_ICON = IconFolderHome
 export const PROFILE_ICON = IconAccountCircle
@@ -29,6 +30,10 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
   const defaultHeight: ComputedRef<number> = computed(() => _prefs.defaultHeight)
 
   function _storageKey(): string | null {
+    return _userId ? `domus_window_geo_${_userId}` : null
+  }
+
+  function _legacyStorageKey(): string | null {
     return _userId ? `zephyr_window_geo_${_userId}` : null
   }
 
@@ -36,7 +41,7 @@ export const useWindowManagerStore = defineStore('windowManager', () => {
     const key = _storageKey()
     if (!key) { _savedGeo = null; return }
     try {
-      _savedGeo = JSON.parse(localStorage.getItem(key) || '{}') || {}
+      _savedGeo = JSON.parse(readMigratedStorage(key, _legacyStorageKey()!) || '{}') || {}
     } catch {
       _savedGeo = {}
     }

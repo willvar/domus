@@ -1,11 +1,15 @@
 import { watch, onUnmounted } from 'vue'
 import { useWindowManagerStore } from '../stores/windowManager'
 
-interface ZephyrHistoryState {
+interface DomusHistoryState {
+  domusDesktop?: boolean
+  domusWindowId?: string
+  domusWindowDepth?: number
   zephyrDesktop?: boolean
   zephyrWindowId?: string
 }
 
+const MAX_WINDOW_HISTORY_DEPTH = 32
 let installed: boolean = false
 let skipNextPopstate: boolean = false
 
@@ -33,19 +37,34 @@ export function useWindowHistory(): void {
   let handlingPopstate: boolean = false
 
   // Mark initial state as desktop
-  history.replaceState({ zephyrDesktop: true } as ZephyrHistoryState, '')
+  const initialState = (history.state && typeof history.state === 'object') ? history.state : {}
+  history.replaceState({
+    ...initialState,
+    domusDesktop: true,
+    domusWindowId: undefined,
+    domusWindowDepth: 0,
+  } as DomusHistoryState, '')
 
   // Push history entry when active window changes
   watch(() => wm.activeWindowId, (id: string | null, oldId: string | null) => {
     if (handlingPopstate) return
     if (id === oldId) return
 
-    if (id) {
-      history.pushState({ zephyrWindowId: id } as ZephyrHistoryState, '')
+    const current = (history.state && typeof history.state === 'object') ? history.state : {}
+    const depth = typeof current.domusWindowDepth === 'number' ? current.domusWindowDepth : 0
+    const nextState = {
+      ...current,
+      domusDesktop: !id,
+      domusWindowId: id || undefined,
+      domusWindowDepth: Math.min(depth + 1, MAX_WINDOW_HISTORY_DEPTH),
+    } as DomusHistoryState
+
+    if (depth >= MAX_WINDOW_HISTORY_DEPTH) {
+      history.replaceState(nextState, '')
     } else {
-      history.pushState({ zephyrDesktop: true } as ZephyrHistoryState, '')
+      history.pushState(nextState, '')
     }
-  })
+  }, { flush: 'sync' })
 
   // Handle browser back/forward
   function onPopstate(e: PopStateEvent): void {
@@ -56,14 +75,15 @@ export function useWindowHistory(): void {
 
     handlingPopstate = true
     try {
-      const state = e.state as ZephyrHistoryState | null
-      if (state?.zephyrWindowId) {
-        const win = wm.findWindow(state.zephyrWindowId)
+      const state = e.state as DomusHistoryState | null
+      const windowId = state?.domusWindowId || state?.zephyrWindowId
+      if (windowId) {
+        const win = wm.findWindow(windowId)
         if (win) {
           win.minimized = false
-          wm.bringToFront(state.zephyrWindowId)
+          wm.bringToFront(windowId)
         }
-      } else if (state?.zephyrDesktop) {
+      } else if (state?.domusDesktop || state?.zephyrDesktop) {
         const activeId: string | null = wm.activeWindowId
         if (activeId) {
           wm.minimizeWindow(activeId)

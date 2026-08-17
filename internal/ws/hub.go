@@ -6,8 +6,8 @@ import (
 
 	"github.com/fasthttp/websocket"
 
-	"zephyr/internal/model"
-	"zephyr/shared/logger"
+	"domus/internal/model"
+	"domus/shared/logger"
 )
 
 // Hub manages all active WebSocket connections.
@@ -22,7 +22,7 @@ type Hub struct {
 	router *Router
 
 	// OnConnClose is called when a connection is unregistered, before cleanup.
-	// Can be used to clean up resources tied to a connection (e.g. vsh sessions).
+	// Can be used to clean up resources tied to a connection (e.g. terminal sessions).
 	OnConnClose func(connID string)
 }
 
@@ -143,11 +143,7 @@ func (h *Hub) SendToUserExcept(userID, excludeConnID string, msg any) {
 			if key.(string) == excludeConnID {
 				return true
 			}
-			conn := val.(*Conn)
-			select {
-			case conn.send <- data:
-			default:
-			}
+			val.(*Conn).enqueue(data, false)
 			return true
 		})
 	}
@@ -161,11 +157,7 @@ func (h *Hub) SendToUser(userID string, msg any) {
 	}
 	if v, ok := h.userConns.Load(userID); ok {
 		v.(*sync.Map).Range(func(_, val any) bool {
-			conn := val.(*Conn)
-			select {
-			case conn.send <- data:
-			default:
-			}
+			val.(*Conn).enqueue(data, false)
 			return true
 		})
 	}
@@ -178,11 +170,7 @@ func (h *Hub) SendToConn(connID string, msg any) {
 		return
 	}
 	if v, ok := h.conns.Load(connID); ok {
-		conn := v.(*Conn)
-		select {
-		case conn.send <- data:
-		default:
-		}
+		v.(*Conn).enqueue(data, true)
 	}
 }
 
@@ -194,11 +182,7 @@ func (h *Hub) NotifyDirectory(resolvedPath string, msg any) {
 	}
 	if v, ok := h.dirSubs.Load(resolvedPath); ok {
 		v.(*sync.Map).Range(func(_, val any) bool {
-			conn := val.(*Conn)
-			select {
-			case conn.send <- data:
-			default:
-			}
+			val.(*Conn).enqueue(data, false)
 			return true
 		})
 	}
@@ -206,19 +190,35 @@ func (h *Hub) NotifyDirectory(resolvedPath string, msg any) {
 
 // DisconnectUser force-closes all connections for a user.
 func (h *Hub) DisconnectUser(userID string) {
+	var connections []*Conn
 	if v, ok := h.userConns.Load(userID); ok {
 		v.(*sync.Map).Range(func(_, val any) bool {
-			val.(*Conn).Close()
+			connections = append(connections, val.(*Conn))
 			return true
 		})
 	}
+	closeConnections(connections)
 }
 
 // CloseAll gracefully closes all connections.
 func (h *Hub) CloseAll() {
 	logger.Info("[ws] closing all connections")
+	var connections []*Conn
 	h.conns.Range(func(_, val any) bool {
-		val.(*Conn).Close()
+		connections = append(connections, val.(*Conn))
 		return true
 	})
+	closeConnections(connections)
+}
+
+func closeConnections(connections []*Conn) {
+	var wait sync.WaitGroup
+	wait.Add(len(connections))
+	for _, connection := range connections {
+		go func() {
+			defer wait.Done()
+			connection.Close()
+		}()
+	}
+	wait.Wait()
 }

@@ -1,0 +1,59 @@
+[Unit]
+Description=Domus isolated user workspace manager
+Documentation=file:///usr/share/doc/domus/workspace-production.md
+Requires=domus-dofs.service docker.service
+After=domus-dofs.service docker.service
+Before=domus.service
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=domus-workspace
+Group=domus
+SupplementaryGroups=domus-runtime docker
+UMask=0077
+RuntimeDirectory=domus-workspace
+RuntimeDirectoryMode=0750
+StateDirectory=domus-workspace
+StateDirectoryMode=0700
+ExecStart=/usr/local/bin/domus workspace serve -c /etc/domus/workspace.yaml
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=150s
+TimeoutStopSec=45s
+KillSignal=SIGTERM
+KillMode=mixed
+LimitNOFILE=1048576
+LimitNPROC=4096
+LimitCORE=0
+OOMScoreAdjust=-200
+
+# The daemon controls Docker through one local socket but does not need host
+# networking, devices, FUSE, user namespaces, or writable system paths.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+PrivateMounts=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target
