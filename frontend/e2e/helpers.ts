@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { expect, type Page, type Request } from '@playwright/test'
 
@@ -7,11 +7,66 @@ export const apiBaseURL = (process.env.DOMUS_E2E_API_BASE || 'http://127.0.0.1:8
 const isolatedPages = new WeakSet<Page>()
 
 const e2eDirectory = dirname(fileURLToPath(import.meta.url))
+const projectDirectory = resolve(e2eDirectory, '../..')
 const defaultPasswordFile = resolve(e2eDirectory, '../../tmp/dev/root-bootstrap-password')
+
+function runtimeControlFile(name: string): string {
+  const configured = process.env.DOMUS_E2E_RUNTIME_ROOT?.trim() || 'tmp/dev'
+  const runtimeRoot = isAbsolute(configured) ? configured : resolve(projectDirectory, configured)
+  return resolve(runtimeRoot, 'run', name)
+}
+
+function readPositiveInteger(path: string, description: string): number {
+  const value = Number.parseInt(readFileSync(path, 'utf8').trim(), 10)
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`invalid ${description} in ${path}`)
+  }
+  return value
+}
 
 export interface E2ECredentials {
   username: string
   password: string
+}
+
+export interface UploadObservation {
+  multipartPartCount: number
+  objectUploadOrigins: string[]
+}
+
+export async function restartBackend(page: Page): Promise<void> {
+  const supervisorPIDFile = runtimeControlFile('e2e-backend-supervisor.pid')
+  const generationFile = runtimeControlFile('e2e-backend-generation')
+  const supervisorPID = readPositiveInteger(supervisorPIDFile, 'E2E backend supervisor PID')
+  const previousGeneration = readPositiveInteger(generationFile, 'E2E backend generation')
+
+  process.kill(supervisorPID, 'SIGUSR1')
+
+  await expect
+    .poll(() => {
+      try {
+        return readPositiveInteger(generationFile, 'E2E backend generation')
+      } catch {
+        return previousGeneration
+      }
+    }, {
+      timeout: 180_000,
+      message: 'Domus backend supervisor did not publish a restarted generation',
+    })
+    .toBeGreaterThan(previousGeneration)
+
+  await expect
+    .poll(async () => {
+      try {
+        return (await page.request.get(`${apiBaseURL}/auth`, { timeout: 2_000 })).status()
+      } catch {
+        return 0
+      }
+    }, {
+      timeout: 30_000,
+      message: 'Domus API did not become ready after the supervised restart',
+    })
+    .toBe(200)
 }
 
 async function isolateWorkspaceState(page: Page): Promise<void> {
@@ -162,7 +217,7 @@ export async function waitForServiceWorker(page: Page): Promise<void> {
 export async function uploadFromToolbar(
   page: Page,
   file: { name: string; mimeType: string; buffer: Buffer },
-): Promise<void> {
+): Promise<UploadObservation> {
   const apiControlBodies: string[] = []
   const apiControlBodyBuffers: Buffer[] = []
   const objectUploadRequests: Array<{ url: string; body: Buffer | null }> = []
@@ -205,6 +260,12 @@ export async function uploadFromToolbar(
     const fileChooser = await fileChooserPromise
     await fileChooser.setFiles(file)
 
+    if (file.buffer.length === 0) {
+      const zeroByteDialog = page.locator('.breeze-modal-dialog').filter({ hasText: /0B|0.?byte|zero.?byte/i })
+      await expect(zeroByteDialog).toBeVisible()
+      await zeroByteDialog.locator('.breeze-modal-dialog__footer button').last().click()
+    }
+
     const completionResponse = await completionResponsePromise
     const completionBody = await completionResponse.json().catch(() => ({})) as { error?: unknown }
     const completionError = typeof completionBody.error === 'string' ? ` (${completionBody.error})` : ''
@@ -221,14 +282,16 @@ export async function uploadFromToolbar(
     expect(new URL(upload.url).origin, 'object data was PUT to the Domus HTTP origin').not.toBe(apiBaseURL)
     expect(upload.body, 'Playwright could not inspect an object-store PUT body').not.toBeNull()
   }
-  expect(
-    apiControlBodyBuffers.every(body => !body.includes(file.buffer)),
-    'plaintext file bytes appeared in a Domus HTTP request body',
-  ).toBeTruthy()
-  expect(
-    objectUploadRequests.every(upload => !upload.body?.includes(file.buffer)),
-    'plaintext file bytes appeared in an object-store PUT body',
-  ).toBeTruthy()
+  if (file.buffer.length > 0) {
+    expect(
+      apiControlBodyBuffers.every(body => !body.includes(file.buffer)),
+      'plaintext file bytes appeared in a Domus HTTP request body',
+    ).toBeTruthy()
+    expect(
+      objectUploadRequests.every(upload => !upload.body?.includes(file.buffer)),
+      'plaintext file bytes appeared in an object-store PUT body',
+    ).toBeTruthy()
+  }
 
   // Reassemble each observed multipart object and require one to match the
   // exact DOFS v1 encrypted geometry for the source file. This is stronger
@@ -268,6 +331,11 @@ export async function uploadFromToolbar(
         `plaintext file fragment reached the Domus control plane: ${fragment}`,
       ).toBeTruthy()
     }
+  }
+
+  return {
+    multipartPartCount: objectUploadRequests.length,
+    objectUploadOrigins: objectUploadRequests.map(upload => new URL(upload.url).origin),
   }
 }
 
