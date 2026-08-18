@@ -1,7 +1,6 @@
 package store
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -23,57 +22,8 @@ type ObjectInfo struct {
 	Size int64
 }
 
-// CompletePart represents a completed multipart upload part.
-type CompletePart struct {
-	PartNumber int    `json:"part_number"`
-	ETag       string `json:"etag"`
-}
-
-// PartInfo describes a part that has been uploaded.
-type PartInfo struct {
-	PartNumber int    `json:"part_number"`
-	Size       int64  `json:"size"`
-	ETag       string `json:"etag"`
-}
-
-// HeadResult holds metadata returned by HeadObject.
-type HeadResult struct {
-	Size int64
-	ETag string
-}
-
-// FileStore defines the interface for object storage operations
-type FileStore interface {
-	ListObjects(prefix, marker string, limit int) (*ListResult, error)
-	GetObjectInfo(key string) (*FileInfo, error)
-	CreateDirectory(key string) error
-	DeleteObject(key string) error
-	DeleteObjects(keys []string) error
-	CopyObject(srcKey, dstKey string) error
-	MoveObject(srcKey, dstKey string) error
-	ListAllObjects(prefix string) ([]ObjectInfo, error)
-	RecursiveCopy(srcPrefix, dstPrefix string, progress func(done, total int, current string)) error
-	RecursiveMove(srcPrefix, dstPrefix string, progress func(done, total int, current string)) error
-	RecursiveDelete(prefix string, progress func(done, total int, current string)) error
-	DeleteAllObjects(progress func(done, total int, current string)) error
-	GetTotalSize(prefix string) (int64, int, error)
-	GeneratePresignedURL(key string, expires time.Duration) (string, error)
-	GetObjectContent(key string) (io.ReadCloser, error)
-	PutObjectBytes(key string, data []byte) error
-	RenameObject(oldKey, newKey string, isDir bool) error
-
-	// Client-direct-upload operations (presigned URLs use clientUploadClient)
-	PresignedPutObject(key string, expires time.Duration) (string, error)
-	PresignedDeleteObject(key string, expires time.Duration) (string, error)
-	CreateMultipartUpload(key string) (uploadID string, err error)
-	PresignedUploadPart(key, uploadID string, partNumber int, expires time.Duration) (string, error)
-	CompleteMultipartUpload(key, uploadID string, parts []CompletePart) error
-	AbortMultipartUpload(key, uploadID string) error
-	ListParts(key, uploadID string) ([]PartInfo, error)
-	HeadObject(key string) (*HeadResult, error)
-}
-
-// FileInfo holds metadata for a file or directory
+// FileInfo is the browser-facing file listing projection assembled from DOFS
+// metadata. It is not populated by listing object-storage paths.
 type FileInfo struct {
 	Name          string    `json:"name"`
 	Path          string    `json:"path"`
@@ -93,11 +43,52 @@ type FileInfo struct {
 	TaskPhase     string    `json:"task_phase,omitempty"`
 }
 
-// ListResult holds a paginated directory listing
-type ListResult struct {
-	Files       []FileInfo `json:"files"`
-	NextMarker  string     `json:"next_marker"`
-	IsTruncated bool       `json:"is_truncated"`
+// CompletePart represents a completed multipart upload part.
+type CompletePart struct {
+	PartNumber int    `json:"part_number"`
+	ETag       string `json:"etag"`
+}
+
+// PartInfo describes a part that has been uploaded.
+type PartInfo struct {
+	PartNumber int    `json:"part_number"`
+	Size       int64  `json:"size"`
+	ETag       string `json:"etag"`
+}
+
+// HeadResult holds metadata returned by HeadObject.
+type HeadResult struct {
+	Size int64
+	ETag string
+}
+
+// ControlStore is the only object-storage capability available to Domus HTTP
+// handlers. It can issue browser-direct URLs and finalize multipart uploads,
+// but deliberately cannot read or write object bodies. User file bytes must
+// stay on browser/worker-to-object-storage connections.
+type ControlStore interface {
+	GeneratePresignedURL(key string, expires time.Duration) (string, error)
+	PresignedPutObject(key string, expires time.Duration) (string, error)
+	PresignedDeleteObject(key string, expires time.Duration) (string, error)
+	CreateMultipartUpload(key string) (uploadID string, err error)
+	PresignedUploadPart(key, uploadID string, partNumber int, expires time.Duration) (string, error)
+	CompleteMultipartUpload(key, uploadID string, parts []CompletePart) error
+	AbortMultipartUpload(key, uploadID string) error
+	ListParts(key, uploadID string) ([]PartInfo, error)
+	HeadObject(key string) (*HeadResult, error)
+}
+
+// FileStore adds offline administrative backup/reset capabilities. It is kept
+// out of Handler so user upload bytes cannot accidentally be proxied by a
+// future HTTP endpoint.
+type FileStore interface {
+	ControlStore
+	Check(context.Context) error
+	GetObjectContent(key string) (io.ReadCloser, error)
+	CreateDirectory(key string) error
+	ListAllObjects(prefix string) ([]ObjectInfo, error)
+	DeleteAllObjects(progress func(done, total int, current string)) error
+	PutObject(key string, reader io.Reader, size int64) error
 }
 
 // OSSClient implements FileStore using MinIO S3-compatible SDK.
@@ -145,91 +136,18 @@ func NewOSSClient(cfg config.OSSConfig) (FileStore, error) {
 	return c, nil
 }
 
-// ListObjects lists objects under a prefix (simulating directory listing)
-func (c *OSSClient) ListObjects(prefix, marker string, limit int) (*ListResult, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-
-	// Ensure prefix ends with /
-	if prefix != "" && !strings.HasSuffix(prefix, "/") {
-		prefix += "/"
-	}
-
-	result, err := c.serverCore.ListObjectsV2(c.bucketName, prefix, "", marker, "/", limit)
+// Check verifies that the configured bucket exists and the administrative
+// credentials can reach it. Destructive offline commands call this before
+// changing PostgreSQL or local DOFS metadata.
+func (c *OSSClient) Check(ctx context.Context) error {
+	exists, err := c.serverClient.BucketExists(ctx, c.bucketName)
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("check bucket %q: %w", c.bucketName, err)
 	}
-
-	var files []FileInfo
-
-	// Directories (common prefixes)
-	for _, dir := range result.CommonPrefixes {
-		dirPrefix := dir.Prefix
-		name := strings.TrimPrefix(dirPrefix, prefix)
-		name = strings.TrimSuffix(name, "/")
-		if name == "" || name == ".trash" {
-			continue
-		}
-		files = append(files, FileInfo{
-			Name:  name,
-			Path:  dirPrefix,
-			IsDir: true,
-		})
+	if !exists {
+		return fmt.Errorf("bucket %q does not exist or is not accessible", c.bucketName)
 	}
-
-	// Files
-	for _, obj := range result.Contents {
-		name := strings.TrimPrefix(obj.Key, prefix)
-		if name == "" || strings.HasSuffix(name, "/") {
-			continue
-		}
-		fi := FileInfo{
-			Name:         name,
-			Path:         obj.Key,
-			IsDir:        false,
-			Size:         obj.Size,
-			LastModified: obj.LastModified,
-		}
-		if obj.ContentType != "" {
-			fi.ContentType = obj.ContentType
-		}
-		files = append(files, fi)
-	}
-
-	if files == nil {
-		files = []FileInfo{}
-	}
-
-	return &ListResult{
-		Files:       files,
-		NextMarker:  result.NextContinuationToken,
-		IsTruncated: result.IsTruncated,
-	}, nil
-}
-
-// GetObjectInfo gets metadata for a single object
-func (c *OSSClient) GetObjectInfo(key string) (*FileInfo, error) {
-	info, err := c.serverClient.StatObject(context.Background(), c.bucketName, key, minio.StatObjectOptions{})
-	if err != nil {
-		return nil, err
-	}
-
-	name := key
-	if idx := strings.LastIndex(strings.TrimSuffix(key, "/"), "/"); idx >= 0 {
-		name = key[idx+1:]
-	}
-
-	fi := &FileInfo{
-		Name:         name,
-		Path:         key,
-		IsDir:        strings.HasSuffix(key, "/"),
-		Size:         info.Size,
-		LastModified: info.LastModified,
-		ContentType:  info.ContentType,
-	}
-
-	return fi, nil
+	return nil
 }
 
 // CreateDirectory creates a directory marker object
@@ -241,20 +159,7 @@ func (c *OSSClient) CreateDirectory(key string) error {
 	return err
 }
 
-// DeleteObject deletes a single object
-func (c *OSSClient) DeleteObject(key string) error {
-	return c.serverClient.RemoveObject(context.Background(), c.bucketName, key, minio.RemoveObjectOptions{})
-}
-
-// DeleteObjectPrefix removes every object below a DOFS inode generation root.
-// It is kept outside FileStore so existing callers and test doubles do not
-// need a second spelling for RecursiveDelete.
-func (c *OSSClient) DeleteObjectPrefix(prefix string) error {
-	return c.RecursiveDelete(prefix, nil)
-}
-
-// DeleteObjects deletes multiple objects
-func (c *OSSClient) DeleteObjects(keys []string) error {
+func (c *OSSClient) deleteObjects(keys []string) error {
 	if len(keys) == 0 {
 		return nil
 	}
@@ -270,22 +175,6 @@ func (c *OSSClient) DeleteObjects(keys []string) error {
 		}
 	}
 	return nil
-}
-
-// CopyObject copies a single object
-func (c *OSSClient) CopyObject(srcKey, dstKey string) error {
-	src := minio.CopySrcOptions{Bucket: c.bucketName, Object: srcKey}
-	dst := minio.CopyDestOptions{Bucket: c.bucketName, Object: dstKey}
-	_, err := c.serverClient.CopyObject(context.Background(), dst, src)
-	return err
-}
-
-// MoveObject moves (copy + delete) a single object
-func (c *OSSClient) MoveObject(srcKey, dstKey string) error {
-	if err := c.CopyObject(srcKey, dstKey); err != nil {
-		return err
-	}
-	return c.DeleteObject(srcKey)
 }
 
 // ListAllObjects lists all objects under a prefix recursively (no delimiter)
@@ -306,42 +195,7 @@ func (c *OSSClient) ListAllObjects(prefix string) ([]ObjectInfo, error) {
 	return allObjects, nil
 }
 
-func (c *OSSClient) transferObjects(srcPrefix, dstPrefix string, deleteSource bool, progress func(done, total int, current string)) error {
-	objects, err := c.ListAllObjects(srcPrefix)
-	if err != nil {
-		return err
-	}
-
-	total := len(objects)
-	for i, obj := range objects {
-		newKey := dstPrefix + strings.TrimPrefix(obj.Key, srcPrefix)
-		if err := c.CopyObject(obj.Key, newKey); err != nil {
-			return fmt.Errorf("copy %s: %w", obj.Key, err)
-		}
-		if deleteSource {
-			if err := c.DeleteObject(obj.Key); err != nil {
-				return fmt.Errorf("delete %s: %w", obj.Key, err)
-			}
-		}
-		if progress != nil {
-			progress(i+1, total, obj.Key)
-		}
-	}
-	return nil
-}
-
-// RecursiveCopy copies all objects under srcPrefix to dstPrefix, calling progress callback
-func (c *OSSClient) RecursiveCopy(srcPrefix, dstPrefix string, progress func(done, total int, current string)) error {
-	return c.transferObjects(srcPrefix, dstPrefix, false, progress)
-}
-
-// RecursiveMove moves all objects under srcPrefix to dstPrefix
-func (c *OSSClient) RecursiveMove(srcPrefix, dstPrefix string, progress func(done, total int, current string)) error {
-	return c.transferObjects(srcPrefix, dstPrefix, true, progress)
-}
-
-// RecursiveDelete deletes all objects under a prefix
-func (c *OSSClient) RecursiveDelete(prefix string, progress func(done, total int, current string)) error {
+func (c *OSSClient) deleteObjectsWithPrefix(prefix string, progress func(done, total int, current string)) error {
 	objects, err := c.ListAllObjects(prefix)
 	if err != nil {
 		return err
@@ -354,7 +208,7 @@ func (c *OSSClient) RecursiveDelete(prefix string, progress func(done, total int
 	for _, obj := range objects {
 		batch = append(batch, obj.Key)
 		if len(batch) == 1000 {
-			if err := c.DeleteObjects(batch); err != nil {
+			if err := c.deleteObjects(batch); err != nil {
 				return err
 			}
 			done += len(batch)
@@ -365,7 +219,7 @@ func (c *OSSClient) RecursiveDelete(prefix string, progress func(done, total int
 		}
 	}
 	if len(batch) > 0 {
-		if err := c.DeleteObjects(batch); err != nil {
+		if err := c.deleteObjects(batch); err != nil {
 			return err
 		}
 		done += len(batch)
@@ -378,20 +232,7 @@ func (c *OSSClient) RecursiveDelete(prefix string, progress func(done, total int
 
 // DeleteAllObjects deletes every object in the configured bucket.
 func (c *OSSClient) DeleteAllObjects(progress func(done, total int, current string)) error {
-	return c.RecursiveDelete("", progress)
-}
-
-// GetTotalSize calculates total size of all objects under a prefix
-func (c *OSSClient) GetTotalSize(prefix string) (int64, int, error) {
-	objects, err := c.ListAllObjects(prefix)
-	if err != nil {
-		return 0, 0, err
-	}
-	var total int64
-	for _, obj := range objects {
-		total += obj.Size
-	}
-	return total, len(objects), nil
+	return c.deleteObjectsWithPrefix("", progress)
 }
 
 // GeneratePresignedURL generates a presigned download URL.
@@ -418,28 +259,8 @@ func (c *OSSClient) GetObjectContent(key string) (io.ReadCloser, error) {
 	return obj, nil
 }
 
-// GetObjectRange reads the inclusive byte range [start, end] from an object.
-// It intentionally is not part of FileStore yet: DOFS consumes this narrower
-// capability without forcing every existing FileStore test double to implement
-// range reads.
-func (c *OSSClient) GetObjectRange(key string, start, end int64) (io.ReadCloser, error) {
-	if start < 0 || end < start {
-		return nil, fmt.Errorf("invalid object range [%d,%d]", start, end)
-	}
-
-	opts := minio.GetObjectOptions{}
-	if err := opts.SetRange(start, end); err != nil {
-		return nil, fmt.Errorf("set object range [%d,%d]: %w", start, end, err)
-	}
-	obj, err := c.serverClient.GetObject(context.Background(), c.bucketName, key, opts)
-	if err != nil {
-		return nil, err
-	}
-	return obj, nil
-}
-
-// PutObject streams an object of a known size. DOFS uses this capability to
-// upload encrypted generations without buffering an entire file in memory.
+// PutObject is restricted to the offline backup/restore command path. Domus
+// HTTP handlers receive ControlStore, which does not expose this method.
 func (c *OSSClient) PutObject(key string, reader io.Reader, size int64) error {
 	if size < 0 {
 		return fmt.Errorf("invalid object size %d", size)
@@ -448,27 +269,6 @@ func (c *OSSClient) PutObject(key string, reader io.Reader, size int64) error {
 		context.Background(), c.bucketName, key, reader, size, minio.PutObjectOptions{},
 	)
 	return err
-}
-
-// PutObjectBytes writes binary data to an object
-func (c *OSSClient) PutObjectBytes(key string, data []byte) error {
-	r := bytes.NewReader(data)
-	_, err := c.serverClient.PutObject(context.Background(), c.bucketName, key, r, int64(len(data)), minio.PutObjectOptions{})
-	return err
-}
-
-// RenameObject renames (moves) a single object or directory
-func (c *OSSClient) RenameObject(oldKey, newKey string, isDir bool) error {
-	if isDir {
-		if !strings.HasSuffix(oldKey, "/") {
-			oldKey += "/"
-		}
-		if !strings.HasSuffix(newKey, "/") {
-			newKey += "/"
-		}
-		return c.RecursiveMove(oldKey, newKey, nil)
-	}
-	return c.MoveObject(oldKey, newKey)
 }
 
 // ---------------------------------------------------------------------------

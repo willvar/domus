@@ -1,7 +1,6 @@
 package model
 
 import (
-	"io"
 	"time"
 
 	"gorm.io/gorm"
@@ -132,16 +131,6 @@ type MockFileRepo struct {
 	GetFn                            func(userID, path string) (*FileRecord, error)
 	GetByIDFn                        func(userID string, id int64) (*FileRecord, error)
 	GetByStorageKeyFn                func(userID, objectKey string) (*FileRecord, error)
-	CommitGenerationFn               func(userID string, id, expectedGeneration int64, objectKey string, size int64) (bool, error)
-	CreateDOFSNodeFn                 func(userID, path, name, wrappedDEK string, isDir bool) (*FileRecord, error)
-	FinalizeDOFSFileFn               func(userID string, id int64, objectKey string) (bool, error)
-	AbortDOFSFileFn                  func(userID string, id int64) error
-	RemoveDOFSNodeFn                 func(userID, path string, isDir bool) (*FileRecord, error)
-	RenameDOFSNodeFn                 func(userID, oldPath, newPath, newName string, isDir, replace bool) (*FileRecord, *FileRecord, error)
-	ListCreatingDOFSNodesFn          func(userID string) ([]FileRecord, error)
-	ListDeletedDOFSNodesFn           func(userID string) ([]FileRecord, error)
-	PurgeDeletedDOFSNodeFn           func(userID string, id int64) (bool, error)
-	AcquireDOFSMountLeaseFn          func(userID string) (io.Closer, error)
 	DeleteFn                         func(userID, path string) error
 	DeleteByPrefixFn                 func(userID, prefix string) error
 	ListByPrefixFn                   func(userID, prefix string) ([]FileRecord, error)
@@ -152,9 +141,7 @@ type MockFileRepo struct {
 	UpdateThumbnailFn                func(userID, path, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) error
 	UpdateThumbnailIfGenerationFn    func(userID, path string, fileID, generation int64, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) (bool, error)
 	UpdateContentTypeFn              func(userID, path, contentType string) error
-	UpdateSearchVectorFn             func(userID, path, text string) error
 	SearchFilesFn                    func(userID, query string, limit int) ([]SearchFileResult, error)
-	HasFullTextSearchFn              func() bool
 	CreateUploadFn                   func(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, clientInstanceID string) error
 	GetUploadFn                      func(userID, uploadID string) (*FileRecord, error)
 	UpdateStatusFn                   func(uploadID, status string) error
@@ -187,75 +174,6 @@ func (m *MockFileRepo) GetByStorageKey(userID, objectKey string) (*FileRecord, e
 		return m.GetByStorageKeyFn(userID, objectKey)
 	}
 	return nil, gorm.ErrRecordNotFound
-}
-func (m *MockFileRepo) CommitGeneration(userID string, id, expectedGeneration int64, objectKey string, size int64) (bool, error) {
-	if m.CommitGenerationFn != nil {
-		return m.CommitGenerationFn(userID, id, expectedGeneration, objectKey, size)
-	}
-	return true, nil
-}
-func (m *MockFileRepo) CreateDOFSNode(userID, path, name, wrappedDEK string, isDir bool) (*FileRecord, error) {
-	if m.CreateDOFSNodeFn != nil {
-		return m.CreateDOFSNodeFn(userID, path, name, wrappedDEK, isDir)
-	}
-	status := "creating"
-	if isDir {
-		status = "ready"
-	}
-	return &FileRecord{ID: 1, UserID: userID, Path: path, Name: name, IsDir: isDir, WrappedDEK: wrappedDEK, Status: status}, nil
-}
-func (m *MockFileRepo) FinalizeDOFSFile(userID string, id int64, objectKey string) (bool, error) {
-	if m.FinalizeDOFSFileFn != nil {
-		return m.FinalizeDOFSFileFn(userID, id, objectKey)
-	}
-	return true, nil
-}
-func (m *MockFileRepo) AbortDOFSFile(userID string, id int64) error {
-	if m.AbortDOFSFileFn != nil {
-		return m.AbortDOFSFileFn(userID, id)
-	}
-	return nil
-}
-func (m *MockFileRepo) RemoveDOFSNode(userID, path string, isDir bool) (*FileRecord, error) {
-	if m.RemoveDOFSNodeFn != nil {
-		return m.RemoveDOFSNodeFn(userID, path, isDir)
-	}
-	return &FileRecord{ID: 1, UserID: userID, Path: path, IsDir: isDir, Status: "deleted"}, nil
-}
-func (m *MockFileRepo) RenameDOFSNode(userID, oldPath, newPath, newName string, isDir, replace bool) (*FileRecord, *FileRecord, error) {
-	if m.RenameDOFSNodeFn != nil {
-		return m.RenameDOFSNodeFn(userID, oldPath, newPath, newName, isDir, replace)
-	}
-	return &FileRecord{ID: 1, UserID: userID, Path: newPath, Name: newName, IsDir: isDir, Status: "ready"}, nil, nil
-}
-func (m *MockFileRepo) ListCreatingDOFSNodes(userID string) ([]FileRecord, error) {
-	if m.ListCreatingDOFSNodesFn != nil {
-		return m.ListCreatingDOFSNodesFn(userID)
-	}
-	return nil, nil
-}
-func (m *MockFileRepo) ListDeletedDOFSNodes(userID string) ([]FileRecord, error) {
-	if m.ListDeletedDOFSNodesFn != nil {
-		return m.ListDeletedDOFSNodesFn(userID)
-	}
-	return nil, nil
-}
-func (m *MockFileRepo) PurgeDeletedDOFSNode(userID string, id int64) (bool, error) {
-	if m.PurgeDeletedDOFSNodeFn != nil {
-		return m.PurgeDeletedDOFSNodeFn(userID, id)
-	}
-	return true, nil
-}
-
-type mockDOFSLease struct{}
-
-func (mockDOFSLease) Close() error { return nil }
-
-func (m *MockFileRepo) AcquireDOFSMountLease(userID string) (io.Closer, error) {
-	if m.AcquireDOFSMountLeaseFn != nil {
-		return m.AcquireDOFSMountLeaseFn(userID)
-	}
-	return mockDOFSLease{}, nil
 }
 func (m *MockFileRepo) Delete(userID, path string) error {
 	if m.DeleteFn != nil {
@@ -319,23 +237,11 @@ func (m *MockFileRepo) UpdateContentType(userID, path, contentType string) error
 	}
 	return nil
 }
-func (m *MockFileRepo) UpdateSearchVector(userID, path, text string) error {
-	if m.UpdateSearchVectorFn != nil {
-		return m.UpdateSearchVectorFn(userID, path, text)
-	}
-	return nil
-}
 func (m *MockFileRepo) SearchFiles(userID, query string, limit int) ([]SearchFileResult, error) {
 	if m.SearchFilesFn != nil {
 		return m.SearchFilesFn(userID, query, limit)
 	}
 	return []SearchFileResult{}, nil
-}
-func (m *MockFileRepo) HasFullTextSearch() bool {
-	if m.HasFullTextSearchFn != nil {
-		return m.HasFullTextSearchFn()
-	}
-	return false
 }
 func (m *MockFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, clientInstanceID string) error {
 	if m.CreateUploadFn != nil {
@@ -503,17 +409,14 @@ func (m *MockAuditRepo) ListLogs(filter AuditFilter) ([]AuditLog, int64, error) 
 type MockShareRepo struct {
 	CreateFn          func(share *Share) error
 	GetByIDFn         func(shareID string) (*Share, error)
-	ListForFileFn     func(ownerID, filePath string) ([]Share, error)
+	GetByDatabaseIDFn func(id int64) (*Share, error)
 	ListOwnedByUserFn func(ownerID string) ([]Share, error)
 	ListForUserFn     func(targetUserID string) ([]Share, error)
 	ListAsFilesFn     func(targetUserID string) ([]ShareFileView, error)
 	DeleteFn          func(id int64, userID string) (bool, error)
 	UpdateFileSizeFn  func(shareID string, newSize int64) error
-	DeleteByPathFn    func(ownerID, filePath string) error
-	DeleteByPrefixFn  func(ownerID, prefix string) error
-	MoveByPathFn      func(ownerID, oldPath, newPath string) error
-	MoveByPrefixFn    func(ownerID, oldPrefix, newPrefix string) error
-	GetForUserFn      func(filePath, targetUserID string) (*Share, error)
+	SyncByInodeFn     func(ownerID string, inode int64, filePath, fileName string, fileSize int64, contentType string) error
+	DeleteByInodeFn   func(ownerID string, inode int64) error
 }
 
 func (m *MockShareRepo) Create(share *Share) error {
@@ -528,11 +431,11 @@ func (m *MockShareRepo) GetByID(shareID string) (*Share, error) {
 	}
 	return &Share{ShareID: shareID}, nil
 }
-func (m *MockShareRepo) ListForFile(ownerID, filePath string) ([]Share, error) {
-	if m.ListForFileFn != nil {
-		return m.ListForFileFn(ownerID, filePath)
+func (m *MockShareRepo) GetByDatabaseID(id int64) (*Share, error) {
+	if m.GetByDatabaseIDFn != nil {
+		return m.GetByDatabaseIDFn(id)
 	}
-	return []Share{}, nil
+	return nil, gorm.ErrRecordNotFound
 }
 func (m *MockShareRepo) ListOwnedByUser(ownerID string) ([]Share, error) {
 	if m.ListOwnedByUserFn != nil {
@@ -564,35 +467,17 @@ func (m *MockShareRepo) UpdateFileSize(shareID string, newSize int64) error {
 	}
 	return nil
 }
-func (m *MockShareRepo) DeleteByPath(ownerID, filePath string) error {
-	if m.DeleteByPathFn != nil {
-		return m.DeleteByPathFn(ownerID, filePath)
+func (m *MockShareRepo) SyncByInode(ownerID string, inode int64, filePath, fileName string, fileSize int64, contentType string) error {
+	if m.SyncByInodeFn != nil {
+		return m.SyncByInodeFn(ownerID, inode, filePath, fileName, fileSize, contentType)
 	}
 	return nil
 }
-func (m *MockShareRepo) DeleteByPrefix(ownerID, prefix string) error {
-	if m.DeleteByPrefixFn != nil {
-		return m.DeleteByPrefixFn(ownerID, prefix)
+func (m *MockShareRepo) DeleteByInode(ownerID string, inode int64) error {
+	if m.DeleteByInodeFn != nil {
+		return m.DeleteByInodeFn(ownerID, inode)
 	}
 	return nil
-}
-func (m *MockShareRepo) MoveByPath(ownerID, oldPath, newPath string) error {
-	if m.MoveByPathFn != nil {
-		return m.MoveByPathFn(ownerID, oldPath, newPath)
-	}
-	return nil
-}
-func (m *MockShareRepo) MoveByPrefix(ownerID, oldPrefix, newPrefix string) error {
-	if m.MoveByPrefixFn != nil {
-		return m.MoveByPrefixFn(ownerID, oldPrefix, newPrefix)
-	}
-	return nil
-}
-func (m *MockShareRepo) GetForUser(filePath, targetUserID string) (*Share, error) {
-	if m.GetForUserFn != nil {
-		return m.GetForUserFn(filePath, targetUserID)
-	}
-	return nil, nil
 }
 
 // --- MockWorkspaceRepo ---

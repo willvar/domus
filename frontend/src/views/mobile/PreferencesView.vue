@@ -13,7 +13,7 @@ const prefs = prefsApi.prefs
 
 const largeFileLabel = computed(() => `${prefs.largeFileLimitMB} MB`)
 
-function toggleBool(key: 'indexContent' | 'sessionIsolation' | 'alwaysCenter'): void {
+function toggleBool(key: 'sessionIsolation' | 'alwaysCenter'): void {
   prefsApi.update({ [key]: !prefs[key] })
 }
 
@@ -39,10 +39,6 @@ function adjustLimit(delta: number): void {
             <button @click="adjustLimit(-16)">-</button>
             <button @click="adjustLimit(16)">+</button>
           </div>
-        </div>
-        <div class="prefs-row">
-          <div><strong>{{ t('mobile.preferences.index_content') }}</strong><span>{{ t('mobile.preferences.index_content_hint') }}</span></div>
-          <button class="prefs-toggle" :class="{ on: prefs.indexContent }" @click="toggleBool('indexContent')">{{ prefs.indexContent ? t('common.enabled') : t('common.disabled') }}</button>
         </div>
         <div class="prefs-row">
           <div><strong>{{ t('mobile.preferences.session_isolation') }}</strong><span>{{ t('mobile.preferences.session_isolation_hint') }}</span></div>

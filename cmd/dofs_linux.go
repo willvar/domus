@@ -4,7 +4,6 @@ package cmd
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -21,14 +20,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hanwen/go-fuse/v2/fuse"
+	dofscore "github.com/willvar/dofs"
 	"gorm.io/gorm"
 
 	"domus/config"
 	"domus/internal/auth"
 	"domus/internal/dofs"
+	"domus/internal/dofsbridge"
 	"domus/internal/model"
-	"domus/internal/store"
 	"domus/shared/logger"
 )
 
@@ -124,7 +123,7 @@ func runDOFSMount(configPath string, options dofsMountOptions) error {
 	if err != nil {
 		return err
 	}
-	if err := dofs.ValidateHostRequirements(options.allowOther); err != nil {
+	if err := dofscore.ValidateHostRequirements(options.allowOther); err != nil {
 		return err
 	}
 
@@ -138,7 +137,7 @@ func runDOFSMount(configPath string, options dofsMountOptions) error {
 	}
 	defer zeroSecret(serverKey)
 
-	db, hasFTS, err := model.InitDB(cfg.Database)
+	db, err := model.InitDB(cfg.Database)
 	if err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
@@ -147,41 +146,27 @@ func runDOFSMount(configPath string, options dofsMountOptions) error {
 		return fmt.Errorf("get database handle: %w", err)
 	}
 	defer func() { _ = sqlDB.Close() }()
-	repos := model.NewRepos(db, hasFTS, nil)
+	repos := model.NewRepos(db, nil)
 
 	user, err := repos.Users.GetByUsername(options.username)
 	if err != nil {
 		return fmt.Errorf("find user %q: %w", options.username, err)
 	}
-	wrappedKEK, err := hex.DecodeString(user.WrappedKEK)
-	if err != nil {
-		return fmt.Errorf("decode user KEK: %w", err)
-	}
-	kek, err := auth.UnwrapKEK(serverKey, wrappedKEK)
-	if err != nil {
-		return fmt.Errorf("unwrap user KEK: %w", err)
-	}
-	defer zeroSecret(kek)
-
-	fileStore, err := store.NewOSSClient(cfg.OSS)
-	if err != nil {
-		return fmt.Errorf("initialize OSS: %w", err)
-	}
-	rangeStore, ok := fileStore.(dofs.RangeObjectStore)
-	if !ok {
-		return errors.New("configured OSS store does not support range reads")
-	}
-
-	backend, err := dofs.NewBackend(user.ID, user.Username, kek, repos.Files, rangeStore)
+	runtime, err := dofsbridge.Open(context.Background(), db, cfg, serverKey, repos.Users)
 	if err != nil {
 		return err
 	}
-	defer backend.Close()
+	defer runtime.Close()
+	if err := runtime.EnsureUser(context.Background(), user); err != nil {
+		return err
+	}
+	backend, err := dofscore.NewBackend(context.Background(), user.ID, runtime.Metadata, runtime.Objects, runtime.Keys,
+		dofscore.BackendOptions{Writable: options.writable})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = backend.Close() }()
 	if options.writable {
-		generationStore, ok := fileStore.(dofs.GenerationObjectStore)
-		if !ok {
-			return errors.New("configured OSS store does not support generation writes")
-		}
 		stateDir := strings.TrimSpace(options.stateDir)
 		if stateDir == "" {
 			cacheRoot, err := os.UserCacheDir()
@@ -190,13 +175,13 @@ func runDOFSMount(configPath string, options dofsMountOptions) error {
 			}
 			stateDir = filepath.Join(cacheRoot, "domus", "dofs", user.ID)
 		}
-		if err := backend.EnableWriteback(stateDir, repos.Files, generationStore); err != nil {
+		if err := backend.EnableWriteback(context.Background(), stateDir); err != nil {
 			return err
 		}
 		logger.Info("DOFS writeback state: %s", stateDir)
 	}
 
-	server, err := dofs.Mount(mountpoint, backend, dofs.MountOptions{
+	server, err := dofscore.Mount(mountpoint, backend, dofscore.MountOptions{
 		Debug:      options.debug,
 		AllowOther: options.allowOther,
 		UID:        options.uid,
@@ -276,7 +261,7 @@ func runDOFSServe(configPath string, overrides dofsServeOptions) error {
 	if err := cfg.ValidateDOFS(); err != nil {
 		return err
 	}
-	if err := dofs.ValidateHostRequirements(cfg.DOFS.AllowOther); err != nil {
+	if err := dofscore.ValidateHostRequirements(cfg.DOFS.AllowOther); err != nil {
 		return fmt.Errorf("validate DOFS host: %w", err)
 	}
 	if err := logger.InitFromConfig(&cfg.Log); err != nil {
@@ -289,7 +274,7 @@ func runDOFSServe(configPath string, overrides dofsServeOptions) error {
 	}
 	defer zeroSecret(serverKey)
 
-	db, hasFTS, err := model.InitDB(cfg.Database)
+	db, err := model.InitDB(cfg.Database)
 	if err != nil {
 		return fmt.Errorf("initialize database: %w", err)
 	}
@@ -301,19 +286,18 @@ func runDOFSServe(configPath string, overrides dofsServeOptions) error {
 	sqlDB.SetMaxIdleConns(8)
 	sqlDB.SetConnMaxIdleTime(5 * time.Minute)
 	defer func() { _ = sqlDB.Close() }()
-	repos := model.NewRepos(db, hasFTS, nil)
+	repos := model.NewRepos(db, nil)
 
-	fileStore, err := store.NewOSSClient(cfg.OSS)
+	runtime, err := dofsbridge.Open(context.Background(), db, cfg, serverKey, repos.Users)
 	if err != nil {
-		return fmt.Errorf("initialize OSS: %w", err)
+		return err
 	}
-	rangeStore, ok := fileStore.(dofs.RangeObjectStore)
-	if !ok {
-		return errors.New("configured OSS store does not support range reads")
+	defer runtime.Close()
+	if err := runtime.Check(context.Background()); err != nil {
+		return fmt.Errorf("check independent DOFS runtime: %w", err)
 	}
-	generationStore, ok := fileStore.(dofs.GenerationObjectStore)
-	if cfg.DOFS.Writable && !ok {
-		return errors.New("configured OSS store does not support generation writes")
+	if err := runtime.EnsureAllUsers(context.Background()); err != nil {
+		return err
 	}
 
 	socketGID, socketMode, err := resolveDOFSSocketAccess(cfg.DOFS.SocketGroup)
@@ -321,11 +305,7 @@ func runDOFSServe(configPath string, overrides dofsServeOptions) error {
 		return err
 	}
 	provider := &productionDOFSMountProvider{
-		serverKey:       serverKey,
-		users:           repos.Users,
-		files:           repos.Files,
-		rangeStore:      rangeStore,
-		generationStore: generationStore,
+		users: repos.Users, runtime: runtime,
 	}
 	manager, err := dofs.NewManager(dofs.ManagerOptions{
 		MountRoot:     cfg.DOFS.MountRoot,
@@ -417,11 +397,8 @@ func resolveDOFSSocketAccess(group string) (int, os.FileMode, error) {
 }
 
 type productionDOFSMountProvider struct {
-	serverKey       []byte
-	users           model.UserRepo
-	files           model.FileRepo
-	rangeStore      dofs.RangeObjectStore
-	generationStore dofs.GenerationObjectStore
+	users   model.UserRepo
+	runtime *dofsbridge.Runtime
 }
 
 func (p *productionDOFSMountProvider) ResolveUser(ctx context.Context, selector dofs.MountUserSelector) (dofs.MountIdentity, error) {
@@ -473,57 +450,54 @@ func (p *productionDOFSMountProvider) Mount(
 	if resolved.Username != identity.Username {
 		return nil, errors.New("DOFS user identity changed during mount")
 	}
-	wrappedKEK, err := hex.DecodeString(resolved.WrappedKEK)
-	if err != nil {
-		return nil, fmt.Errorf("decode user KEK: %w", err)
+	if p.runtime == nil {
+		return nil, errors.New("independent DOFS runtime is unavailable")
 	}
-	kek, err := auth.UnwrapKEK(p.serverKey, wrappedKEK)
-	if err != nil {
-		return nil, fmt.Errorf("unwrap user KEK: %w", err)
+	if err := p.runtime.EnsureUser(ctx, resolved); err != nil {
+		return nil, err
 	}
-	defer zeroSecret(kek)
-	backend, err := dofs.NewBackend(identity.UserID, identity.Username, kek, p.files, p.rangeStore)
+	backend, err := dofscore.NewBackend(ctx, identity.UserID, p.runtime.Metadata, p.runtime.Objects, p.runtime.Keys,
+		dofscore.BackendOptions{Writable: options.Writable})
 	if err != nil {
 		return nil, err
 	}
 	if options.Writable {
-		if p.generationStore == nil {
-			backend.Close()
-			return nil, errors.New("generation object store is required for writable DOFS")
-		}
-		if err := backend.EnableWriteback(stateDirectory, p.files, p.generationStore); err != nil {
-			backend.Close()
+		if err := backend.EnableWriteback(ctx, stateDirectory); err != nil {
+			_ = backend.Close()
 			return nil, err
 		}
 		if backend.LeaseLost() == nil {
-			backend.Close()
+			_ = backend.Close()
 			return nil, errors.New("production writable DOFS lease does not support health checks")
 		}
 	}
 	if err := ctx.Err(); err != nil {
-		backend.Close()
+		_ = backend.Close()
 		return nil, err
 	}
-	server, err := dofs.Mount(mountpoint, backend, options)
+	server, err := dofscore.Mount(mountpoint, backend, dofscore.MountOptions{
+		Debug: options.Debug, AllowOther: options.AllowOther,
+		UID: options.UID, GID: options.GID, Writable: options.Writable,
+	})
 	if err != nil {
-		backend.Close()
+		_ = backend.Close()
 		return nil, err
 	}
 	return newProductionDOFSMount(server, backend), nil
 }
 
 type productionDOFSMount struct {
-	server    *fuse.Server
+	server    dofscore.MountedFilesystem
 	done      chan struct{}
 	failures  chan error
 	unmountMu sync.Mutex
 }
 
-func newProductionDOFSMount(server *fuse.Server, backend *dofs.Backend) *productionDOFSMount {
+func newProductionDOFSMount(server dofscore.MountedFilesystem, backend *dofscore.Backend) *productionDOFSMount {
 	mount := &productionDOFSMount{server: server, done: make(chan struct{}), failures: make(chan error, 2)}
 	go func() {
 		server.Wait()
-		backend.Close()
+		_ = backend.Close()
 		close(mount.done)
 	}()
 	if leaseLost := backend.LeaseLost(); leaseLost != nil {
@@ -534,7 +508,7 @@ func newProductionDOFSMount(server *fuse.Server, backend *dofs.Backend) *product
 			case <-leaseLost:
 				leaseErr := backend.LeaseError()
 				if leaseErr == nil {
-					leaseErr = dofs.ErrMountLeaseLost
+					leaseErr = dofscore.ErrLeaseLost
 				}
 				mount.reportFailure(leaseErr)
 				if err := mount.Unmount(); err != nil {

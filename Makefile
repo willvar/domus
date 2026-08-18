@@ -77,10 +77,10 @@ test-e2e: workspace-image-local
 	npm --prefix frontend run test:e2e
 
 test-dofs:
-	DOFS_FUSE_INTEGRATION=1 go test ./internal/dofs -run 'Test(FUSEMount|ManagerOwnsRealFUSE)' -v -count=1
+	$(MAKE) -C ../dofs test-fuse
 
 test-dofs-docker: workspace-image-local
-	DOFS_DOCKER_INTEGRATION=1 DOFS_DOCKER_IMAGE="$(WORKSPACE_IMAGE)" go test ./internal/dofs -run TestFUSEBindMountIntoDocker -v -count=1
+	DOFS_DOCKER_IMAGE="$(WORKSPACE_IMAGE)" $(MAKE) -C ../dofs test-docker
 
 workspace-image:
 	docker build --pull -t "$(WORKSPACE_IMAGE)" deploy/workspace

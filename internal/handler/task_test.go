@@ -31,8 +31,13 @@ func TestRootCancelUploadCleansTaskOwnerNamespace(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+	upload, err := repositories.Files.GetUpload(owner.ID, uploadID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expectedObjectKey := ".dofs/test-objects/" + owner.ID + "/" + uploadID
 
-	var abortedKey, abortedID, deletedKey string
+	var abortedKey, abortedID string
 	h := &Handler{
 		Repos: repositories,
 		Hub:   ws.NewHub(),
@@ -41,21 +46,17 @@ func TestRootCancelUploadCleansTaskOwnerNamespace(t *testing.T) {
 				abortedKey, abortedID = key, id
 				return nil
 			},
-			DeleteObjectFn: func(key string) error {
-				deletedKey = key
-				return nil
-			},
 		},
 	}
 	rootSession := &model.Session{UserID: root.ID, Username: root.Username, Role: root.Role}
 	if err := h.cancelTask(rootSession, taskID); err != nil {
 		t.Fatalf("cancelTask() error = %v", err)
 	}
-	if abortedKey != objectPath || abortedID != ossUploadID {
-		t.Fatalf("aborted multipart = (%q, %q), want (%q, %q)", abortedKey, abortedID, objectPath, ossUploadID)
+	if upload.StorageKey() != expectedObjectKey {
+		t.Fatalf("test upload object key = %q, want %q", upload.StorageKey(), expectedObjectKey)
 	}
-	if deletedKey != objectPath {
-		t.Fatalf("deleted object = %q, want %q", deletedKey, objectPath)
+	if abortedKey != expectedObjectKey || abortedID != ossUploadID {
+		t.Fatalf("aborted multipart = (%q, %q), want (%q, %q)", abortedKey, abortedID, expectedObjectKey, ossUploadID)
 	}
 	if _, err := repositories.Files.Get(owner.ID, objectPath); err == nil {
 		t.Fatal("owner upload record still exists")

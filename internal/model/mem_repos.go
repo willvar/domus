@@ -4,8 +4,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"io"
-	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -37,15 +35,14 @@ func NewMemRepos(onTaskUpdate TaskUpdateFunc) *Repos {
 	}
 
 	return &Repos{
-		onTaskUpdate: onTaskUpdate,
-		Users:        users,
-		Files:        files,
-		Sessions:     sessions,
-		Tasks:        tasks,
-		Audit:        audit,
-		Shares:       shares,
-		Workspace:    workspace,
-		Cleanup:      cleanup,
+		Users:     users,
+		Files:     files,
+		Sessions:  sessions,
+		Tasks:     tasks,
+		Audit:     audit,
+		Shares:    shares,
+		Workspace: workspace,
+		Cleanup:   cleanup,
 	}
 }
 
@@ -235,35 +232,6 @@ type memFileRepo struct {
 	mu     sync.Mutex
 	data   map[string]*FileRecord // key = userID + ":" + path
 	nextID int64
-	leases map[string]bool
-}
-
-type memDOFSLease struct {
-	repo   *memFileRepo
-	userID string
-	once   sync.Once
-}
-
-func (l *memDOFSLease) Close() error {
-	l.once.Do(func() {
-		l.repo.mu.Lock()
-		defer l.repo.mu.Unlock()
-		delete(l.repo.leases, l.userID)
-	})
-	return nil
-}
-
-func (r *memFileRepo) AcquireDOFSMountLease(userID string) (io.Closer, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.leases == nil {
-		r.leases = make(map[string]bool)
-	}
-	if r.leases[userID] {
-		return nil, ErrDOFSMountBusy
-	}
-	r.leases[userID] = true
-	return &memDOFSLease{repo: r, userID: userID}, nil
 }
 
 func fileKey(userID, path string) string { return userID + ":" + path }
@@ -295,10 +263,6 @@ func (r *memFileRepo) Upsert(userID, path, name string, isDir bool, size int64, 
 			rec.ObjectKey = opts[0].ObjectKey
 		}
 		if !isDir {
-			if rec.ObjectKey == "" {
-				rec.ObjectKey = path
-			}
-			rec.HasObjectGenerations = strings.HasPrefix(rec.ObjectKey, ".dofs/objects/")
 			rec.Generation = 1
 		}
 		r.nextID++
@@ -319,10 +283,6 @@ func (r *memFileRepo) Upsert(userID, path, name string, isDir bool, size int64, 
 		existing.WrappedDEK = opts[0].WrappedDEK
 	}
 	if !isDir {
-		if existing.HasObjectGenerations || strings.HasPrefix(existing.ObjectKey, ".dofs/objects/") {
-			existing.HasObjectGenerations = true
-		}
-		existing.ObjectKey = path
 		if len(opts) > 0 && opts[0].ObjectKey != "" {
 			existing.ObjectKey = opts[0].ObjectKey
 		}
@@ -387,264 +347,8 @@ func (r *memFileRepo) retireLinkedThumbnailLocked(source *FileRecord) {
 		}
 	}
 	if thumbnail != nil {
-		r.tombstoneDOFSRecordLocked(thumbnail)
+		delete(r.data, fileKey(thumbnail.UserID, thumbnail.Path))
 	}
-}
-
-func (r *memFileRepo) CommitGeneration(userID string, id, expectedGeneration int64, objectKey string, size int64) (bool, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var current *FileRecord
-	for _, rec := range r.data {
-		if rec.UserID == userID && rec.ID == id && !rec.IsDir && (rec.Status == "ready" || rec.Status == "deleted") {
-			current = rec
-			break
-		}
-	}
-	if current == nil || current.Generation != expectedGeneration {
-		return false, nil
-	}
-	r.retireLinkedThumbnailLocked(current)
-	if current.LegacyObjectKey == "" && !strings.HasPrefix(current.StorageKey(), ".dofs/objects/") {
-		current.LegacyObjectKey = current.StorageKey()
-	}
-	current.ObjectKey = objectKey
-	current.HasObjectGenerations = true
-	current.Generation = expectedGeneration + 1
-	current.Size = size
-	current.ContentHash = ""
-	current.ThumbnailKey = ""
-	current.ThumbnailWrappedDEK = ""
-	current.MediaWidth = 0
-	current.MediaHeight = 0
-	current.MediaDuration = 0
-	current.UpdatedAt = time.Now()
-	return true, nil
-}
-
-func (r *memFileRepo) CreateDOFSNode(userID, filePath, name, wrappedDEK string, isDir bool) (*FileRecord, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	parent := memParentOf(filePath)
-	for _, existing := range r.data {
-		if existing.UserID == userID && existing.Parent == parent && existing.Name == name && existing.Status != "deleted" {
-			return nil, ErrFileExists
-		}
-	}
-	if _, exists := r.data[fileKey(userID, filePath)]; exists {
-		return nil, ErrFileExists
-	}
-	status := "creating"
-	if isDir {
-		status = "ready"
-	}
-	now := time.Now()
-	record := &FileRecord{
-		ID: r.nextID, UserID: userID, Path: filePath, Parent: parent, Name: name,
-		IsDir: isDir, WrappedDEK: wrappedDEK, Status: status,
-		CreatedAt: now, UpdatedAt: now,
-	}
-	r.nextID++
-	r.data[fileKey(userID, filePath)] = record
-	copy := *record
-	return &copy, nil
-}
-
-func (r *memFileRepo) FinalizeDOFSFile(userID string, id int64, objectKey string) (bool, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, record := range r.data {
-		if record.UserID == userID && record.ID == id && !record.IsDir && record.Status == "creating" && record.Generation == 0 {
-			record.ObjectKey = objectKey
-			record.HasObjectGenerations = true
-			record.Generation = 1
-			record.Status = "ready"
-			record.UpdatedAt = time.Now()
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func (r *memFileRepo) AbortDOFSFile(userID string, id int64) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for key, record := range r.data {
-		if record.UserID == userID && record.ID == id && record.Status == "creating" {
-			delete(r.data, key)
-			break
-		}
-	}
-	return nil
-}
-
-func (r *memFileRepo) tombstoneDOFSRecordLocked(record *FileRecord) {
-	delete(r.data, fileKey(record.UserID, record.Path))
-	if record.ObjectKey == "" {
-		record.ObjectKey = record.Path
-	}
-	token := fmt.Sprintf("%d-%s", record.ID, uuid.NewString())
-	record.Path = DOFSDeletedRoot(record.UserID) + token
-	record.Parent = DOFSDeletedRoot(record.UserID)
-	record.Name = token
-	record.Status = "deleted"
-	record.UpdatedAt = time.Now()
-	r.data[fileKey(record.UserID, record.Path)] = record
-}
-
-func (r *memFileRepo) RemoveDOFSNode(userID, filePath string, isDir bool) (*FileRecord, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	record, exists := r.data[fileKey(userID, filePath)]
-	if !exists || record.Status != "ready" {
-		return nil, gorm.ErrRecordNotFound
-	}
-	if record.IsDir != isDir {
-		return nil, ErrNodeTypeMismatch
-	}
-	if isDir {
-		for _, child := range r.data {
-			if child.UserID == userID && child.Parent == record.Path && child.Status != "deleted" {
-				return nil, ErrDirectoryNotEmpty
-			}
-		}
-	}
-	r.retireLinkedThumbnailLocked(record)
-	r.tombstoneDOFSRecordLocked(record)
-	copy := *record
-	return &copy, nil
-}
-
-func (r *memFileRepo) RenameDOFSNode(userID, oldPath, newPath, newName string, isDir, replace bool) (*FileRecord, *FileRecord, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	source, exists := r.data[fileKey(userID, oldPath)]
-	if !exists || source.Status != "ready" {
-		return nil, nil, gorm.ErrRecordNotFound
-	}
-	if source.IsDir != isDir {
-		return nil, nil, ErrNodeTypeMismatch
-	}
-	if oldPath == newPath {
-		copy := *source
-		return &copy, nil, nil
-	}
-
-	var destination *FileRecord
-	newParent := memParentOf(newPath)
-	for _, candidate := range r.data {
-		if candidate.UserID == userID && candidate.Parent == newParent && candidate.Name == newName && candidate.Status != "deleted" {
-			destination = candidate
-			break
-		}
-	}
-	var replaced *FileRecord
-	if destination != nil && destination.ID != source.ID {
-		if !replace {
-			return nil, nil, ErrFileExists
-		}
-		if destination.Status != "ready" {
-			return nil, nil, ErrFileExists
-		}
-		if destination.IsDir != source.IsDir {
-			return nil, nil, ErrNodeTypeMismatch
-		}
-		if destination.IsDir {
-			for _, child := range r.data {
-				if child.UserID == userID && child.Parent == destination.Path && child.Status != "deleted" {
-					return nil, nil, ErrDirectoryNotEmpty
-				}
-			}
-		}
-		r.retireLinkedThumbnailLocked(destination)
-		r.tombstoneDOFSRecordLocked(destination)
-		copy := *destination
-		replaced = &copy
-	}
-
-	now := time.Now()
-	if !source.IsDir {
-		delete(r.data, fileKey(userID, source.Path))
-		if source.ObjectKey == "" {
-			source.ObjectKey = source.Path
-		}
-		source.Path = newPath
-		source.Parent = newParent
-		source.Name = newName
-		source.UpdatedAt = now
-		r.data[fileKey(userID, source.Path)] = source
-	} else {
-		for _, candidate := range r.data {
-			if candidate.UserID == userID && candidate.Status != "deleted" && strings.HasPrefix(candidate.Path, newPath) {
-				return nil, nil, ErrFileExists
-			}
-		}
-		var moving []*FileRecord
-		for key, candidate := range r.data {
-			if candidate.UserID != userID || candidate.Status == "deleted" || !strings.HasPrefix(candidate.Path, oldPath) {
-				continue
-			}
-			delete(r.data, key)
-			moving = append(moving, candidate)
-		}
-		for _, candidate := range moving {
-			oldCandidatePath := candidate.Path
-			if candidate.ObjectKey == "" {
-				candidate.ObjectKey = oldCandidatePath
-			}
-			candidate.Path = newPath + oldCandidatePath[len(oldPath):]
-			if candidate.ID == source.ID {
-				candidate.Parent = newParent
-				candidate.Name = newName
-			} else {
-				candidate.Parent = newPath + candidate.Parent[len(oldPath):]
-			}
-			candidate.UpdatedAt = now
-			r.data[fileKey(userID, candidate.Path)] = candidate
-		}
-	}
-	copy := *source
-	return &copy, replaced, nil
-}
-
-func (r *memFileRepo) ListCreatingDOFSNodes(userID string) ([]FileRecord, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var records []FileRecord
-	for _, record := range r.data {
-		if record.UserID == userID && record.Status == "creating" {
-			recordCopy := *record
-			records = append(records, recordCopy)
-		}
-	}
-	sort.Slice(records, func(i, j int) bool { return records[i].ID < records[j].ID })
-	return records, nil
-}
-
-func (r *memFileRepo) ListDeletedDOFSNodes(userID string) ([]FileRecord, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var records []FileRecord
-	for _, record := range r.data {
-		if record.UserID == userID && record.Status == "deleted" {
-			recordCopy := *record
-			records = append(records, recordCopy)
-		}
-	}
-	sort.Slice(records, func(i, j int) bool { return records[i].ID < records[j].ID })
-	return records, nil
-}
-
-func (r *memFileRepo) PurgeDeletedDOFSNode(userID string, id int64) (bool, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for key, record := range r.data {
-		if record.UserID == userID && record.ID == id && record.Status == "deleted" {
-			delete(r.data, key)
-			return true, nil
-		}
-	}
-	return false, nil
 }
 
 func (r *memFileRepo) Delete(userID, path string) error {
@@ -722,9 +426,6 @@ func (r *memFileRepo) Move(userID, oldPath, newPath, newName string) error {
 	rec.Path = newPath
 	rec.Parent = memParentOf(newPath)
 	rec.Name = newName
-	if rec.ObjectKey == "" || rec.ObjectKey == oldPath {
-		rec.ObjectKey = newPath
-	}
 	rec.UpdatedAt = time.Now()
 	r.data[fileKey(userID, newPath)] = rec
 	return nil
@@ -744,9 +445,6 @@ func (r *memFileRepo) MoveByPrefix(userID, oldPrefix, newPrefix string) error {
 	for _, rec := range toMove {
 		rec.Path = newPrefix + rec.Path[len(oldPrefix):]
 		rec.Parent = strings.Replace(rec.Parent, oldPrefix, newPrefix, 1)
-		if strings.HasPrefix(rec.ObjectKey, oldPrefix) {
-			rec.ObjectKey = newPrefix + rec.ObjectKey[len(oldPrefix):]
-		}
 		rec.UpdatedAt = now
 		r.data[fileKey(userID, rec.Path)] = rec
 	}
@@ -803,9 +501,6 @@ func (r *memFileRepo) UpdateContentType(userID, path, contentType string) error 
 	return nil
 }
 
-func (r *memFileRepo) UpdateSearchVector(_, _, _ string) error { return nil }
-func (r *memFileRepo) HasFullTextSearch() bool                 { return false }
-
 func (r *memFileRepo) SearchFiles(userID, query string, limit int) ([]SearchFileResult, error) {
 	if limit <= 0 {
 		limit = 50
@@ -838,6 +533,7 @@ func (r *memFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, 
 		ID:               r.nextID,
 		UserID:           userID,
 		Path:             path,
+		ObjectKey:        ".dofs/test-objects/" + userID + "/" + uploadID,
 		Parent:           memParentOf(path),
 		Name:             name,
 		Size:             fileSize,
@@ -1184,6 +880,9 @@ type memShareRepo struct {
 func (r *memShareRepo) Create(share *Share) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if share == nil || share.FileInode <= 0 {
+		return ErrInvalidShareInode
+	}
 	if share.ID == 0 {
 		share.ID = r.nextID
 		r.nextID++
@@ -1207,18 +906,16 @@ func (r *memShareRepo) GetByID(shareID string) (*Share, error) {
 	return &c, nil
 }
 
-func (r *memShareRepo) ListForFile(ownerID, filePath string) ([]Share, error) {
+func (r *memShareRepo) GetByDatabaseID(id int64) (*Share, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var out []Share
-	for _, s := range r.data {
-		if s.OwnerID == ownerID && s.FilePath == filePath {
-			c := *s
-			out = append(out, c)
+	for _, share := range r.data {
+		if share.ID == id {
+			copy := *share
+			return &copy, nil
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
-	return out, nil
+	return nil, gorm.ErrRecordNotFound
 }
 
 func (r *memShareRepo) ListOwnedByUser(ownerID string) ([]Share, error) {
@@ -1294,61 +991,27 @@ func (r *memShareRepo) UpdateFileSize(shareID string, newSize int64) error {
 	return nil
 }
 
-func (r *memShareRepo) DeleteByPath(ownerID, filePath string) error {
+func (r *memShareRepo) SyncByInode(ownerID string, inode int64, filePath, fileName string, fileSize int64, contentType string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for shareID, s := range r.data {
-		if s.OwnerID == ownerID && s.FilePath == filePath {
+	for _, share := range r.data {
+		if share.OwnerID == ownerID && share.FileInode == inode {
+			share.FilePath, share.FileName, share.FileSize = filePath, fileName, fileSize
+			share.ContentType = contentType
+		}
+	}
+	return nil
+}
+
+func (r *memShareRepo) DeleteByInode(ownerID string, inode int64) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for shareID, share := range r.data {
+		if share.OwnerID == ownerID && share.FileInode == inode {
 			delete(r.data, shareID)
 		}
 	}
 	return nil
-}
-
-func (r *memShareRepo) DeleteByPrefix(ownerID, prefix string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for shareID, s := range r.data {
-		if s.OwnerID == ownerID && strings.HasPrefix(s.FilePath, prefix) {
-			delete(r.data, shareID)
-		}
-	}
-	return nil
-}
-
-func (r *memShareRepo) MoveByPath(ownerID, oldPath, newPath string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, s := range r.data {
-		if s.OwnerID == ownerID && s.FilePath == oldPath {
-			s.FilePath = newPath
-			s.FileName = filepath.Base(newPath)
-		}
-	}
-	return nil
-}
-
-func (r *memShareRepo) MoveByPrefix(ownerID, oldPrefix, newPrefix string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, s := range r.data {
-		if s.OwnerID == ownerID && strings.HasPrefix(s.FilePath, oldPrefix) {
-			s.FilePath = strings.Replace(s.FilePath, oldPrefix, newPrefix, 1)
-		}
-	}
-	return nil
-}
-
-func (r *memShareRepo) GetForUser(filePath, targetUserID string) (*Share, error) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	for _, s := range r.data {
-		if s.FilePath == filePath && s.TargetUserID == targetUserID {
-			c := *s
-			return &c, nil
-		}
-	}
-	return nil, gorm.ErrRecordNotFound
 }
 
 // ---------------------------------------------------------------------------

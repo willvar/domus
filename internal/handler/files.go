@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/willvar/dofs"
 
 	"domus/internal/auth"
 	"domus/internal/middleware"
@@ -35,6 +36,7 @@ func (h *Handler) fillThumbnail(fi *store.FileInfo, r *model.FileRecord, kek []b
 	if err != nil {
 		return
 	}
+	defer dofs.Clear(thumbDEK)
 	fi.ThumbnailURL = presignedURL
 	fi.ThumbnailDEK = hex.EncodeToString(thumbDEK)
 }
@@ -161,13 +163,11 @@ func (h *Handler) handleMkdir(c *fiber.Ctx) error {
 		return err
 	}
 
-	if err := h.Store.CreateDirectory(resolvedPath); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "mkdir_failed"})
-	}
-
 	session := c.Locals("session").(*model.Session)
 	dirName := filepath.Base(strings.TrimSuffix(resolvedPath, "/"))
-	_ = h.Repos.Files.Upsert(session.UserID, resolvedPath, dirName, true, 0, "", "")
+	if err := h.Repos.Files.Upsert(session.UserID, resolvedPath, dirName, true, 0, "", ""); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "mkdir_failed"})
+	}
 
 	// Notify WebSocket subscribers of the parent directory
 	if parent := parentDirOf(resolvedPath); parent != "" {
@@ -210,14 +210,9 @@ func (h *Handler) handleRename(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "rename_failed"})
 	}
 
-	if body.IsDir {
-		_ = h.Repos.Files.MoveByPrefix(session.UserID, oldResolved, newResolved)
-		_ = h.Repos.Shares.MoveByPrefix(session.UserID, oldResolved, newResolved)
-	} else {
-		newName := filepath.Base(newResolved)
-		_ = h.Repos.Files.Move(session.UserID, oldResolved, newResolved, newName)
-		_ = h.Repos.Shares.MoveByPath(session.UserID, oldResolved, newResolved)
-	}
+	syncMovedFileRecords(
+		h, session.UserID, oldResolved, newResolved, body.OldPath, body.NewPath, body.IsDir,
+	)
 
 	// Notify WebSocket subscribers of both old and new parent directories
 	if parent := parentDirOf(oldResolved); parent != "" {
@@ -252,24 +247,9 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 		return err
 	}
 
-	// Verify source exists in DB
 	session := c.Locals("session").(*model.Session)
-	var srcSize int64
-	var srcContentHash string
-	var srcWrappedDEK string
-	var srcObjectKey string
-	if !body.IsDir {
-		srcRecord, err := h.Repos.Files.Get(session.UserID, srcResolved)
-		if err != nil {
-			return c.Status(404).JSON(fiber.Map{"error": "source_not_found"})
-		}
-		if srcRecord.Status != "ready" {
-			return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
-		}
-		srcSize = srcRecord.Size
-		srcContentHash = srcRecord.ContentHash
-		srcWrappedDEK = srcRecord.WrappedDEK
-		srcObjectKey = srcRecord.StorageKey()
+	if h.FileSystem == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
 	}
 
 	// Check if SSE is requested
@@ -285,32 +265,11 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 				_ = w.Flush()
 			}
 
-			var copyErr error
-			if body.IsDir {
-				copyErr = h.Store.RecursiveCopy(srcResolved, dstResolved, progress)
-			} else {
-				copyErr = h.Store.CopyObject(srcObjectKey, dstResolved)
-				if copyErr == nil {
-					progress(1, 1, srcResolved)
-				}
-			}
-
-			if copyErr == nil && body.IsDir {
-				copyErr = h.cloneDirFiles(session.UserID, srcResolved, dstResolved)
-			}
+			copyErr := h.FileSystem.Copy(session.UserID, srcResolved, dstResolved, progress)
 			if copyErr != nil {
 				data, _ := json.Marshal(fiber.Map{"error": copyErr.Error()})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			} else {
-				if !body.IsDir {
-					dstName := filepath.Base(dstResolved)
-					ct := mime.TypeByExtension(filepath.Ext(dstResolved))
-					var copyOpts []model.UpsertFileOpts
-					if srcWrappedDEK != "" {
-						copyOpts = append(copyOpts, model.UpsertFileOpts{WrappedDEK: srcWrappedDEK})
-					}
-					_ = h.Repos.Files.Upsert(session.UserID, dstResolved, dstName, false, srcSize, ct, srcContentHash, copyOpts...)
-				}
 				data, _ := json.Marshal(fiber.Map{"done": true})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			}
@@ -319,25 +278,8 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 		return nil
 	}
 
-	// Non-SSE: simple copy
-	if body.IsDir {
-		if err := h.Store.RecursiveCopy(srcResolved, dstResolved, nil); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "copy_failed"})
-		}
-		if err := h.cloneDirFiles(session.UserID, srcResolved, dstResolved); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "copy_failed"})
-		}
-	} else {
-		if err := h.Store.CopyObject(srcObjectKey, dstResolved); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "copy_failed"})
-		}
-		dstName := filepath.Base(dstResolved)
-		ct := mime.TypeByExtension(filepath.Ext(dstResolved))
-		var copyOpts []model.UpsertFileOpts
-		if srcWrappedDEK != "" {
-			copyOpts = append(copyOpts, model.UpsertFileOpts{WrappedDEK: srcWrappedDEK})
-		}
-		_ = h.Repos.Files.Upsert(session.UserID, dstResolved, dstName, false, srcSize, ct, srcContentHash, copyOpts...)
+	if err := h.FileSystem.Copy(session.UserID, srcResolved, dstResolved, nil); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "copy_failed"})
 	}
 
 	// Notify WebSocket subscribers of the destination parent directory
@@ -459,11 +401,11 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 		if fileRecord.Status != "ready" {
 			// Abort multipart upload if still in progress
 			if fileRecord.OSSUploadID != "" {
-				_ = h.Store.AbortMultipartUpload(fileRecord.Path, fileRecord.OSSUploadID)
+				_ = h.Store.AbortMultipartUpload(fileRecord.StorageKey(), fileRecord.OSSUploadID)
 			}
-			_ = h.deleteFileStorage(session.UserID, fileRecord)
-			_ = h.Repos.Files.Delete(session.UserID, resolvedPath)
-			_ = h.Repos.Shares.DeleteByPath(session.UserID, resolvedPath)
+			if h.FileSystem != nil {
+				_ = h.FileSystem.AbortDirectUpload(c.UserContext(), session.UserID, fileRecord.UploadID)
+			}
 			h.Audit.LogFromCtx(c, "file_delete", path, "", "success", 0)
 			return c.JSON(fiber.Map{"ok": true})
 		}
@@ -600,6 +542,7 @@ func (h *Handler) handleFileAccess(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "unwrap_failed"})
 	}
+	defer dofs.Clear(dek)
 
 	fileName := filepath.Base(resolvedPath)
 	ct := mime.TypeByExtension(filepath.Ext(fileName))
@@ -613,5 +556,6 @@ func (h *Handler) handleFileAccess(c *fiber.Ctx) error {
 		"chunk_size":   auth.DefaultChunkSize,
 		"dek":          hex.EncodeToString(dek),
 		"content_hash": fileRecord.ContentHash,
+		"generation":   fileRecord.Generation,
 	})
 }

@@ -223,6 +223,75 @@ func TestHandleDownload(t *testing.T) {
 	}
 }
 
+func TestPublicAvatarReturnsDirectEncryptedAccessDescriptor(t *testing.T) {
+	app, repos, loginAs := setupTestApp(t)
+	_ = loginAs("root", "pass")
+
+	user, err := repos.Users.GetByUsername("root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverKey, err := auth.ServerKeyFromSecret("0000000000000000000000000000000000000000000000000000000000000000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrappedKEK, err := hex.DecodeString(user.WrappedKEK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	kek, err := auth.UnwrapKEK(serverKey, wrappedKEK)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dek, err := auth.GenerateDEK()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrappedDEK, err := auth.WrapDEK(kek, dek)
+	if err != nil {
+		t.Fatal(err)
+	}
+	avatarPath := user.Username + "/.user/avatar.webp"
+	if err := repos.Files.Upsert(
+		user.ID, avatarPath, "avatar.webp", false, 321, "image/webp", "",
+		model.UpsertFileOpts{WrappedDEK: hex.EncodeToString(wrappedDEK), ObjectKey: "encrypted/avatar/object"},
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "/user/avatar/root", nil)
+	response, err := app.Test(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("avatar descriptor status = %d: %s", response.StatusCode, body)
+	}
+	if contentType := response.Header.Get(fiber.HeaderContentType); !strings.HasPrefix(contentType, fiber.MIMEApplicationJSON) {
+		t.Fatalf("avatar descriptor content type = %q", contentType)
+	}
+	if cacheControl := response.Header.Get(fiber.HeaderCacheControl); cacheControl != "no-store" {
+		t.Fatalf("avatar descriptor cache control = %q", cacheControl)
+	}
+	var descriptor struct {
+		URL         string `json:"url"`
+		DEK         string `json:"dek"`
+		Size        int64  `json:"size"`
+		ContentType string `json:"content_type"`
+		ChunkSize   int    `json:"chunk_size"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&descriptor); err != nil {
+		t.Fatal(err)
+	}
+	if descriptor.URL != "https://mock-oss.example.com/encrypted/avatar/object?signed=true" ||
+		descriptor.DEK != hex.EncodeToString(dek) || descriptor.Size != 321 ||
+		descriptor.ContentType != "image/webp" || descriptor.ChunkSize != auth.DefaultChunkSize {
+		t.Fatalf("unexpected avatar descriptor: %+v", descriptor)
+	}
+}
+
 func TestRegisterRoutes_WithNilHub(t *testing.T) {
 	repos := model.NewMemRepos(nil)
 

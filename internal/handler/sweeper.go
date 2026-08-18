@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"log"
 	"time"
 )
@@ -29,14 +30,11 @@ func (h *Handler) sweepStaleUploads() {
 	for _, r := range records {
 		// Abort multipart upload if still in progress
 		if r.OSSUploadID != "" {
-			_ = h.Store.AbortMultipartUpload(r.Path, r.OSSUploadID)
+			_ = h.Store.AbortMultipartUpload(r.StorageKey(), r.OSSUploadID)
 		}
-		// Clean up any partially uploaded object
-		if _, err := h.Store.HeadObject(r.Path); err == nil {
-			_ = h.Store.DeleteObject(r.Path)
+		if h.FileSystem != nil {
+			_ = h.FileSystem.AbortDirectUpload(context.Background(), r.UserID, r.UploadID)
 		}
-		// Remove DB records
-		_ = h.Repos.Files.Delete(r.UserID, r.Path)
 		if r.TaskID != "" {
 			_ = h.Repos.Tasks.UpdateStatus(r.TaskID, "cancelled")
 		}

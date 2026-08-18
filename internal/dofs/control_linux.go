@@ -18,7 +18,7 @@ import (
 	"sync"
 	"time"
 
-	"domus/internal/model"
+	dofscore "github.com/willvar/dofs"
 
 	"golang.org/x/sys/unix"
 )
@@ -140,7 +140,7 @@ func writeControlError(writer http.ResponseWriter, err error) {
 		status, code = http.StatusBadRequest, "invalid_request"
 	case errors.Is(err, ErrMountNotManaged), errors.Is(err, ErrUserNotFound):
 		status, code = http.StatusNotFound, "not_managed"
-	case errors.Is(err, ErrForeignMount), errors.Is(err, ErrMountUnhealthy), errors.Is(err, model.ErrDOFSMountBusy):
+	case errors.Is(err, ErrForeignMount), errors.Is(err, ErrMountUnhealthy), errors.Is(err, dofscore.ErrWriterBusy):
 		status, code = http.StatusConflict, "mount_conflict"
 	case errors.Is(err, ErrManagerStopping), errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		status, code = http.StatusServiceUnavailable, "manager_unavailable"

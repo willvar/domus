@@ -1,13 +1,21 @@
 package cmd
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
+	"context"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/willvar/dofs"
+	dofssqlite "github.com/willvar/dofs/metadata/sqlite"
 
 	"domus/config"
 	"domus/internal/store"
@@ -24,12 +32,14 @@ type backupTestStore struct {
 	getObjectErr    error
 	createDirErr    error
 	putObjectErr    error
+	checkCalled     bool
+	checkErr        error
 }
 
-func (s *backupTestStore) ListObjects(prefix, marker string, limit int) (*store.ListResult, error) {
-	return nil, nil
+func (s *backupTestStore) Check(context.Context) error {
+	s.checkCalled = true
+	return s.checkErr
 }
-func (s *backupTestStore) GetObjectInfo(key string) (*store.FileInfo, error) { return nil, nil }
 func (s *backupTestStore) CreateDirectory(key string) error {
 	if s.createDirErr != nil {
 		return s.createDirErr
@@ -37,30 +47,16 @@ func (s *backupTestStore) CreateDirectory(key string) error {
 	s.createdDirs = append(s.createdDirs, key)
 	return nil
 }
-func (s *backupTestStore) DeleteObject(key string) error          { return nil }
-func (s *backupTestStore) DeleteObjects(keys []string) error      { return nil }
-func (s *backupTestStore) CopyObject(srcKey, dstKey string) error { return nil }
-func (s *backupTestStore) MoveObject(srcKey, dstKey string) error { return nil }
 func (s *backupTestStore) ListAllObjects(prefix string) ([]store.ObjectInfo, error) {
 	if s.listAllErr != nil {
 		return nil, s.listAllErr
 	}
 	return s.objects, nil
 }
-func (s *backupTestStore) RecursiveCopy(srcPrefix, dstPrefix string, progress func(done, total int, current string)) error {
-	return nil
-}
-func (s *backupTestStore) RecursiveMove(srcPrefix, dstPrefix string, progress func(done, total int, current string)) error {
-	return nil
-}
-func (s *backupTestStore) RecursiveDelete(prefix string, progress func(done, total int, current string)) error {
-	return nil
-}
 func (s *backupTestStore) DeleteAllObjects(progress func(done, total int, current string)) error {
 	s.deleteAllCalled = true
 	return s.deleteAllErr
 }
-func (s *backupTestStore) GetTotalSize(prefix string) (int64, int, error) { return 0, 0, nil }
 func (s *backupTestStore) GeneratePresignedURL(key string, expiresDuration time.Duration) (string, error) {
 	return "", nil
 }
@@ -70,9 +66,16 @@ func (s *backupTestStore) GetObjectContent(key string) (io.ReadCloser, error) {
 	}
 	return io.NopCloser(bytes.NewReader(s.contents[key])), nil
 }
-func (s *backupTestStore) PutObjectBytes(key string, data []byte) error {
+func (s *backupTestStore) PutObject(key string, reader io.Reader, size int64) error {
 	if s.putObjectErr != nil {
 		return s.putObjectErr
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, size+1))
+	if err != nil {
+		return err
+	}
+	if int64(len(data)) != size {
+		return errors.New("unexpected streamed object size")
 	}
 	if s.putObjects == nil {
 		s.putObjects = map[string][]byte{}
@@ -82,7 +85,6 @@ func (s *backupTestStore) PutObjectBytes(key string, data []byte) error {
 	s.putObjects[key] = buf
 	return nil
 }
-func (s *backupTestStore) RenameObject(oldKey, newKey string, isDir bool) error { return nil }
 func (s *backupTestStore) PresignedPutObject(key string, expiresDuration time.Duration) (string, error) {
 	return "", nil
 }
@@ -140,7 +142,11 @@ func TestBackupInstanceWritesManifestDatabaseAndObjects(t *testing.T) {
 	if !dumped {
 		t.Fatal("expected database dump to run")
 	}
-	data, err := os.ReadFile(filepath.Join(backupDir, "objects", "root", "home", "hello.txt"))
+	objectPath, err := objectRelativePath("root/home/hello.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(backupDir, "objects", objectPath))
 	if err != nil {
 		t.Fatalf("read backed up object: %v", err)
 	}
@@ -153,6 +159,9 @@ func TestBackupInstanceWritesManifestDatabaseAndObjects(t *testing.T) {
 	}
 	if manifest.DatabaseName != "domus_test" {
 		t.Fatalf("unexpected database name: %s", manifest.DatabaseName)
+	}
+	if manifest.DOFSMetadataDriver != "postgres" {
+		t.Fatalf("unexpected DOFS metadata driver: %s", manifest.DOFSMetadataDriver)
 	}
 	if manifest.Bucket != "domus-bucket" {
 		t.Fatalf("unexpected bucket: %s", manifest.Bucket)
@@ -174,6 +183,137 @@ func TestBackupInstanceWritesManifestDatabaseAndObjects(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(backupDir, "database.sql")); err != nil {
 		t.Fatalf("expected database dump file: %v", err)
+	}
+}
+
+func TestSQLiteDOFSMetadataBackupAndRestore(t *testing.T) {
+	root := t.TempDir()
+	cfg := testResetConfig()
+	cfg.DOFS.StateRoot = filepath.Join(root, "state")
+	cfg.DOFS.Metadata = config.DOFSMetadataConfig{
+		Driver: "sqlite",
+		SQLite: config.DOFSSQLiteMetadataConfig{
+			Path:               filepath.Join(root, "state", "metadata.sqlite"),
+			BusyTimeoutSeconds: 5, MaxOpenConnections: 2,
+		},
+	}
+	open := func() *dofssqlite.Store {
+		t.Helper()
+		metadata, err := dofssqlite.Open(t.Context(), dofssqlite.Config{
+			Path: cfg.DOFS.Metadata.SQLite.Path, BusyTimeout: 5 * time.Second, MaxOpenConnections: 2,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := metadata.Migrate(t.Context()); err != nil {
+			_ = metadata.Close()
+			t.Fatal(err)
+		}
+		return metadata
+	}
+	metadata := open()
+	if _, err := metadata.CreateNamespace(t.Context(), dofs.Namespace{
+		ID: "backup-tenant", WrappedKEK: bytes.Repeat([]byte{7}, dofs.KeySize),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.Close(); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := filepath.Join(root, "backup", dofsSQLiteBackupName)
+	if err := os.MkdirAll(filepath.Dir(snapshot), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := backupDOFSMetadata(cfg, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	metadata = open()
+	if err := metadata.DeleteNamespace(t.Context(), "backup-tenant"); err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := restoreDOFSMetadata(cfg, snapshot); err != nil {
+		t.Fatal(err)
+	}
+	metadata = open()
+	defer metadata.Close()
+	if _, err := metadata.GetNamespace(t.Context(), "backup-tenant"); err != nil {
+		t.Fatalf("restored namespace: %v", err)
+	}
+}
+
+func TestRequireDOFSStoppedFailsClosed(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "dofs.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unixListener := listener.(*net.UnixListener)
+	unixListener.SetUnlinkOnClose(false)
+	if err := requireDOFSStopped(socketPath); err == nil {
+		t.Fatal("live DOFS socket was accepted")
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireDOFSStopped(socketPath); err != nil {
+		t.Fatalf("stale DOFS socket should be accepted: %v", err)
+	}
+	if err := os.Remove(socketPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socketPath, []byte("not a socket"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireDOFSStopped(socketPath); err == nil {
+		t.Fatal("non-socket DOFS control path was accepted")
+	}
+}
+
+func TestRequireWorkspaceStoppedFailsClosed(t *testing.T) {
+	socketPath := filepath.Join(t.TempDir(), "workspace.sock")
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unixListener := listener.(*net.UnixListener)
+	unixListener.SetUnlinkOnClose(false)
+	if err := requireWorkspaceStopped(socketPath); err == nil {
+		t.Fatal("live Workspace socket was accepted")
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireWorkspaceStopped(socketPath); err != nil {
+		t.Fatalf("stale Workspace socket should be accepted: %v", err)
+	}
+	if err := os.Remove(socketPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(socketPath, []byte("not a socket"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireWorkspaceStopped(socketPath); err == nil {
+		t.Fatal("non-socket Workspace control path was accepted")
+	}
+}
+
+func TestObjectRelativePathTreatsObjectKeysAsOpaque(t *testing.T) {
+	first, err := objectRelativePath("a//b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := objectRelativePath("a/b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatal("distinct object keys collided after filesystem mapping")
+	}
+	if filepath.IsAbs(first) || filepath.Clean(first) == ".." || strings.HasPrefix(filepath.Clean(first), ".."+string(filepath.Separator)) {
+		t.Fatalf("unsafe object archive path: %q", first)
 	}
 }
 
@@ -206,7 +346,10 @@ func TestRestoreInstanceRequiresYes(t *testing.T) {
 
 func TestRestoreInstanceRejectsFingerprintMismatch(t *testing.T) {
 	backupDir := t.TempDir()
-	manifest := backupManifest{FormatVersion: backupManifestVersion, EncryptionSecretFingerprint: "mismatch"}
+	manifest := backupManifest{
+		FormatVersion: backupManifestVersion, DOFSMetadataDriver: "postgres",
+		EncryptionSecretFingerprint: "mismatch",
+	}
 	if err := writeManifest(filepath.Join(backupDir, "manifest.json"), manifest); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
@@ -223,10 +366,14 @@ func TestRestoreInstanceRejectsFingerprintMismatch(t *testing.T) {
 
 func TestRestoreInstanceRestoresBucketAndDatabase(t *testing.T) {
 	backupDir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(backupDir, "objects", "root", "home"), 0o755); err != nil {
+	objectPath, err := objectRelativePath("root/home/hello.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(backupDir, "objects", filepath.Dir(objectPath)), 0o755); err != nil {
 		t.Fatalf("mkdir objects: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(backupDir, "objects", "root", "home", "hello.txt"), []byte("hello"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(backupDir, "objects", objectPath), []byte("hello"), 0o644); err != nil {
 		t.Fatalf("write object file: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(backupDir, "database.sql"), []byte("dump"), 0o644); err != nil {
@@ -234,8 +381,10 @@ func TestRestoreInstanceRestoresBucketAndDatabase(t *testing.T) {
 	}
 	manifest := backupManifest{
 		FormatVersion:               backupManifestVersion,
+		DOFSMetadataDriver:          "postgres",
 		EncryptionSecretFingerprint: encryptionSecretFingerprint(testResetConfig().Server.EncryptionSecret),
 		ObjectCount:                 2,
+		TotalSize:                   5,
 		Objects: []backupManifestObject{
 			{Key: "root/home/", IsDir: true},
 			{Key: "root/home/hello.txt", Size: 5},
@@ -247,7 +396,7 @@ func TestRestoreInstanceRestoresBucketAndDatabase(t *testing.T) {
 	st := &backupTestStore{}
 	resetCalled := false
 	importCalled := false
-	err := restoreInstance(testResetConfig(), "config.yaml", backupDir, true, restoreDeps{
+	err = restoreInstance(testResetConfig(), "config.yaml", backupDir, true, restoreDeps{
 		getStatus: func(pidFile string) (bool, int, error) { return false, 0, nil },
 		resetDB: func(cfg config.DatabaseConfig) error {
 			resetCalled = true
@@ -293,8 +442,12 @@ func TestRestoreInstanceRestoresBucketAndDatabase(t *testing.T) {
 
 func TestRestoreInstanceStopsOnBucketCleanupError(t *testing.T) {
 	backupDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(backupDir, "database.sql"), []byte("dump"), 0600); err != nil {
+		t.Fatal(err)
+	}
 	manifest := backupManifest{
 		FormatVersion:               backupManifestVersion,
+		DOFSMetadataDriver:          "postgres",
 		EncryptionSecretFingerprint: encryptionSecretFingerprint(testResetConfig().Server.EncryptionSecret),
 	}
 	if err := writeManifest(filepath.Join(backupDir, "manifest.json"), manifest); err != nil {
@@ -316,5 +469,221 @@ func TestRestoreInstanceStopsOnBucketCleanupError(t *testing.T) {
 	}
 	if importCalled {
 		t.Fatal("database import should not run after bucket cleanup failure")
+	}
+}
+
+func TestRestorePreflightRejectsMissingObjectBeforeReset(t *testing.T) {
+	backupDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(backupDir, "database.sql"), []byte("dump"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := backupManifest{
+		FormatVersion: backupManifestVersion, DOFSMetadataDriver: "postgres",
+		EncryptionSecretFingerprint: encryptionSecretFingerprint(testResetConfig().Server.EncryptionSecret),
+		ObjectCount:                 1, TotalSize: 5,
+		Objects: []backupManifestObject{{Key: "missing-object", Size: 5}},
+	}
+	if err := writeManifest(filepath.Join(backupDir, "manifest.json"), manifest); err != nil {
+		t.Fatal(err)
+	}
+	resetCalled := false
+	storeCalled := false
+	err := restoreInstance(testResetConfig(), "config.yaml", backupDir, true, restoreDeps{
+		getStatus: func(pidFile string) (bool, int, error) { return false, 0, nil },
+		resetDB: func(cfg config.DatabaseConfig) error {
+			resetCalled = true
+			return nil
+		},
+		newStore: func(cfg config.OSSConfig) (store.FileStore, error) {
+			storeCalled = true
+			return &backupTestStore{}, nil
+		},
+		importDB: func(cfg config.DatabaseConfig, inputPath string) error { return nil },
+	})
+	if err == nil {
+		t.Fatal("corrupt backup was accepted")
+	}
+	if resetCalled || storeCalled {
+		t.Fatal("restore mutated external state before bundle preflight completed")
+	}
+}
+
+func TestRestoreInitializesObjectStoreBeforeReset(t *testing.T) {
+	backupDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(backupDir, "database.sql"), []byte("dump"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := backupManifest{
+		FormatVersion: backupManifestVersion, DOFSMetadataDriver: "postgres",
+		EncryptionSecretFingerprint: encryptionSecretFingerprint(testResetConfig().Server.EncryptionSecret),
+	}
+	if err := writeManifest(filepath.Join(backupDir, "manifest.json"), manifest); err != nil {
+		t.Fatal(err)
+	}
+	resetCalled := false
+	err := restoreInstance(testResetConfig(), "config.yaml", backupDir, true, restoreDeps{
+		getStatus: func(pidFile string) (bool, int, error) { return false, 0, nil },
+		resetDB: func(cfg config.DatabaseConfig) error {
+			resetCalled = true
+			return nil
+		},
+		newStore: func(cfg config.OSSConfig) (store.FileStore, error) {
+			return nil, errors.New("invalid credentials")
+		},
+		importDB: func(cfg config.DatabaseConfig, inputPath string) error { return nil },
+	})
+	if err == nil || resetCalled {
+		t.Fatalf("restore error = %v, reset called = %t", err, resetCalled)
+	}
+}
+
+func TestRestoreChecksObjectStoreBeforeReset(t *testing.T) {
+	backupDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(backupDir, "database.sql"), []byte("dump"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := backupManifest{
+		FormatVersion: backupManifestVersion, DOFSMetadataDriver: "postgres",
+		EncryptionSecretFingerprint: encryptionSecretFingerprint(testResetConfig().Server.EncryptionSecret),
+	}
+	if err := writeManifest(filepath.Join(backupDir, "manifest.json"), manifest); err != nil {
+		t.Fatal(err)
+	}
+	objectStore := &backupTestStore{checkErr: errors.New("bucket unavailable")}
+	resetCalled := false
+	err := restoreInstance(testResetConfig(), "config.yaml", backupDir, true, restoreDeps{
+		getStatus: func(pidFile string) (bool, int, error) { return false, 0, nil },
+		resetDB: func(cfg config.DatabaseConfig) error {
+			resetCalled = true
+			return nil
+		},
+		newStore: func(cfg config.OSSConfig) (store.FileStore, error) { return objectStore, nil },
+		importDB: func(cfg config.DatabaseConfig, inputPath string) error { return nil },
+	})
+	if err == nil || resetCalled || !objectStore.checkCalled {
+		t.Fatalf("restore error = %v, reset called = %t, bucket checked = %t", err, resetCalled, objectStore.checkCalled)
+	}
+}
+
+func TestRestoreRejectsSymlinkedSQLiteTargetBeforeExternalAccess(t *testing.T) {
+	backupDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(backupDir, "database.sql"), []byte("dump"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	snapshotPath := filepath.Join(backupDir, dofsSQLiteBackupName)
+	metadata, err := dofssqlite.Open(t.Context(), dofssqlite.Config{
+		Path: snapshotPath, BusyTimeout: 5 * time.Second, MaxOpenConnections: 2,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := metadata.Migrate(t.Context()); err != nil {
+		_ = metadata.Close()
+		t.Fatal(err)
+	}
+	if err := metadata.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	targetRoot := t.TempDir()
+	realParent := filepath.Join(targetRoot, "real")
+	if err := os.Mkdir(realParent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	linkedParent := filepath.Join(targetRoot, "linked")
+	if err := os.Symlink(realParent, linkedParent); err != nil {
+		t.Fatal(err)
+	}
+	cfg := testResetConfig()
+	cfg.DOFS.Metadata = config.DOFSMetadataConfig{
+		Driver: "sqlite",
+		SQLite: config.DOFSSQLiteMetadataConfig{
+			Path: filepath.Join(linkedParent, "metadata.sqlite"), BusyTimeoutSeconds: 5, MaxOpenConnections: 2,
+		},
+	}
+	manifest := backupManifest{
+		FormatVersion: backupManifestVersion, DOFSMetadataDriver: "sqlite",
+		EncryptionSecretFingerprint: encryptionSecretFingerprint(cfg.Server.EncryptionSecret),
+	}
+	if err := writeManifest(filepath.Join(backupDir, "manifest.json"), manifest); err != nil {
+		t.Fatal(err)
+	}
+	resetCalled := false
+	storeCalled := false
+	err = restoreInstance(cfg, "config.yaml", backupDir, true, restoreDeps{
+		getStatus: func(pidFile string) (bool, int, error) { return false, 0, nil },
+		resetDB: func(cfg config.DatabaseConfig) error {
+			resetCalled = true
+			return nil
+		},
+		newStore: func(cfg config.OSSConfig) (store.FileStore, error) {
+			storeCalled = true
+			return &backupTestStore{}, nil
+		},
+		importDB: func(cfg config.DatabaseConfig, inputPath string) error { return nil },
+	})
+	if err == nil || resetCalled || storeCalled {
+		t.Fatalf("restore error = %v, reset called = %t, object store accessed = %t", err, resetCalled, storeCalled)
+	}
+}
+
+func TestCreateTarGzPublishesCompleteArchiveWithoutOverwrite(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	if err := os.Mkdir(source, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "manifest.json"), []byte("complete"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(root, "backup.tar.gz")
+	if err := createTarGz(source, archive); err != nil {
+		t.Fatal(err)
+	}
+	extracted := filepath.Join(root, "extracted")
+	if err := os.Mkdir(extracted, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractTarGz(archive, extracted); err != nil {
+		t.Fatal(err)
+	}
+	if data, err := os.ReadFile(filepath.Join(extracted, "manifest.json")); err != nil || string(data) != "complete" {
+		t.Fatalf("extracted archive = %q, %v", data, err)
+	}
+	if err := createTarGz(source, archive); err == nil {
+		t.Fatal("existing archive was overwritten")
+	}
+	if data, err := os.ReadFile(filepath.Join(extracted, "manifest.json")); err != nil || string(data) != "complete" {
+		t.Fatalf("published archive changed = %q, %v", data, err)
+	}
+}
+
+func TestExtractTarGzRejectsDuplicateEntries(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "duplicate.tar.gz")
+	file, err := os.Create(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gzipWriter := gzip.NewWriter(file)
+	tarWriter := tar.NewWriter(gzipWriter)
+	for range 2 {
+		if err := tarWriter.WriteHeader(&tar.Header{Name: "same", Mode: 0600, Size: 1, Typeflag: tar.TypeReg}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tarWriter.Write([]byte("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractTarGz(archive, t.TempDir()); err == nil || !strings.Contains(err.Error(), "duplicate archive entry") {
+		t.Fatalf("duplicate archive error = %v", err)
 	}
 }

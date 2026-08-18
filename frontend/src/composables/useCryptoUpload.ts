@@ -70,7 +70,7 @@ export async function encryptBlob(dekRaw: Uint8Array, data: ArrayBuffer): Promis
   const plain = new Uint8Array(data)
 
   // Calculate output size
-  const numChunks = Math.ceil(plain.length / CHUNK_SIZE) || 1
+  const numChunks = Math.ceil(plain.length / CHUNK_SIZE)
   const outputSize = 5 + plain.length + numChunks * (NONCE_SIZE + TAG_SIZE)
   const output = new Uint8Array(outputSize)
 
@@ -183,30 +183,6 @@ async function generateVideoThumbnail(file: File): Promise<ThumbnailResult> {
   }
 }
 
-// ── Text extraction ─────────────────────────────────────────────────────────
-
-const TEXT_EXTENSIONS = new Set([
-  '.txt', '.md', '.json', '.yaml', '.yml', '.toml', '.xml', '.csv', '.log',
-  '.conf', '.ini', '.sh', '.bash', '.zsh', '.fish', '.go', '.py', '.js',
-  '.ts', '.jsx', '.tsx', '.vue', '.html', '.htm', '.css', '.scss', '.less',
-  '.sql', '.rs', '.c', '.cpp', '.h', '.hpp', '.java', '.kt', '.rb', '.php',
-  '.pl', '.lua', '.r', '.swift', '.dart', '.ex', '.exs', '.env', '.gitignore',
-  '.dockerignore', '.editorconfig', '.makefile', '.cmake', '.gradle', '.properties',
-])
-
-export function isTextFile(fileName: string): boolean {
-  const dot = fileName.lastIndexOf('.')
-  if (dot <= 0) return false
-  return TEXT_EXTENSIONS.has(fileName.substring(dot).toLowerCase())
-}
-
-/** Extract the first `maxBytes` of a text file's content as a string. */
-export async function extractSearchText(file: File, maxBytes = 100 * 1024): Promise<string | null> {
-  if (!isTextFile(file.name)) return null
-  const slice = file.slice(0, maxBytes)
-  return slice.text()
-}
-
 // ── Decrypt blob (reverse of encryptBlob) ───────────────────────────────────
 
 /**
@@ -273,6 +249,7 @@ interface UploadInitResp {
   part_size: number
   total_parts: number
   file_name: string
+  dek: string
 }
 
 interface PresignResp {
@@ -300,37 +277,68 @@ export async function readEncryptedFile(path: string, optional = false): Promise
  * Write a small file to OSS via the encrypted upload pipeline.
  * Creates or replaces the file at the given path.
  */
-export async function writeEncryptedFile(path: string, data: ArrayBuffer, contentType = 'application/octet-stream'): Promise<void> {
+export interface EncryptedWriteOptions {
+  dek?: string
+  expectedGeneration?: number
+  shareId?: string
+  /** Allow Domus to create missing parent directories for app-owned metadata. */
+  internal?: boolean
+}
+
+export async function writeEncryptedFile(
+  path: string,
+  data: ArrayBuffer,
+  contentType = 'application/octet-stream',
+  options: EncryptedWriteOptions = {},
+): Promise<number | undefined> {
   const dir = path.substring(0, path.lastIndexOf('/') + 1) || '/'
   const name = path.substring(path.lastIndexOf('/') + 1)
+  const requestedDek = options.dek || (await generateDEK()).hex
 
-  const dek = await generateDEK()
-  const encrypted = await encryptBlob(dek.raw, data)
-
-  const initRes: AxiosResponse<UploadInitResp> = await api.post('/file/upload', {
+  const initPayload: Record<string, unknown> = {
     path: dir,
     file_name: name,
     file_size: data.byteLength,
     content_type: contentType,
     conflict_strategy: 'replace',
-  })
-  const init = initRes.data
+    dek: requestedDek,
+  }
+  if (options.expectedGeneration) initPayload.expected_generation = options.expectedGeneration
+  if (options.shareId) initPayload.share_id = options.shareId
+  if (options.internal) initPayload.internal = true
 
-  const presignRes: AxiosResponse<PresignResp> = await api.get('/file/upload/presign', {
-    params: { upload_id: init.upload_id, start: 1, count: 1 },
-  })
-  const presignedUrl = presignRes.data.parts[0].presigned_url
+  let uploadId = ''
+  try {
+    const initRes: AxiosResponse<UploadInitResp> = await api.post('/file/upload', initPayload)
+    const init = initRes.data
+    uploadId = init.upload_id
+    const effectiveDek = init.dek || requestedDek
+    const encrypted = await encryptBlob(hexToBytes(effectiveDek), data)
 
-  const putResp = await fetch(presignedUrl, { method: 'PUT', body: encrypted.slice().buffer })
-  if (!putResp.ok) throw new Error(`PUT to OSS failed: ${putResp.status}`)
-  const etag = putResp.headers.get('ETag') || ''
+    const presignRes: AxiosResponse<PresignResp> = await api.get('/file/upload/presign', {
+      params: { upload_id: init.upload_id, start: 1, count: 1 },
+    })
+    const presignedUrl = presignRes.data.parts[0]?.presigned_url
+    if (!presignedUrl) throw new Error('Upload URL was not issued')
 
-  await api.post('/file/upload', {
-    upload_id: init.upload_id,
-    dek: dek.hex,
-    encrypted_size: encrypted.byteLength,
-    parts: [{ part_number: 1, etag }],
-  })
+    const putResp = await fetch(presignedUrl, { method: 'PUT', body: encrypted.slice().buffer })
+    if (!putResp.ok) throw new Error(`PUT to OSS failed: ${putResp.status}`)
+
+    const completeRes = await api.post<{ generation?: number }>('/file/upload', {
+      upload_id: init.upload_id,
+      encrypted_size: encrypted.byteLength,
+    })
+    return completeRes.data.generation
+  } catch (error) {
+    if (uploadId) {
+      await api.post('/file/upload/cancel', {
+        upload_id: uploadId,
+        reason: 'direct_write_failed',
+        status: 'failed',
+      }).catch(() => {})
+    }
+    throw error
+  }
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -340,6 +348,7 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 function hexToBytes(hex: string): Uint8Array {
+  if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error('Invalid encryption key')
   const bytes = new Uint8Array(hex.length / 2)
   for (let i = 0; i < hex.length; i += 2) {
     bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16)

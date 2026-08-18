@@ -19,7 +19,7 @@ import (
 
 const testServerEncryptionSecret = "0000000000000000000000000000000000000000000000000000000000000000"
 
-func mustCreateReadyEncryptedFile(t *testing.T, repos *model.Repos, username, appPath, name string, size int64) {
+func mustCreateReadyEncryptedFile(t *testing.T, repos *model.Repos, username, appPath, name string, size int64) *model.FileRecord {
 	t.Helper()
 
 	user, err := repos.Users.GetByUsername(username)
@@ -50,9 +50,17 @@ func mustCreateReadyEncryptedFile(t *testing.T, repos *model.Repos, username, ap
 
 	ossPath := username + appPath
 	if err := repos.Files.Upsert(user.ID, ossPath, name, false, size, "text/plain", "hash",
-		model.UpsertFileOpts{WrappedDEK: hex.EncodeToString(wrappedDEK)}); err != nil {
+		model.UpsertFileOpts{
+			WrappedDEK: hex.EncodeToString(wrappedDEK),
+			ObjectKey:  ".dofs/test-objects/" + user.ID + "/" + name,
+		}); err != nil {
 		t.Fatalf("upsert file: %v", err)
 	}
+	record, err := repos.Files.Get(user.ID, ossPath)
+	if err != nil {
+		t.Fatalf("get ready file: %v", err)
+	}
+	return record
 }
 
 func createShareRequest(t *testing.T, app *fiber.App, cookie string, payload map[string]any) *http.Response {
@@ -220,6 +228,7 @@ func TestUserShareExpired(t *testing.T) {
 	if err := repos.Shares.Create(&model.Share{
 		ShareID:      "expired-user-share",
 		OwnerID:      owner.ID,
+		FileInode:    1,
 		FilePath:     "root/home/root/e.txt",
 		FileName:     "e.txt",
 		FileSize:     1,
@@ -260,9 +269,11 @@ func TestShareInfoUserShareAuthBoundaries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wrap dek: %v", err)
 	}
+	file := mustCreateReadyEncryptedFile(t, repos, "root", "/home/root/u.txt", "u.txt", 2)
 	if err := repos.Shares.Create(&model.Share{
 		ShareID:      "user-share-auth",
 		OwnerID:      owner.ID,
+		FileInode:    file.ID,
 		FilePath:     "root/home/root/u.txt",
 		FileName:     "u.txt",
 		FileSize:     2,
@@ -334,6 +345,7 @@ func TestDeleteShareReturns404ForUnrelatedUser(t *testing.T) {
 	if err := repos.Shares.Create(&model.Share{
 		ShareID:      "delete-unrelated-check",
 		OwnerID:      owner.ID,
+		FileInode:    1,
 		FilePath:     "root/home/root/del.txt",
 		FileName:     "del.txt",
 		FileSize:     1,
@@ -371,6 +383,7 @@ func TestTargetUserCanDeleteShare(t *testing.T) {
 	if err := repos.Shares.Create(&model.Share{
 		ShareID:      "target-can-delete",
 		OwnerID:      owner.ID,
+		FileInode:    1,
 		FilePath:     "root/home/root/del2.txt",
 		FileName:     "del2.txt",
 		FileSize:     1,

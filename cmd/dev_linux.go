@@ -87,11 +87,19 @@ func runDev(configPath string, options devOptions) error {
 	// Otherwise deleting tmp/dev would make existing wrapped user keys unusable.
 	configChanged := false
 	if cfg.Server.SessionSecret == "" || cfg.Server.SessionSecret == "change-me-to-random-string" {
-		cfg.Server.SessionSecret = generateRandomSecret(32)
+		secret, err := generateRandomSecret(32)
+		if err != nil {
+			return fmt.Errorf("generate development session secret: %w", err)
+		}
+		cfg.Server.SessionSecret = secret
 		configChanged = true
 	}
 	if cfg.Server.EncryptionSecret == "" {
-		cfg.Server.EncryptionSecret = generateRandomSecret(64)
+		secret, err := generateRandomSecret(64)
+		if err != nil {
+			return fmt.Errorf("generate development encryption secret: %w", err)
+		}
+		cfg.Server.EncryptionSecret = secret
 		configChanged = true
 	}
 	if configChanged {
@@ -103,6 +111,9 @@ func runDev(configPath string, options devOptions) error {
 	uid := uint32(os.Getuid())
 	gid := uint32(os.Getgid())
 	applyDevRuntimeConfig(cfg, runtimeRoot, strings.TrimSpace(options.image), uid, gid)
+	if err := ensureDevBootstrapPassword(cfg.Server.RootBootstrapPasswordFile); err != nil {
+		return fmt.Errorf("prepare development root bootstrap password: %w", err)
+	}
 
 	if err := cfg.Validate(); err != nil {
 		return err
@@ -204,8 +215,15 @@ func runDev(configPath string, options devOptions) error {
 func applyDevRuntimeConfig(cfg *config.Config, runtimeRoot, image string, uid, gid uint32) {
 	runRoot := filepath.Join(runtimeRoot, "run")
 	cfg.Server.PidFile = filepath.Join(runtimeRoot, "domus.pid")
+	// Never borrow a production secret-file path for the development process.
+	// The isolated runtime owns a stable 0600 bootstrap credential that can be
+	// regenerated together with a deliberately reset development database.
+	cfg.Server.RootBootstrapPasswordFile = filepath.Join(runtimeRoot, "root-bootstrap-password")
 	cfg.DOFS.MountRoot = filepath.Join(runtimeRoot, "dofs", "mounts")
 	cfg.DOFS.StateRoot = filepath.Join(runtimeRoot, "dofs", "state")
+	if cfg.DOFS.Metadata.Driver == "sqlite" {
+		cfg.DOFS.Metadata.SQLite.Path = filepath.Join(cfg.DOFS.StateRoot, "metadata.sqlite")
+	}
 	cfg.DOFS.ControlSocket = filepath.Join(runRoot, "dofs.sock")
 	cfg.DOFS.SocketGroup = ""
 	cfg.DOFS.UID = uid
@@ -222,6 +240,67 @@ func applyDevRuntimeConfig(cfg *config.Config, runtimeRoot, image string, uid, g
 	cfg.Workspace.UID = uid
 	cfg.Workspace.GID = gid
 	cfg.Log.File = ""
+}
+
+func ensureDevBootstrapPassword(path string) (returnErr error) {
+	info, err := os.Lstat(path)
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return errors.New("development bootstrap password path must be a regular file")
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != uint32(os.Geteuid()) || stat.Nlink != 1 {
+			return errors.New("development bootstrap password must be owned by the current user and not hard-linked")
+		}
+		if info.Mode().Perm() != 0600 {
+			return errors.New("development bootstrap password must have mode 0600")
+		}
+		contents, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return readErr
+		}
+		if strings.TrimSpace(string(contents)) == "" {
+			return errors.New("development bootstrap password must not be empty")
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
+		return err
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = file.Close()
+		}
+		if returnErr != nil {
+			_ = os.Remove(path)
+		}
+	}()
+	password, err := generateRandomSecret(32)
+	if err != nil {
+		return err
+	}
+	if _, err := file.WriteString(password + "\n"); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	closed = true
+	directory, err := os.Open(filepath.Dir(path))
+	if err != nil {
+		return err
+	}
+	defer directory.Close()
+	return directory.Sync()
 }
 
 func ensurePrivateDevRoot(root string) error {

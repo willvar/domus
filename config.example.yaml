@@ -28,6 +28,15 @@ server:
 # Linux-only DOFS data plane. Run it as a separate foreground systemd service
 # with `domus dofs serve -c /etc/domus/config.yaml`.
 dofs:
+  # SQLite is the default for one Domus server. Use `driver: postgres` only
+  # when several DOFS hosts must share the same namespace metadata; PostgreSQL
+  # then reuses database.* below.
+  metadata:
+    driver: "sqlite"
+    sqlite:
+      path: "/var/lib/domus/dofs/state/metadata.sqlite"
+      busy_timeout_seconds: 5
+      max_open_connections: 8
   # Keep the mount tree and plaintext writeback state on separate, private host
   # paths. state_root should be backed by an encrypted local volume.
   mount_root: "/var/lib/domus/dofs/mounts"
@@ -43,7 +52,7 @@ dofs:
   gid: 1000
   allow_other: true
   writable: true
-  max_mounts: 32  # also bounds pinned PostgreSQL advisory-lock sessions
+  max_mounts: 32
   reconcile_interval_seconds: 30
   mount_timeout_seconds: 60
   shutdown_timeout_seconds: 30

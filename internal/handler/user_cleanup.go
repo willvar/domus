@@ -2,9 +2,12 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"time"
+
+	"github.com/willvar/dofs"
 
 	"domus/internal/model"
 )
@@ -48,13 +51,15 @@ func (h *Handler) deleteUserCompletely(user *model.User) error {
 	}
 	deleted = true
 
-	if h.Store != nil {
-		if err := h.Store.RecursiveDelete(user.Username+"/", nil); err != nil {
-			log.Printf("[admin] user %s storage cleanup failed: %v", user.Username, err)
-		}
-		if err := h.Store.RecursiveDelete(model.DOFSObjectRoot(user.ID), nil); err != nil {
-			log.Printf("[admin] user %s DOFS generation cleanup failed: %v", user.Username, err)
-		}
+	if h.DOFS == nil {
+		log.Printf("[admin] user %s DOFS namespace cleanup skipped: runtime unavailable", user.Username)
+		return nil
+	}
+	if err := h.DOFS.DeleteNamespace(context.Background(), user.ID); err != nil && !errors.Is(err, dofs.ErrNotFound) {
+		// The user identity and all access grants are already gone. A failure
+		// here can leave only unreachable encrypted metadata/objects; report it
+		// for operator cleanup without reviving the deleted account.
+		log.Printf("[admin] user %s DOFS namespace cleanup failed: %v", user.Username, err)
 	}
 
 	return nil

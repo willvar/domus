@@ -5,13 +5,14 @@ package dofs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/hanwen/go-fuse/v2/fuse"
+	dofscore "github.com/willvar/dofs"
 )
 
 const (
@@ -59,47 +60,8 @@ type fakeManagedProvider struct {
 	continueAt chan struct{}
 	resolveAt  chan struct{}
 	resolveGo  chan struct{}
+	missing    bool
 }
-
-type kernelManagedProvider struct {
-	t         *testing.T
-	plaintext []byte
-}
-
-func (p *kernelManagedProvider) ResolveUser(_ context.Context, selector MountUserSelector) (MountIdentity, error) {
-	if err := selector.Validate(); err != nil {
-		return MountIdentity{}, err
-	}
-	if selector.UserID != "" && selector.UserID != "user-1" {
-		return MountIdentity{}, ErrUserNotFound
-	}
-	return MountIdentity{UserID: "user-1", Username: "alice"}, nil
-}
-
-func (p *kernelManagedProvider) Mount(_ context.Context, _ MountIdentity, mountpoint, stateDirectory string, options MountOptions) (ManagedMount, error) {
-	backend, objects, _ := newTestBackend(p.t, p.plaintext)
-	enableTestWriteback(p.t, backend, objects, stateDirectory)
-	server, err := Mount(mountpoint, backend, options)
-	if err != nil {
-		backend.Close()
-		return nil, err
-	}
-	mount := &kernelManagedMount{server: server, done: make(chan struct{})}
-	go func() {
-		server.Wait()
-		backend.Close()
-		close(mount.done)
-	}()
-	return mount, nil
-}
-
-type kernelManagedMount struct {
-	server *fuse.Server
-	done   chan struct{}
-}
-
-func (m *kernelManagedMount) Unmount() error        { return m.server.Unmount() }
-func (m *kernelManagedMount) Done() <-chan struct{} { return m.done }
 
 func (p *fakeManagedProvider) ResolveUser(_ context.Context, selector MountUserSelector) (MountIdentity, error) {
 	if p.resolveAt != nil {
@@ -110,6 +72,9 @@ func (p *fakeManagedProvider) ResolveUser(_ context.Context, selector MountUserS
 	}
 	if p.resolveGo != nil {
 		<-p.resolveGo
+	}
+	if p.missing {
+		return MountIdentity{}, fmt.Errorf("%w: removed", ErrUserNotFound)
 	}
 	if err := selector.Validate(); err != nil {
 		return MountIdentity{}, err
@@ -273,6 +238,33 @@ func TestManagerEnsureIsIdempotentAndUnmountForgetsDesiredState(t *testing.T) {
 	}
 }
 
+func TestManagerReconcileForgetsDesiredStateForRemovedUser(t *testing.T) {
+	base := t.TempDir()
+	provider := &fakeManagedProvider{}
+	manager := newTestManager(t, base, provider)
+	if _, err := manager.Ensure(context.Background(), MountUserSelector{UserID: testManagedUserID}); err != nil {
+		t.Fatal(err)
+	}
+	mount := provider.LastMount()
+	provider.missing = true
+	if err := manager.ReconcileOnce(context.Background()); err != nil {
+		t.Fatalf("reconcile stale user: %v", err)
+	}
+	status, err := manager.Status(testManagedUserID)
+	if err != nil || status.Desired || status.State != "unmounted" {
+		t.Fatalf("removed user status = %+v, %v", status, err)
+	}
+	select {
+	case <-mount.Done():
+	default:
+		t.Fatal("removed user's mount remained active")
+	}
+	marker := filepath.Join(base, "state", "desired", testManagedUserID+".json")
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("removed user's desired marker remained: %v", err)
+	}
+}
+
 func TestManagerSerializesConcurrentEnsure(t *testing.T) {
 	provider := &fakeManagedProvider{started: make(chan struct{}, 1), continueAt: make(chan struct{})}
 	manager := newTestManager(t, t.TempDir(), provider)
@@ -362,7 +354,7 @@ func TestManagerReportsUnhealthyLiveMountWithoutStartingASecond(t *testing.T) {
 	if _, err := manager.Ensure(context.Background(), MountUserSelector{UserID: testManagedUserID}); err != nil {
 		t.Fatal(err)
 	}
-	provider.LastMount().Fail(ErrMountLeaseLost)
+	provider.LastMount().Fail(dofscore.ErrLeaseLost)
 	deadline := time.Now().Add(time.Second)
 	for {
 		status, err := manager.Status(testManagedUserID)
@@ -392,7 +384,7 @@ func TestManagerReconcileReplacesFailedMountAfterNormalUnmount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	provider.LastMount().Fail(ErrMountLeaseLost)
+	provider.LastMount().Fail(dofscore.ErrLeaseLost)
 	deadline := time.Now().Add(time.Second)
 	for {
 		status, _ := manager.Status(testManagedUserID)
@@ -419,7 +411,7 @@ func TestManagerStaleRetryCannotUnmountRecoveredMount(t *testing.T) {
 	if _, err := manager.Ensure(context.Background(), MountUserSelector{UserID: testManagedUserID}); err != nil {
 		t.Fatal(err)
 	}
-	provider.LastMount().Fail(ErrMountLeaseLost)
+	provider.LastMount().Fail(dofscore.ErrLeaseLost)
 	deadline := time.Now().Add(time.Second)
 	for {
 		status, _ := manager.Status(testManagedUserID)
@@ -627,51 +619,5 @@ func TestDecodeMountInfoPath(t *testing.T) {
 	}
 	if _, err := decodeMountInfoPath(`/broken\0`); err == nil {
 		t.Fatal("invalid mountinfo escape was accepted")
-	}
-}
-
-func TestManagerOwnsRealFUSEMountLifecycle(t *testing.T) {
-	if os.Getenv("DOFS_FUSE_INTEGRATION") != "1" {
-		t.Skip("set DOFS_FUSE_INTEGRATION=1 to exercise the managed kernel mount")
-	}
-	base := t.TempDir()
-	manager, err := NewManager(ManagerOptions{
-		MountRoot: filepath.Join(base, "mounts"), StateRoot: filepath.Join(base, "state"),
-		ControlSocket: filepath.Join(base, "run", "dofs.sock"), SocketMode: 0600, SocketGID: -1,
-		Mount: MountOptions{
-			UID: uint32(os.Getuid()), GID: uint32(os.Getgid()), Writable: true,
-		},
-		ReconcileInterval: time.Hour, MountTimeout: time.Second,
-		MaxMounts: 8,
-	}, &kernelManagedProvider{t: t, plaintext: []byte("managed-before")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		_ = manager.Shutdown(ctx)
-		cancel()
-		_ = manager.Close()
-	}()
-
-	status, err := manager.Ensure(context.Background(), MountUserSelector{UserID: "user-1"})
-	if err != nil {
-		t.Fatalf("Ensure() error = %v", err)
-	}
-	if status.State != "mounted" || status.MountID == "" {
-		t.Fatalf("managed mount status = %+v", status)
-	}
-	file := filepath.Join(status.Mountpoint, "home", "alice", "data.bin")
-	if err := os.WriteFile(file, []byte("managed-after"), 0600); err != nil {
-		t.Fatalf("write through managed FUSE: %v", err)
-	}
-	if data, err := os.ReadFile(file); err != nil || string(data) != "managed-after" {
-		t.Fatalf("read through managed FUSE = %q, %v", data, err)
-	}
-	if _, err := manager.Unmount(context.Background(), "user-1"); err != nil {
-		t.Fatalf("Unmount() error = %v", err)
-	}
-	if mounted, err := inspectLinuxMount(status.Mountpoint); err != nil || mounted != nil {
-		t.Fatalf("mount remained after manager unmount: %+v, %v", mounted, err)
 	}
 }

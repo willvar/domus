@@ -10,7 +10,6 @@ const defaults: UserPreferences = {
   alwaysCenter: false,
   defaultWidth: 800,
   defaultHeight: 600,
-  indexContent: false,
   sessionIsolation: true,
   wallpaperType: 'builtin',
   wallpaperBuiltinId: 0,
@@ -42,7 +41,7 @@ function save(): void {
     try {
       const json = JSON.stringify({ ...prefs })
       const buf = new TextEncoder().encode(json).buffer as ArrayBuffer
-      await writeEncryptedFile(PREFS_PATH, buf, 'application/json')
+      await writeEncryptedFile(PREFS_PATH, buf, 'application/json', { internal: true })
       const ws = useWebSocket()
       ws.request('workspace.event', { action: 'prefs.changed', data: { ...prefs } }).catch(() => {})
     } catch { /* silent */ }

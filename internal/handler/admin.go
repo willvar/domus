@@ -57,12 +57,12 @@ func (h *Handler) handleCreateUser(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "create_user_failed"})
 	}
 
-	// Initialize user's OSS namespace and home directory
-	_ = h.Store.CreateDirectory(user.Username + "/")
-	_ = h.Store.CreateDirectory(user.Username + "/home/")
-	_ = h.Store.CreateDirectory(user.Username + "/home/" + user.Username + "/")
-	_ = h.Repos.Files.Upsert(user.ID, user.Username+"/home/", "home", true, 0, "", "")
-	_ = h.Repos.Files.Upsert(user.ID, user.Username+"/home/"+user.Username+"/", user.Username, true, 0, "", "")
+	if h.DOFS == nil {
+		return c.Status(500).JSON(fiber.Map{"error": "dofs_unavailable"})
+	}
+	if err := h.DOFS.EnsureUser(c.UserContext(), user); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "dofs_namespace_failed"})
+	}
 
 	h.Audit.LogFromCtx(c, "user_create", user.Username, body.Role, "success", 0)
 	return c.Status(201).JSON(user)

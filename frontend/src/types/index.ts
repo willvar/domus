@@ -17,6 +17,9 @@ export interface User {
   email: string
   totp_enabled: boolean
   created_at: string // ISO 8601
+  /** Public control endpoint for resolving encrypted avatar access metadata. */
+  avatar_endpoint?: string
+  /** Browser-local blob URL populated after direct OSS fetch and decryption. */
   avatar_url?: string
 }
 
@@ -75,7 +78,7 @@ export interface FileInfo {
  * Adds virtual-view metadata for shared and search items.
  */
 export interface FileListItem extends FileInfo {
-  /** Rank score from full-text search results. */
+  /** Match score reserved for result ordering. */
   rank?: number
   // Shared virtual-view fields
   _shareId?: string
@@ -224,7 +227,7 @@ export interface PageMapEntry {
   byteStart: number
 }
 
-/** Search result from full-text search (may include rank from PostgreSQL). */
+/** Filename search result. */
 export interface SearchResult extends FileInfo {
   rank?: number
   /** Parent directory path (used in search result display). */
@@ -270,6 +273,8 @@ export interface AppWindowState {
   totalSize?: number
   baseSize?: number
   _decryptUrl?: string
+  _dek?: string
+  _generation?: number
   _closing?: boolean
 }
 
@@ -415,7 +420,6 @@ export interface UserPreferences {
   alwaysCenter: boolean
   defaultWidth: number
   defaultHeight: number
-  indexContent: boolean
   sessionIsolation: boolean
   wallpaperType: 'builtin' | 'custom' | string
   wallpaperBuiltinId: number
@@ -627,6 +631,7 @@ export interface FileAccessResponse {
   content_type: string
   chunk_size: number
   dek: string // hex-encoded Data Encryption Key
+  generation: number
   content_hash?: string
 }
 

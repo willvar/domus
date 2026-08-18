@@ -1540,6 +1540,14 @@ func (m *Manager) teardownUser(ctx context.Context, userID string, forget, remov
 	return status, nil
 }
 
+func isDOFSUserNotManaged(err error) bool {
+	if errors.Is(err, dofs.ErrUserNotFound) {
+		return true
+	}
+	var apiError *dofs.ControlAPIError
+	return errors.As(err, &apiError) && apiError.StatusCode == 404 && apiError.Code == "not_managed"
+}
+
 func (m *Manager) ReconcileOnce(ctx context.Context) error {
 	if err := m.runtime.Ping(ctx); err != nil {
 		m.recordReconcile(err)
@@ -1599,6 +1607,24 @@ func (m *Manager) ReconcileOnce(ctx context.Context) error {
 			m.mu.Unlock()
 			if stillDesired {
 				_, err = m.ensureUser(operationCtx, Identity{UserID: marker.UserID, Username: marker.Username}, false)
+				if isDOFSUserNotManaged(err) {
+					// A user can be deleted while this daemon is down, or a reset
+					// can leave a crash-era marker behind. DOFS is authoritative for
+					// namespace existence, so forget the container intent and the
+					// generated identity files instead of keeping readiness degraded.
+					err = func() error {
+						endTeardown, teardownErr := m.beginTeardown(marker.UserID)
+						if teardownErr != nil {
+							return teardownErr
+						}
+						defer endTeardown()
+						_, teardownErr = m.teardownUser(operationCtx, marker.UserID, true, true)
+						return teardownErr
+					}()
+					if err == nil {
+						m.logf("Workspace forgot removed DOFS user %s", marker.UserID)
+					}
+				}
 			}
 			finish()
 		}

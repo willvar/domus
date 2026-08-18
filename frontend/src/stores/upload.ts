@@ -7,11 +7,9 @@ import { useI18n } from '../composables/useI18n'
 import { showConfirm, showDuplicateDialog } from '../composables/useNativeDialog'
 import { useActivityStore } from './activity'
 import { useFileSystemStore } from './fileSystem'
-import { usePreferences } from '../composables/usePreferences'
 import {
   generateDEK,
   generateThumbnail,
-  extractSearchText,
   encryptBlob,
 } from '../composables/useCryptoUpload'
 import type {
@@ -116,11 +114,11 @@ export const useUploadStore = defineStore('upload', () => {
   interface InitResponse {
     upload_id: string
     task_id: string
-    oss_key: string
     file_name: string
     oss_upload_id: string
     part_size: number
     total_parts: number
+    dek: string
   }
 
   interface PresignResponse {
@@ -134,11 +132,6 @@ export const useUploadStore = defineStore('upload', () => {
     const overhead = 28
     const numChunks = Math.ceil(plainSize / chunkPlain)
     return 5 + plainSize + numChunks * overhead
-  }
-
-  function totalPartsFor(fileSize: number, partSize: number): number {
-    if (partSize <= 0) return 1
-    return Math.max(1, Math.ceil(encryptedFileSize(fileSize) / partSize))
   }
 
   function removeUploadSession(id: string): void {
@@ -243,18 +236,22 @@ export const useUploadStore = defineStore('upload', () => {
       const dek = await generateDEK()
       upload.dekHex = dek.hex
 
-      // 1. Init — create multipart upload on server
+      // 1. Init — reserve a DOFS generation and create an OSS multipart session.
       const initPayload: Record<string, unknown> = {
         path: targetPath,
         file_name: file.name,
         file_size: file.size,
         content_type: file.type || '',
         client_instance_id: clientInstanceId,
+        dek: dek.hex,
       }
       if (conflictStrategy) initPayload.conflict_strategy = conflictStrategy
 
       const initRes = await api.post<InitResponse>('/file/upload', initPayload)
       const init = initRes.data
+      const effectiveDekHex = init.dek || dek.hex
+      const effectiveDekRaw = hexKey(effectiveDekHex)
+      upload.dekHex = effectiveDekHex
 
       if (init.file_name && init.file_name !== file.name) {
         upload.fileName = init.file_name
@@ -265,12 +262,9 @@ export const useUploadStore = defineStore('upload', () => {
       upload.totalParts = init.total_parts
       await syncTask(upload, { phase: 'generating', force: true })
 
-      // 2. Thumbnail + text extraction (fast — only reads a small portion)
-      const { prefs } = usePreferences()
-      const [thumbnail, searchText] = await Promise.all([
-        generateThumbnail(file),
-        prefs.indexContent ? extractSearchText(file) : Promise.resolve(null),
-      ])
+      // 2. Generate a local thumbnail. File plaintext is never included in a
+      // Domus API request; ciphertext is sent directly to object storage.
+      const thumbnail = await generateThumbnail(file)
 
       if ((upload.status as string) === 'cancelled') return
 
@@ -289,7 +283,15 @@ export const useUploadStore = defineStore('upload', () => {
       // 5. Encrypt + hash + upload (all in worker, main thread stays free)
       upload.phase = 'uploading'
       await syncTask(upload, { phase: 'uploading', force: true })
-      const workerResult = await runEncryptWorker(upload, file, dek.raw, partUrls, init.part_size, init.upload_id)
+      const workerResult = await runEncryptWorker(
+        upload,
+        file,
+        effectiveDekRaw,
+        partUrls,
+        init.part_size,
+        init.total_parts,
+        init.upload_id,
+      )
 
       if (upload.status === 'cancelled' || !workerResult) return
 
@@ -307,12 +309,9 @@ export const useUploadStore = defineStore('upload', () => {
       await syncTask(upload, { phase: 'processing', force: true })
       const completePayload: Record<string, unknown> = {
         upload_id: init.upload_id,
-        dek: dek.hex,
         content_hash: workerResult.contentHash,
         encrypted_size: upload.encryptedSize,
-        parts: workerResult.parts,
       }
-      if (searchText) completePayload.search_text = searchText
       if (thumbnail) {
         completePayload.media_width = thumbnail.width
         completePayload.media_height = thumbnail.height
@@ -362,7 +361,6 @@ export const useUploadStore = defineStore('upload', () => {
   // ── Encrypt worker ─────────────────────────────────────────────────────
 
   interface WorkerResult {
-    parts: { part_number: number; etag: string }[]
     contentHash: string
   }
 
@@ -372,6 +370,7 @@ export const useUploadStore = defineStore('upload', () => {
     dekRaw: Uint8Array,
     initialUrls: string[],
     partSize: number,
+    totalParts: number,
     uploadId: string,
   ): Promise<WorkerResult | null> {
     return new Promise((resolve, reject) => {
@@ -415,7 +414,7 @@ export const useUploadStore = defineStore('upload', () => {
           case 'done':
             workers.delete(upload.id)
             worker.terminate()
-            resolve({ parts: msg.parts, contentHash: msg.contentHash })
+            resolve({ contentHash: msg.contentHash })
             break
           case 'error':
             workers.delete(upload.id)
@@ -437,6 +436,7 @@ export const useUploadStore = defineStore('upload', () => {
         dekRaw: dekRaw.buffer,
         partUrls: initialUrls,
         partSize,
+        totalParts,
       })
     })
   }
@@ -459,6 +459,7 @@ export const useUploadStore = defineStore('upload', () => {
         file_size: thumb.blob.size,
         content_type: 'image/webp',
         internal: true,
+        dek: thumbDek.hex,
       })
       const thumbInit = initRes.data
 
@@ -471,14 +472,11 @@ export const useUploadStore = defineStore('upload', () => {
       // Upload encrypted thumbnail
       const resp = await fetch(url, { method: 'PUT', body: encrypted.slice().buffer })
       if (!resp.ok) throw new Error(`Thumbnail upload failed: ${resp.status}`)
-      const etag = resp.headers.get('ETag') || ''
 
       // Complete thumbnail upload
       await api.post('/file/upload', {
         upload_id: thumbInit.upload_id,
-        dek: thumbDek.hex,
         encrypted_size: encrypted.byteLength,
-        parts: [{ part_number: 1, etag }],
       })
 
       return thumbInit.upload_id
@@ -616,6 +614,15 @@ export const useUploadStore = defineStore('upload', () => {
   bindPageUnloadCleanup()
   startHeartbeat()
   void reconcileStaleUploads()
+
+  function hexKey(value: string): Uint8Array {
+    if (!/^[0-9a-fA-F]{64}$/.test(value)) throw new Error('Invalid upload encryption key')
+    const result = new Uint8Array(32)
+    for (let index = 0; index < result.length; index++) {
+      result[index] = Number.parseInt(value.slice(index * 2, index * 2 + 2), 16)
+    }
+    return result
+  }
 
   function removeCompleted(): void {
     uploads.value = uploads.value.filter(u => u.status === 'uploading' || u.status === 'paused')
