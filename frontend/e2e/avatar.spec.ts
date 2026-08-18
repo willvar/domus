@@ -78,7 +78,14 @@ test('公开头像由浏览器直读 OSS 密文并本地解密', async ({ page }
       expect(new URL(directURL).origin).not.toBe(apiBaseURL)
       expect(descriptor.dek as string).toMatch(/^[0-9a-f]{64}$/)
       expect(descriptor.content_type).toBe('image/webp')
-      expect(directObjectGETs).toContain(directURL)
+      const directObject = new URL(directURL)
+      expect(
+        directObjectGETs.some((candidate) => {
+          const observed = new URL(candidate)
+          return observed.origin === directObject.origin && observed.pathname === directObject.pathname
+        }),
+        'browser did not fetch the avatar ciphertext object directly from OSS',
+      ).toBeTruthy()
       expect(
         avatarControlResponses.every(response => response.headers()['content-type']?.includes('application/json')),
         'Domus proxied an avatar image body instead of returning control metadata',

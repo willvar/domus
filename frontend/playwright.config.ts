@@ -24,6 +24,7 @@ export default defineConfig({
   use: {
     baseURL: frontendURL.origin,
     headless: !headed,
+    actionTimeout: 20_000,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
@@ -36,17 +37,25 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: `go run . dev -c ${JSON.stringify(configPath)} --runtime-root ${JSON.stringify(runtimeRoot)} --image ${JSON.stringify(workspaceImage)}`,
+      command: 'bash frontend/e2e/backend-supervisor.sh',
       cwd: '..',
       url: `${apiBaseURL.origin}/auth`,
       reuseExistingServer: reuseServers,
       timeout: 180_000,
+      gracefulShutdown: { signal: 'SIGTERM', timeout: 120_000 },
+      env: {
+        DOMUS_E2E_CONFIG: configPath,
+        DOMUS_E2E_RUNTIME_ROOT: runtimeRoot,
+        DOMUS_E2E_WORKSPACE_IMAGE: workspaceImage,
+        DOMUS_E2E_API_BASE: apiBaseURL.origin,
+      },
     },
     {
       command: `npm run dev -- --host ${JSON.stringify(frontendURL.hostname)} --port ${JSON.stringify(frontendURL.port)} --strictPort`,
       url: frontendURL.origin,
       reuseExistingServer: reuseServers,
       timeout: 120_000,
+      gracefulShutdown: { signal: 'SIGTERM', timeout: 10_000 },
       env: { VITE_API_BASE: apiBaseURL.origin },
     },
   ],
