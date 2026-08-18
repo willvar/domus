@@ -33,6 +33,7 @@ type uploadRecord struct {
 	Parent           string `gorm:"not null"`
 	Name             string `gorm:"not null"`
 	Size             int64  `gorm:"not null"`
+	ContentType      string `gorm:"not null;default:''"`
 	TaskID           string `gorm:"not null;default:'';index"`
 	OSSUploadID      string `gorm:"not null;default:''"`
 	Status           string `gorm:"not null;index:idx_domus_upload_user_state"`

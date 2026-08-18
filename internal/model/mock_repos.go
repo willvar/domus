@@ -142,7 +142,7 @@ type MockFileRepo struct {
 	UpdateThumbnailIfGenerationFn    func(userID, path string, fileID, generation int64, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) (bool, error)
 	UpdateContentTypeFn              func(userID, path, contentType string) error
 	SearchFilesFn                    func(userID, query string, limit int) ([]SearchFileResult, error)
-	CreateUploadFn                   func(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, clientInstanceID string) error
+	CreateUploadFn                   func(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, contentType, clientInstanceID string) error
 	GetUploadFn                      func(userID, uploadID string) (*FileRecord, error)
 	UpdateStatusFn                   func(uploadID, status string) error
 	TouchUploadFn                    func(uploadID string, seenAt time.Time) error
@@ -243,9 +243,9 @@ func (m *MockFileRepo) SearchFiles(userID, query string, limit int) ([]SearchFil
 	}
 	return []SearchFileResult{}, nil
 }
-func (m *MockFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, clientInstanceID string) error {
+func (m *MockFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, contentType, clientInstanceID string) error {
 	if m.CreateUploadFn != nil {
-		return m.CreateUploadFn(userID, uploadID, taskID, ossUploadID, path, name, fileSize, clientInstanceID)
+		return m.CreateUploadFn(userID, uploadID, taskID, ossUploadID, path, name, fileSize, contentType, clientInstanceID)
 	}
 	return nil
 }

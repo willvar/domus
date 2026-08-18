@@ -27,7 +27,7 @@ func TestRootCancelUploadCleansTaskOwnerNamespace(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := repositories.Files.CreateUpload(
-		owner.ID, uploadID, taskID, ossUploadID, objectPath, "video.mp4", 1024, "browser",
+		owner.ID, uploadID, taskID, ossUploadID, objectPath, "video.mp4", 1024, "video/mp4", "browser",
 	); err != nil {
 		t.Fatal(err)
 	}
