@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"mime"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -16,6 +14,7 @@ import (
 	"github.com/willvar/dofs"
 
 	"domus/internal/auth"
+	"domus/internal/filekind"
 	"domus/internal/middleware"
 	"domus/internal/model"
 	"domus/internal/store"
@@ -505,7 +504,8 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 			return c.Status(500).JSON(fiber.Map{"error": "create_task_failed"})
 		}
 	}
-	if err := h.Repos.Files.CreateUpload(ownerID, uploadID, taskID, ossUploadID, resolvedPath, fileName, body.FileSize, body.ClientInstanceID); err != nil {
+	contentType := filekind.ContentType(fileName, body.ContentType)
+	if err := h.Repos.Files.CreateUpload(ownerID, uploadID, taskID, ossUploadID, resolvedPath, fileName, body.FileSize, contentType, body.ClientInstanceID); err != nil {
 		if taskID != "" {
 			_ = h.Repos.Tasks.Delete(taskID)
 		}
@@ -749,7 +749,7 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 	}
 	record.Path, record.Parent, record.Name = current.Path, current.Parent, current.Name
 
-	contentType := mime.TypeByExtension(filepath.Ext(record.Name))
+	contentType := filekind.ContentType(record.Name, record.ContentType)
 	if err := h.Repos.Files.Upsert(
 		ownerID, record.Path, record.Name, false,
 		published.Size, contentType, body.ContentHash,

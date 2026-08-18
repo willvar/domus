@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"mime"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,6 +15,7 @@ import (
 	"gorm.io/gorm"
 
 	"domus/internal/dofsbridge"
+	"domus/internal/filekind"
 	"domus/internal/model"
 )
 
@@ -211,7 +210,7 @@ func (r *Repo) recordFromNode(ctx context.Context, user *model.User, node dofs.N
 		}
 	}
 	if record.ContentType == "" && !record.IsDir {
-		record.ContentType = mime.TypeByExtension(filepath.Ext(record.Name))
+		record.ContentType = filekind.ContentType(record.Name, "")
 	}
 	return record, nil
 }
@@ -222,7 +221,7 @@ func (r *Repo) recordFromUpload(ctx context.Context, user *model.User, upload up
 	}
 	record := model.FileRecord{
 		ID: int64(upload.Inode), UserID: upload.UserID, Path: upload.Path, Parent: upload.Parent,
-		Name: upload.Name, Size: upload.Size, Status: upload.Status,
+		Name: upload.Name, Size: upload.Size, ContentType: upload.ContentType, Status: upload.Status,
 		UploadID: upload.ID, TaskID: upload.TaskID, OSSUploadID: upload.OSSUploadID,
 		ClientInstanceID: upload.ClientInstanceID, LastSeenAt: upload.LastSeenAt,
 		CreatedAt: upload.CreatedAt, UpdatedAt: upload.UpdatedAt,

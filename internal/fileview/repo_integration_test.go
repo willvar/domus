@@ -114,7 +114,7 @@ func TestSQLiteDOFSDirectUploadProjectionAndStableRename(t *testing.T) {
 	if err := objects.Put(t.Context(), direct.ObjectKey, bytes.NewReader(ciphertext.Bytes()), int64(ciphertext.Len())); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.CreateUpload(user.ID, uploadID, "task", "multipart", physical, "note.txt", int64(len(plaintext)), "browser"); err != nil {
+	if err := repository.CreateUpload(user.ID, uploadID, "task", "multipart", physical, "note.txt", int64(len(plaintext)), "text/plain", "browser"); err != nil {
 		t.Fatal(err)
 	}
 	published, err := repository.CommitDirectUpload(t.Context(), user.ID, uploadID)

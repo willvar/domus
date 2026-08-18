@@ -524,7 +524,7 @@ func (r *memFileRepo) SearchFiles(userID, query string, limit int) ([]SearchFile
 	return out, nil
 }
 
-func (r *memFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, clientInstanceID string) error {
+func (r *memFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, contentType, clientInstanceID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	key := fileKey(userID, path)
@@ -537,6 +537,7 @@ func (r *memFileRepo) CreateUpload(userID, uploadID, taskID, ossUploadID, path, 
 		Parent:           memParentOf(path),
 		Name:             name,
 		Size:             fileSize,
+		ContentType:      contentType,
 		Status:           "uploading",
 		UploadID:         uploadID,
 		TaskID:           taskID,

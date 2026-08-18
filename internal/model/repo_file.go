@@ -23,7 +23,7 @@ type FileRepo interface {
 	UpdateContentType(userID, path, contentType string) error
 	SearchFiles(userID, query string, limit int) ([]SearchFileResult, error)
 
-	CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, clientInstanceID string) error
+	CreateUpload(userID, uploadID, taskID, ossUploadID, path, name string, fileSize int64, contentType, clientInstanceID string) error
 	GetUpload(userID, uploadID string) (*FileRecord, error)
 	UpdateStatus(uploadID, status string) error
 	TouchUpload(uploadID string, seenAt time.Time) error

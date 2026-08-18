@@ -23,7 +23,7 @@ function handleSelect(key: string) {
   } else if (key === 'trash') {
     fs.navigate('/__trash__/')
   } else if (key === 'shared') {
-    fs.navigate('__shared__')
+    fs.navigate('__shared__/')
   }
 }
 </script>

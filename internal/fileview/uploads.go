@@ -10,7 +10,7 @@ import (
 	"domus/internal/model"
 )
 
-func (r *Repo) CreateUpload(userID, uploadID, taskID, ossUploadID, physical, name string, fileSize int64, clientInstanceID string) error {
+func (r *Repo) CreateUpload(userID, uploadID, taskID, ossUploadID, physical, name string, fileSize int64, contentType, clientInstanceID string) error {
 	ctx, cancel := operationContext()
 	defer cancel()
 	user, err := r.user(userID)
@@ -36,7 +36,7 @@ func (r *Repo) CreateUpload(userID, uploadID, taskID, ossUploadID, physical, nam
 	return r.db.Create(&uploadRecord{
 		ID: uploadID, UserID: userID, Inode: direct.Inode,
 		ActorUserID: userID,
-		Path:        physical, Parent: physicalParent(physical), Name: name, Size: fileSize,
+		Path:        physical, Parent: physicalParent(physical), Name: name, Size: fileSize, ContentType: contentType,
 		TaskID: taskID, OSSUploadID: ossUploadID, Status: "uploading",
 		ClientInstanceID: clientInstanceID, LastSeenAt: now, CreatedAt: now, UpdatedAt: now,
 	}).Error
