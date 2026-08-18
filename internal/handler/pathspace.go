@@ -1,8 +1,8 @@
 package handler
 
 import (
+	"context"
 	"errors"
-	"fmt"
 	"strings"
 
 	"domus/internal/model"
@@ -75,32 +75,8 @@ func (h *Handler) permanentlyDeletePath(userID, resolvedPath string, isDir bool)
 }
 
 func (h *Handler) deleteFileData(userID string, record *model.FileRecord) error {
-	if record == nil {
-		return nil
-	}
-	inodeRoot := model.DOFSInodeObjectRoot(userID, record.ID)
-	if record.HasObjectGenerations || strings.HasPrefix(record.StorageKey(), inodeRoot) {
-		if err := h.Store.RecursiveDelete(inodeRoot, nil); err != nil {
-			return err
-		}
-	}
-	exactKeys := []string{record.StorageKey(), record.LegacyObjectKey}
-	if strings.HasPrefix(record.StorageKey(), inodeRoot) && record.LegacyObjectKey == "" {
-		exactKeys = append(exactKeys, record.Path)
-	}
-	deleted := make(map[string]struct{}, len(exactKeys))
-	for _, key := range exactKeys {
-		if key == "" || strings.HasPrefix(key, inodeRoot) {
-			continue
-		}
-		if _, duplicate := deleted[key]; duplicate {
-			continue
-		}
-		if err := h.Store.DeleteObject(key); err != nil {
-			return err
-		}
-		deleted[key] = struct{}{}
-	}
+	// DOFS owns immutable generations and defers tombstone collection until the
+	// writable mount can prove no open Unix handle still references the inode.
 	return nil
 }
 
@@ -110,33 +86,13 @@ func (h *Handler) cleanupThumbnailStorage(userID string, source *model.FileRecor
 	}
 	thumbnail, err := h.Repos.Files.GetByStorageKey(userID, source.ThumbnailKey)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		// Pre-linkage metadata may refer directly to an object without a file row.
-		// Only remove keys proven to stay inside this user's namespace.
-		rootComponent := strings.SplitN(source.Path, "/", 2)[0]
-		ownedPathKey := rootComponent != "" && rootComponent != ".dofs" && strings.HasPrefix(source.ThumbnailKey, rootComponent+"/")
-		if ownedPathKey || strings.HasPrefix(source.ThumbnailKey, model.DOFSObjectRoot(userID)) {
-			return h.Store.DeleteObject(source.ThumbnailKey)
-		}
-		return errors.New("refusing to delete an out-of-scope thumbnail object")
+		return nil
 	}
 	if err != nil {
 		return err
 	}
 	if thumbnail.ID == source.ID || thumbnail.UserID != userID || thumbnail.StorageKey() != source.ThumbnailKey {
 		return errors.New("refusing to delete a mismatched thumbnail record")
-	}
-	if err := h.deleteFileData(userID, thumbnail); err != nil {
-		return fmt.Errorf("delete thumbnail data: %w", err)
-	}
-	if thumbnail.Status == "deleted" {
-		purged, err := h.Repos.Files.PurgeDeletedDOFSNode(userID, thumbnail.ID)
-		if err != nil {
-			return err
-		}
-		if !purged {
-			return errors.New("retired thumbnail changed before metadata purge")
-		}
-		return nil
 	}
 	return h.Repos.Files.Delete(userID, thumbnail.Path)
 }
@@ -148,33 +104,41 @@ func (h *Handler) deleteFileStorage(userID string, record *model.FileRecord) err
 	return h.cleanupThumbnailStorage(userID, record)
 }
 
+func (h *Handler) revokeFileShares(userID string, inode int64) {
+	shares, _ := h.Repos.Shares.ListOwnedByUser(userID)
+	_ = h.Repos.Shares.DeleteByInode(userID, inode)
+	if h.Hub == nil {
+		return
+	}
+	for _, share := range shares {
+		if share.FileInode == inode {
+			h.Hub.SendToUser(share.TargetUserID, map[string]any{
+				"event": "dir.changed",
+				"data":  map[string]any{"path": "__shared__/", "change_type": "refresh"},
+			})
+		}
+	}
+}
+
 func (h *Handler) permanentlyDeletePathWithProgress(userID, resolvedPath string, isDir bool, progress func(done, total int, current string)) error {
 	if isDir {
 		records, err := h.Repos.Files.ListByPrefix(userID, resolvedPath)
 		if err != nil || len(records) == 0 {
 			return nil
 		}
-		if err := h.Store.RecursiveDelete(resolvedPath, progress); err != nil {
-			return err
-		}
 		for i := range records {
-			storageKey := records[i].StorageKey()
 			if records[i].IsDir {
-				if !strings.HasPrefix(storageKey, resolvedPath) {
-					if err := h.Store.DeleteObject(storageKey); err != nil {
-						return err
-					}
-				}
 				continue
 			}
-			if records[i].HasObjectGenerations || !strings.HasPrefix(storageKey, resolvedPath) {
-				if err := h.deleteFileStorage(userID, &records[i]); err != nil {
-					return err
-				}
+			if err := h.cleanupThumbnailStorage(userID, &records[i]); err != nil {
+				return err
 			}
+			if progress != nil {
+				progress(i+1, len(records), records[i].Path)
+			}
+			h.revokeFileShares(userID, records[i].ID)
 		}
 		_ = h.Repos.Files.DeleteByPrefix(userID, resolvedPath)
-		_ = h.Repos.Shares.DeleteByPrefix(userID, resolvedPath)
 		return nil
 	}
 
@@ -183,13 +147,17 @@ func (h *Handler) permanentlyDeletePathWithProgress(userID, resolvedPath string,
 		return nil
 	}
 	if rec.Status != "ready" && rec.OSSUploadID != "" {
-		_ = h.Store.AbortMultipartUpload(resolvedPath, rec.OSSUploadID)
+		_ = h.Store.AbortMultipartUpload(rec.StorageKey(), rec.OSSUploadID)
+		if h.FileSystem != nil {
+			_ = h.FileSystem.AbortDirectUpload(context.Background(), userID, rec.UploadID)
+		}
+		return nil
 	}
 	if err := h.deleteFileStorage(userID, rec); err != nil {
 		return err
 	}
 	_ = h.Repos.Files.Delete(userID, resolvedPath)
-	_ = h.Repos.Shares.DeleteByPath(userID, resolvedPath)
+	h.revokeFileShares(userID, rec.ID)
 	return nil
 }
 
@@ -203,40 +171,53 @@ func shouldDeleteSharesOnMove(srcAppPath, dstAppPath string) bool {
 
 func syncMovedFileRecords(h *Handler, userID, srcResolved, dstResolved, srcAppPath, dstAppPath string, isDir bool) {
 	if isDir {
+		records, _ := h.Repos.Files.ListByPrefix(userID, srcResolved)
 		_ = h.Repos.Files.MoveByPrefix(userID, srcResolved, dstResolved)
 		if shouldMoveShares(srcAppPath, dstAppPath) {
-			_ = h.Repos.Shares.MoveByPrefix(userID, srcResolved, dstResolved)
+			for index := range records {
+				if records[index].IsDir {
+					continue
+				}
+				if current, err := h.Repos.Files.GetByID(userID, records[index].ID); err == nil {
+					_ = h.Repos.Shares.SyncByInode(
+						userID, current.ID, current.Path, current.Name, current.Size, current.ContentType,
+					)
+				}
+			}
 		} else if shouldDeleteSharesOnMove(srcAppPath, dstAppPath) {
-			_ = h.Repos.Shares.DeleteByPrefix(userID, srcResolved)
+			for index := range records {
+				if !records[index].IsDir {
+					h.revokeFileShares(userID, records[index].ID)
+				}
+			}
 		}
 		return
 	}
 
+	record, _ := h.Repos.Files.Get(userID, srcResolved)
 	newName := strings.TrimSuffix(dstAppPath, "/")
 	if idx := strings.LastIndex(newName, "/"); idx >= 0 {
 		newName = newName[idx+1:]
 	}
 	_ = h.Repos.Files.Move(userID, srcResolved, dstResolved, newName)
 	if shouldMoveShares(srcAppPath, dstAppPath) {
-		_ = h.Repos.Shares.MoveByPath(userID, srcResolved, dstResolved)
+		if record != nil {
+			if current, err := h.Repos.Files.GetByID(userID, record.ID); err == nil {
+				_ = h.Repos.Shares.SyncByInode(
+					userID, current.ID, current.Path, current.Name, current.Size, current.ContentType,
+				)
+			}
+		}
 	} else if shouldDeleteSharesOnMove(srcAppPath, dstAppPath) {
-		_ = h.Repos.Shares.DeleteByPath(userID, srcResolved)
+		if record != nil {
+			h.revokeFileShares(userID, record.ID)
+		}
 	}
 }
 
 func movePathViaStore(h *Handler, userID, srcResolved, dstResolved string, isDir bool, progress func(done, total int, current string)) error {
-	if isDir {
-		return h.Store.RecursiveMove(srcResolved, dstResolved, progress)
-	}
-	record, err := h.Repos.Files.Get(userID, srcResolved)
-	if err != nil {
-		return err
-	}
-	if record.StorageKey() == srcResolved {
-		err = h.Store.MoveObject(srcResolved, dstResolved)
-	}
-	if err == nil && progress != nil {
+	if progress != nil {
 		progress(1, 1, srcResolved)
 	}
-	return err
+	return nil
 }

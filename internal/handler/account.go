@@ -21,21 +21,13 @@ func isValidEmail(email string) bool {
 
 func (h *Handler) handleStorageUsage(c *fiber.Ctx) error {
 	session := c.Locals("session").(*model.Session)
-	user, err := h.Repos.Users.GetByID(session.UserID)
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
+	if h.DOFS == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
 	}
-
-	size, count, err := h.Store.GetTotalSize(user.Username + "/")
+	size, count, err := h.DOFS.Usage(c.UserContext(), session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
-	generationSize, generationCount, err := h.Store.GetTotalSize(model.DOFSObjectRoot(user.ID))
-	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
-	}
-	size += generationSize
-	count += generationCount
 
 	return c.JSON(fiber.Map{
 		"size":  size,

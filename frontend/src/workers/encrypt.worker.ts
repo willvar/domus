@@ -5,7 +5,7 @@
  * Communication protocol (postMessage):
  *
  * Main → Worker:
- *   { type: 'start', file: File, dekRaw: ArrayBuffer, partUrls: string[], partSize: number }
+ *   { type: 'start', file: File, dekRaw: ArrayBuffer, partUrls: string[], partSize: number, totalParts: number }
  *   { type: 'add-urls', partUrls: string[] }  // append more presigned URLs
  *   { type: 'pause' }
  *   { type: 'resume' }
@@ -13,8 +13,8 @@
  *
  * Worker → Main:
  *   { type: 'progress', uploaded: number, total: number }
- *   { type: 'part', partNumber: number, etag: string }
- *   { type: 'done', parts: { part_number: number, etag: string }[], contentHash: string }
+ *   { type: 'part', partNumber: number, size: number }
+ *   { type: 'done', contentHash: string }
  *   { type: 'error', message: string }
  *   { type: 'need-urls', from: number, count: number }  // request more presigned URLs
  */
@@ -42,6 +42,7 @@ self.onmessage = async (e: MessageEvent) => {
           msg.file as File,
           msg.dekRaw as ArrayBuffer,
           msg.partSize as number,
+          msg.totalParts as number,
         )
       } catch (err: any) {
         if (!cancelled) {
@@ -90,6 +91,7 @@ async function encryptAndUpload(
   file: File,
   dekRaw: ArrayBuffer,
   partSize: number,
+  totalParts: number,
 ) {
   const { createSHA256 } = await import('hash-wasm')
   const hasher = await createSHA256()
@@ -98,11 +100,13 @@ async function encryptAndUpload(
   const key = await crypto.subtle.importKey('raw', dekRaw as ArrayBuffer, { name: 'AES-GCM' }, false, ['encrypt'])
 
   const totalPlain = file.size
-  const numEncChunks = Math.ceil(totalPlain / CHUNK_SIZE) || 1
+  const numEncChunks = Math.ceil(totalPlain / CHUNK_SIZE)
   const encryptedSize = 5 + totalPlain + numEncChunks * (NONCE_SIZE + TAG_SIZE)
-  const totalParts = Math.ceil(encryptedSize / partSize) || 1
+  if (!Number.isSafeInteger(totalParts) || totalParts < 1) {
+    throw new Error(`Invalid multipart geometry: ${totalParts}`)
+  }
 
-  const completedParts: { part_number: number; etag: string }[] = []
+  let completedPartCount = 0
   let partNumber = 1
   let partBuffer = new Uint8Array(partSize)
   let partOffset = 0
@@ -152,10 +156,9 @@ async function encryptAndUpload(
     if (!resp.ok) {
       throw new Error(`Upload part ${partNumber} failed: ${resp.status}`)
     }
-    const etag = resp.headers.get('ETag') || ''
-    completedParts.push({ part_number: partNumber, etag })
+    completedPartCount++
     uploaded += data.length
-    self.postMessage({ type: 'part', partNumber, etag, size: data.length })
+    self.postMessage({ type: 'part', partNumber, size: data.length })
     self.postMessage({ type: 'progress', uploaded, total: encryptedSize })
 
     partNumber++
@@ -246,7 +249,10 @@ async function encryptAndUpload(
   }
 
   if (!cancelled) {
+    if (completedPartCount !== totalParts) {
+      throw new Error(`Multipart geometry mismatch: wrote ${completedPartCount}, expected ${totalParts}`)
+    }
     const contentHash = hasher.digest('hex')
-    self.postMessage({ type: 'done', parts: completedParts, contentHash })
+    self.postMessage({ type: 'done', contentHash })
   }
 }

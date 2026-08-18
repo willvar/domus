@@ -25,12 +25,16 @@ type fakeFilesystem struct {
 	unmounted  []string
 	health     dofs.ManagerHealth
 	healthErr  error
+	ensureErr  error
 	unmountErr error
 }
 
 func (f *fakeFilesystem) Ensure(_ context.Context, selector dofs.MountUserSelector) (dofs.MountStatus, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.ensureErr != nil {
+		return dofs.MountStatus{}, f.ensureErr
+	}
 	mount, ok := f.mounts[selector.UserID]
 	if !ok {
 		return dofs.MountStatus{}, dofs.ErrUserNotFound
@@ -800,6 +804,40 @@ func TestManagerIdleReconcileRemovesContainerAndUnmountsDOFS(t *testing.T) {
 	}
 	if len(runtime.removed) != 1 || len(filesystem.unmounted) != 1 {
 		t.Fatalf("idle cleanup removed=%v unmounted=%v", runtime.removed, filesystem.unmounted)
+	}
+}
+
+func TestReconcileForgetsWorkspaceForRemovedDOFSUser(t *testing.T) {
+	manager, filesystem, runtime, identity := newTestManager(t, nil)
+	if _, err := manager.Ensure(t.Context(), identity); err != nil {
+		t.Fatal(err)
+	}
+	identityDirectory := filepath.Join(manager.identityDir, identity.UserID)
+	filesystem.mu.Lock()
+	delete(filesystem.mounts, identity.UserID)
+	filesystem.ensureErr = &dofs.ControlAPIError{StatusCode: 404, Code: "not_managed", Message: "user was removed"}
+	filesystem.mu.Unlock()
+
+	if err := manager.ReconcileOnce(t.Context()); err != nil {
+		t.Fatalf("ReconcileOnce() error = %v", err)
+	}
+	manager.mu.Lock()
+	_, desired := manager.desired[identity.UserID]
+	_, hasStatus := manager.statuses[identity.UserID]
+	manager.mu.Unlock()
+	if desired || hasStatus {
+		t.Fatalf("removed user retained desired/status state = %t/%t", desired, hasStatus)
+	}
+	for _, removed := range []string{manager.markerPath(identity.UserID), identityDirectory} {
+		if _, err := os.Stat(removed); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("removed user state remained at %s: %v", removed, err)
+		}
+	}
+	runtime.mu.Lock()
+	remainingContainers := len(runtime.containers)
+	runtime.mu.Unlock()
+	if remainingContainers != 0 {
+		t.Fatalf("removed user retained %d workspace containers", remainingContainers)
 	}
 }
 

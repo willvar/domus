@@ -12,7 +12,9 @@ import { useMessage } from '../composables/useMessage'
 import { usePreferences } from '../composables/usePreferences'
 import { useWorkspaceSync } from '../composables/useWorkspaceSync'
 import { useServiceWorker } from '../composables/useServiceWorker'
+import { registerFileDecrypt } from '../composables/useFileAccess'
 import { readMigratedStorage } from '../utils/storageCompat'
+import { writeEncryptedFile } from '../composables/useCryptoUpload'
 import type {
   FileListItem,
   FileTab,
@@ -1141,20 +1143,10 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
     if (blobTypes.includes(type)) {
       try {
-        const sw = useServiceWorker()
-        const res = file._shareId
-          ? await api.get<FileAccessResponse>('/file/shared/' + file._shareId)
-          : await api.get<FileAccessResponse>('/file/access', { params: { path: file.path } })
-        const { url, size, name, content_type, chunk_size, dek, content_hash } = res.data
-        const decryptUrl = sw.registerDecrypt({
-          url, size, chunkSize: chunk_size, contentType: content_type, filename: name, dek,
-          contentHash: content_hash,
-        })
-        if (!decryptUrl) {
-          notifyDecryptUnavailable()
-          state.url = ''
-          return
-        }
+        // The shared helper waits for the Service Worker FIFO barrier before
+        // returning the synthetic URL. Assigning it earlier lets an <img>,
+        // <video> or iframe race ahead of the registry message and see 404.
+        const { decryptUrl } = await registerFileDecrypt(file)
         ;(state as any)._decryptUrl = decryptUrl
 
         state.url = decryptUrl
@@ -1169,20 +1161,13 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       // Register SW decrypt URL for text files
       let decryptUrl: string | null = null
       try {
-        const sw = useServiceWorker()
-        const accessRes = file._shareId
-          ? await api.get<FileAccessResponse>('/file/shared/' + file._shareId)
-          : await api.get<FileAccessResponse>('/file/access', { params: { path: file.path } })
-        const { url, size, name, content_type, chunk_size, dek, content_hash } = accessRes.data
-        decryptUrl = sw.registerDecrypt({
-          url, size, chunkSize: chunk_size, contentType: content_type, filename: name, dek,
-          contentHash: content_hash,
-        })
-        if (!decryptUrl) {
-          notifyDecryptUnavailable()
-          state.content = ''
-          return
-        }
+        // Text fetches start immediately, so the same Service Worker barrier
+        // is required here as for media elements.
+        const registered = await registerFileDecrypt(file)
+        const { dek, generation } = registered.access
+        state._dek = dek
+        state._generation = generation
+        decryptUrl = registered.decryptUrl
         ;(state as any)._decryptUrl = decryptUrl
       } catch {
         state.content = ''
@@ -1253,47 +1238,21 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     try {
       const newContent: string = state.content!
       const newBytes: Uint8Array = new TextEncoder().encode(newContent)
-      if (state.file._shareId) {
-        const apiUrl = `/file/shared/${encodeURIComponent(state.file._shareId)}/content/diff`
-        const apiData = {
-          base_size: state.baseSize,
-          edits: [{ offset: 0, delete: state.baseSize, insert: newContent }],
-        }
-        await api.put(apiUrl, apiData)
-      } else {
-        const apiUrl = '/file/content/diff'
-        const apiData = {
-          path: state.file.path,
-          base_size: state.baseSize,
-          edits: [{ offset: 0, delete: state.baseSize, insert: newContent }],
-        }
-        await api.put(apiUrl, apiData)
-      }
+      const generation = await writeEncryptedFile(
+        state.file.path,
+        newBytes.slice().buffer,
+        state.file.content_type || 'text/plain',
+        {
+          dek: state._dek,
+          expectedGeneration: state._generation,
+          shareId: state.file._shareId,
+        },
+      )
+      if (generation) state._generation = generation
       ;(state as any).baseSize = newBytes.length
       state.editing = false
       state.dirty = false
     } catch (e: any) {
-      const apiUrl = state.file._shareId
-        ? `/file/shared/${encodeURIComponent(state.file._shareId)}/content/diff`
-        : '/file/content/diff'
-      const apiData = state.file._shareId
-        ? {
-            base_size: state.baseSize,
-            edits: [{ offset: 0, delete: state.baseSize, insert: state.content! }],
-          }
-        : {
-            path: state.file.path,
-            base_size: state.baseSize,
-            edits: [{ offset: 0, delete: state.baseSize, insert: state.content! }],
-          }
-      const queued = await maybeQueuePendingOp(e, {
-        apiUrl,
-        apiMethod: 'put',
-        apiData,
-        type: 'saveViewer',
-        description: pendingDescription('saveViewer', state.file.name),
-      })
-      if (queued) return
       console.error('Save failed:', e)
     } finally {
       state.saving = false

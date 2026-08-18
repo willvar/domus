@@ -66,16 +66,6 @@ watch(() => props.show, (v) => {
         </template>
       </Card>
 
-      <Card :title="t('prefs.search_title')" size="small" style="margin-top: 16px">
-        <FormItem :label="t('prefs.index_content')">
-          <Switch
-            :value="prefs.indexContent"
-            @update:value="v => update({ indexContent: v })"
-          />
-        </FormItem>
-        <p class="prefs-hint">{{ t('prefs.index_content_hint') }}</p>
-      </Card>
-
       <Card :title="t('prefs.session_title')" size="small" style="margin-top: 16px">
         <FormItem :label="t('prefs.session_isolation')">
           <Switch

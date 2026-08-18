@@ -16,7 +16,7 @@
   "role": "user",
   "email": "alice@example.com",
   "totp_enabled": true,
-  "avatar_url": "/user/avatar/alice"
+  "avatar_endpoint": "/user/avatar/alice"
 }
 ```
 
@@ -154,13 +154,25 @@
 ```
 
 ## `GET /user/avatar/:username`
-公开读取用户头像。服务端会从 OSS 读取并解密后返回。
+获取公开头像的控制面访问描述。头像正文不会经过 Domus：浏览器使用 `url` 直接从
+OSS 获取密文，再用公开头像专属的 `dek` 在本地解密为 `image/webp`。头像本身是公开
+资料，因此该接口无需登录且其 DEK 不作为秘密；用户的 KEK 不会离开服务器。
 
 鉴权：无需登录
 
-响应：
-- 成功：`image/webp`
-- 失败：
+成功响应：
+```json
+{
+  "url": "https://oss.example.com/...presigned...",
+  "dek": "64-char-hex",
+  "size": 12345,
+  "content_type": "image/webp",
+  "chunk_size": 65536,
+  "generation": 3
+}
+```
+
+控制响应带 `Cache-Control: no-store`。失败响应：
 ```json
 {"error": "no_avatar"}
 ```

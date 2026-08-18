@@ -52,6 +52,18 @@ type MountIdentity struct {
 	Username string `json:"username"`
 }
 
+// MountOptions are the Domus manager's host-facing mount policy. The actual
+// FUSE implementation lives in github.com/willvar/dofs; keeping this small
+// transport type here avoids coupling lifecycle orchestration to filesystem
+// internals.
+type MountOptions struct {
+	Debug      bool
+	AllowOther bool
+	UID        uint32
+	GID        uint32
+	Writable   bool
+}
+
 // ManagedMount is the lifecycle surface the manager needs from a mounted
 // filesystem. Done must close only after the FUSE serve loop has exited and
 // the backend has released its plaintext keys, local lock, and database lease.
@@ -966,7 +978,17 @@ func (m *Manager) ReconcileOnce(ctx context.Context) error {
 		}
 	}
 	for _, userID := range desiredIDs {
-		if _, err := m.ensure(ctx, MountUserSelector{UserID: userID}, true); err != nil {
+		if _, err := m.ensure(ctx, MountUserSelector{UserID: userID}, true); errors.Is(err, ErrUserNotFound) {
+			// The product database is authoritative for user existence. A crash
+			// after account deletion or an older reset may leave a durable marker;
+			// forget it instead of keeping the whole manager permanently degraded.
+			if _, forgetErr := m.unmount(ctx, userID, true); forgetErr != nil {
+				reconcileErrors = append(reconcileErrors, fmt.Errorf("forget removed user %s: %w", userID, forgetErr))
+				m.recordReconcileFailure(userID, forgetErr)
+			} else {
+				m.logf("DOFS forgot stale desired state for removed user %s", userID)
+			}
+		} else if err != nil {
 			reconcileErrors = append(reconcileErrors, fmt.Errorf("user %s: %w", userID, err))
 			m.recordReconcileFailure(userID, err)
 		}

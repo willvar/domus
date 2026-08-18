@@ -46,7 +46,7 @@ async function loadProfile() {
   try {
     const { data } = await api.get('/user/')
     displayName.value = data.display_name || ''
-    avatarUrl.value = data.avatar_url || ''
+    avatarUrl.value = data.avatar_endpoint ? await auth.refreshAvatar() : ''
   } catch { /* ignore */ }
 }
 
@@ -113,9 +113,9 @@ async function handleAvatarFile(e: Event) {
     })
     // Upload via encrypted pipeline
     const { writeEncryptedFile } = await import('../../../composables/useCryptoUpload')
-    await writeEncryptedFile('/.user/avatar.webp', await blob.arrayBuffer(), 'image/webp')
-    // Refresh avatar display (backend cache already invalidated on upload complete)
-    avatarUrl.value = `/user/avatar/${encodeURIComponent(auth.username)}?t=${Date.now()}`
+    await writeEncryptedFile('/.user/avatar.webp', await blob.arrayBuffer(), 'image/webp', { internal: true })
+    // Fetch ciphertext directly from OSS and decrypt it into a browser-local URL.
+    avatarUrl.value = await auth.refreshAvatar()
     message.success(t('profile.avatar_updated'))
   } catch (err: any) {
     message.error(te(err, 'profile.avatar_failed'))

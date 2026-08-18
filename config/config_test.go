@@ -24,6 +24,10 @@ func validConfig() *Config {
 		Database: DatabaseConfig{
 			Host: "localhost",
 		},
+		DOFS: DOFSConfig{Metadata: DOFSMetadataConfig{
+			Driver: "sqlite",
+			SQLite: DOFSSQLiteMetadataConfig{BusyTimeoutSeconds: 5, MaxOpenConnections: 8},
+		}},
 		Workspace: WorkspaceConfig{
 			ControlSocket:      "/run/domus-workspace/control.sock",
 			MaxSessionsPerUser: 4, OperationTimeoutSeconds: 120,
@@ -309,6 +313,10 @@ func TestValidateDOFSRejectsUnsafeProductionLayout(t *testing.T) {
 	cfg := validConfig()
 	cfg.OSS.ServerEndpoint = cfg.OSS.ClientUploadEndpoint
 	cfg.DOFS = DOFSConfig{
+		Metadata: DOFSMetadataConfig{
+			Driver: "sqlite",
+			SQLite: DOFSSQLiteMetadataConfig{BusyTimeoutSeconds: 5, MaxOpenConnections: 8},
+		},
 		MountRoot: "/var/lib/domus/dofs/mounts", StateRoot: "/var/lib/domus/dofs/state",
 		ControlSocket: "/run/domus/dofs.sock", UID: 1000, GID: 1000,
 		Writable: true, AllowOther: true,

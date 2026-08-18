@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onBeforeUnmount } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useI18n } from '../composables/useI18n'
 import { useMessage } from '../composables/useMessage'
 import api from '../composables/useApi'
+import { loadPublicAvatar, revokeAvatarURL } from '../composables/useAvatar'
 import { IconSailBoat } from '../barrels/icons'
 import { Card, Form, FormItem, Input, Button, Tabs, TabPane } from '../barrels/breeze'
 
@@ -31,17 +32,34 @@ const loading = ref(false)
 const loginAvatarUrl = ref('')
 let lastAvatarUser = ''
 
+function replaceLoginAvatar(next: string): void {
+  const previous = loginAvatarUrl.value
+  loginAvatarUrl.value = next
+  if (previous && previous !== next) revokeAvatarURL(previous)
+}
+
 async function fetchAvatar() {
   const name = username.value.trim()
-  if (!name || name === lastAvatarUser) return
+  if (!name) {
+    lastAvatarUser = ''
+    replaceLoginAvatar('')
+    return
+  }
+  if (name === lastAvatarUser) return
   lastAvatarUser = name
   try {
-    const res = await api.get(`/user/avatar/${encodeURIComponent(name)}`)
-    loginAvatarUrl.value = res.data.avatar_url || ''
+    const resolved = await loadPublicAvatar(name)
+    if (username.value.trim() !== name) {
+      revokeAvatarURL(resolved)
+      return
+    }
+    replaceLoginAvatar(resolved)
   } catch {
-    loginAvatarUrl.value = ''
+    if (lastAvatarUser === name) replaceLoginAvatar('')
   }
 }
+
+onBeforeUnmount(() => replaceLoginAvatar(''))
 
 onMounted(async () => {
   try {

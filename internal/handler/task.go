@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"strings"
 
 	"github.com/gofiber/fiber/v2"
@@ -51,14 +52,17 @@ func (h *Handler) cancelTask(session *model.Session, taskID string) error {
 	}
 
 	if task.Type == "upload" {
-		files, _ := h.Repos.Files.ListByPrefix(task.UserID, "")
+		files, _ := h.Repos.Files.ListActiveUploads(task.UserID)
 		for _, f := range files {
 			if f.TaskID == taskID && f.Status == "uploading" {
 				if f.OSSUploadID != "" {
-					_ = h.Store.AbortMultipartUpload(f.Path, f.OSSUploadID)
+					_ = h.Store.AbortMultipartUpload(f.StorageKey(), f.OSSUploadID)
 				}
-				_ = h.Store.DeleteObject(f.Path)
-				_ = h.Repos.Files.Delete(task.UserID, f.Path)
+				if h.FileSystem != nil {
+					_ = h.FileSystem.AbortDirectUpload(context.Background(), task.UserID, f.UploadID)
+				} else {
+					_ = h.Repos.Files.Delete(task.UserID, f.Path)
+				}
 				if ownerUsername != "" {
 					h.notifyParentDir(ownerUsername, f.Path)
 				}

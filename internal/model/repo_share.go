@@ -1,31 +1,27 @@
 package model
 
-import (
-	"path/filepath"
-
-	"gorm.io/gorm"
-)
+import "gorm.io/gorm"
 
 // ShareRepo defines share data access operations.
 type ShareRepo interface {
 	Create(share *Share) error
 	GetByID(shareID string) (*Share, error)
-	ListForFile(ownerID, filePath string) ([]Share, error)
+	GetByDatabaseID(id int64) (*Share, error)
 	ListOwnedByUser(ownerID string) ([]Share, error)
 	ListForUser(targetUserID string) ([]Share, error)
 	ListAsFiles(targetUserID string) ([]ShareFileView, error)
 	Delete(id int64, userID string) (bool, error)
 	UpdateFileSize(shareID string, newSize int64) error
-	DeleteByPath(ownerID, filePath string) error
-	DeleteByPrefix(ownerID, prefix string) error
-	MoveByPath(ownerID, oldPath, newPath string) error
-	MoveByPrefix(ownerID, oldPrefix, newPrefix string) error
-	GetForUser(filePath, targetUserID string) (*Share, error)
+	SyncByInode(ownerID string, inode int64, filePath, fileName string, fileSize int64, contentType string) error
+	DeleteByInode(ownerID string, inode int64) error
 }
 
 type gormShareRepo struct{ db *gorm.DB }
 
 func (r *gormShareRepo) Create(share *Share) error {
+	if share == nil || share.FileInode <= 0 {
+		return ErrInvalidShareInode
+	}
 	return r.db.Create(share).Error
 }
 
@@ -37,11 +33,12 @@ func (r *gormShareRepo) GetByID(shareID string) (*Share, error) {
 	return &s, nil
 }
 
-func (r *gormShareRepo) ListForFile(ownerID, filePath string) ([]Share, error) {
-	var shares []Share
-	err := r.db.Where("owner_id = ? AND file_path = ?", ownerID, filePath).
-		Order("created_at DESC").Find(&shares).Error
-	return shares, err
+func (r *gormShareRepo) GetByDatabaseID(id int64) (*Share, error) {
+	var share Share
+	if err := r.db.Where("id = ?", id).First(&share).Error; err != nil {
+		return nil, err
+	}
+	return &share, nil
 }
 
 func (r *gormShareRepo) ListOwnedByUser(ownerID string) ([]Share, error) {
@@ -81,36 +78,18 @@ func (r *gormShareRepo) UpdateFileSize(shareID string, newSize int64) error {
 	return r.db.Model(&Share{}).Where("share_id = ?", shareID).Update("file_size", newSize).Error
 }
 
-func (r *gormShareRepo) DeleteByPath(ownerID, filePath string) error {
-	return r.db.Where("owner_id = ? AND file_path = ?", ownerID, filePath).Delete(&Share{}).Error
-}
-
-func (r *gormShareRepo) DeleteByPrefix(ownerID, prefix string) error {
-	return r.db.Where("owner_id = ? AND file_path LIKE ?", ownerID, prefix+"%").Delete(&Share{}).Error
-}
-
-func (r *gormShareRepo) MoveByPath(ownerID, oldPath, newPath string) error {
-	return r.db.Model(&Share{}).
-		Where("owner_id = ? AND file_path = ?", ownerID, oldPath).
-		Updates(map[string]interface{}{
-			"file_path": newPath,
-			"file_name": filepath.Base(newPath),
-		}).Error
-}
-
-func (r *gormShareRepo) MoveByPrefix(ownerID, oldPrefix, newPrefix string) error {
-	return r.db.Model(&Share{}).
-		Where("owner_id = ? AND file_path LIKE ?", ownerID, oldPrefix+"%").
-		Updates(map[string]interface{}{
-			"file_path": gorm.Expr("REPLACE(file_path, ?, ?)", oldPrefix, newPrefix),
-		}).Error
-}
-
-func (r *gormShareRepo) GetForUser(filePath, targetUserID string) (*Share, error) {
-	var s Share
-	if err := r.db.Where("file_path = ? AND target_user_id = ?", filePath, targetUserID).
-		First(&s).Error; err != nil {
-		return nil, err
+func (r *gormShareRepo) SyncByInode(ownerID string, inode int64, filePath, fileName string, fileSize int64, contentType string) error {
+	if inode <= 0 {
+		return nil
 	}
-	return &s, nil
+	return r.db.Model(&Share{}).Where("owner_id = ? AND file_inode = ?", ownerID, inode).Updates(map[string]any{
+		"file_path": filePath, "file_name": fileName, "file_size": fileSize, "content_type": contentType,
+	}).Error
+}
+
+func (r *gormShareRepo) DeleteByInode(ownerID string, inode int64) error {
+	if inode <= 0 {
+		return nil
+	}
+	return r.db.Where("owner_id = ? AND file_inode = ?", ownerID, inode).Delete(&Share{}).Error
 }

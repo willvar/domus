@@ -1,6 +1,7 @@
 package model
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -68,46 +69,50 @@ func ResetDatabase(cfg config.DatabaseConfig) error {
 	return nil
 }
 
-// InitDB initializes the database connection, runs migrations, and returns:
-//   - the *gorm.DB handle
-//   - whether pg_jieba full-text search is available
-func InitDB(cfg config.DatabaseConfig) (*gorm.DB, bool, error) {
+// InitDB initializes the product database connection and runs migrations.
+// User file contents are not indexed here; filename search is derived from
+// the DOFS namespace projection.
+func InitDB(cfg config.DatabaseConfig) (*gorm.DB, error) {
 	if err := ensureDatabase(cfg); err != nil {
-		return nil, false, err
+		return nil, err
 	}
 
 	db, err := gorm.Open(postgres.Open(cfg.DSN()), &gorm.Config{
 		Logger: logger.Default.LogMode(logger.Silent),
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("open db: %w", err)
+		return nil, fmt.Errorf("open db: %w", err)
+	}
+	if err := rejectLegacyFileSchema(db); err != nil {
+		return nil, err
 	}
 
-	if err := db.AutoMigrate(&User{}, &FileRecord{}, &DBSession{}, &Task{}, &AuditLog{}, &WorkspaceState{}, &Share{}); err != nil {
-		return nil, false, fmt.Errorf("auto migrate: %w", err)
+	// Path-only shares belong to the retired file model and cannot be mapped
+	// safely to an independent DOFS inode. Revoke them before adding the inode
+	// constraint rather than preserving a stale path capability.
+	if err := revokeLegacyPathShares(db); err != nil {
+		return nil, err
 	}
 
-	// One-time migration: drop legacy jobs table (dispatcher/jobs subsystem removed)
-	db.Exec("DROP TABLE IF EXISTS jobs")
-
-	// One-time migration: drop legacy uploads table (merged into files)
-	db.Exec("DROP TABLE IF EXISTS uploads")
-
-	// One-time migration: drop share_type column (sharing is now user-to-user only)
-	db.Exec("ALTER TABLE shares DROP COLUMN IF EXISTS share_type")
-
-	// Full-text search: prefer pg_jieba for Chinese segmentation
-	db.Exec("CREATE EXTENSION IF NOT EXISTS pg_jieba")
-	var ftsConf string
-	fts := false
-	if err := db.Raw("SELECT cfgname FROM pg_ts_config WHERE cfgname = 'jiebacfg' LIMIT 1").Scan(&ftsConf).Error; err == nil && ftsConf == "jiebacfg" {
-		fts = true
-		db.Exec("CREATE INDEX IF NOT EXISTS idx_fts ON files USING gin(search_vector)")
+	if err := db.AutoMigrate(&User{}, &DBSession{}, &Task{}, &AuditLog{}, &WorkspaceState{}, &Share{}); err != nil {
+		return nil, fmt.Errorf("auto migrate: %w", err)
 	}
+	return db, nil
+}
 
-	// pg_trgm for ILIKE fallback search (always available, built-in contrib)
-	db.Exec("CREATE EXTENSION IF NOT EXISTS pg_trgm")
-	db.Exec("CREATE INDEX IF NOT EXISTS idx_files_name_trgm ON files USING gin(name gin_trgm_ops)")
+func rejectLegacyFileSchema(db *gorm.DB) error {
+	if db.Migrator().HasTable("files") {
+		return errors.New("legacy files table detected: this release has no in-place file migration; back up with the previous Domus release, then run `domus reset -c <config> --yes` or use an explicit migration tool")
+	}
+	return nil
+}
 
-	return db, fts, nil
+func revokeLegacyPathShares(db *gorm.DB) error {
+	if !db.Migrator().HasTable(&Share{}) || !db.Migrator().HasColumn(&Share{}, "FileInode") {
+		return nil
+	}
+	if err := db.Exec("DELETE FROM shares WHERE file_inode IS NULL OR file_inode <= 0").Error; err != nil {
+		return fmt.Errorf("revoke legacy path-only shares: %w", err)
+	}
+	return nil
 }

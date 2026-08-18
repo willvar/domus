@@ -6,6 +6,7 @@ import { useWebSocket } from '../composables/useWebSocket'
 import { useWindowManagerStore } from './windowManager'
 import { useWorkspaceSync } from '../composables/useWorkspaceSync'
 import { usePreferences } from '../composables/usePreferences'
+import { loadPublicAvatar, revokeAvatarURL } from '../composables/useAvatar'
 import type { User, VerifyRequest, VerifyResponse, LoginRequest, LoginResponse } from '../types'
 
 export const useAuthStore = defineStore('auth', () => {
@@ -20,16 +21,33 @@ export const useAuthStore = defineStore('auth', () => {
   const isRoot: ComputedRef<boolean> = computed(() => user.value?.role === 'root')
   const username: ComputedRef<string> = computed(() => user.value?.username || '')
 
+  function replaceUser(next: User | null): void {
+    const previousAvatar = user.value?.avatar_url
+    user.value = next
+    if (previousAvatar && previousAvatar !== next?.avatar_url) revokeAvatarURL(previousAvatar)
+  }
+
+  async function hydrateAvatar(source: User): Promise<User> {
+    const hydrated = { ...source, avatar_url: '' }
+    if (!source.avatar_endpoint) return hydrated
+    try {
+      hydrated.avatar_url = await loadPublicAvatar(source.username)
+    } catch {
+      hydrated.avatar_url = ''
+    }
+    return hydrated
+  }
+
   async function checkAuth(): Promise<void> {
     loading.value = true
     try {
       const res = await api.get<User>('/user')
-      user.value = res.data
+      replaceUser(await hydrateAvatar(res.data))
       useWindowManagerStore().setUser(res.data.id)
       // Connect WebSocket after confirming auth
       ws.connect()
     } catch {
-      user.value = null
+      replaceUser(null)
     } finally {
       loading.value = false
       initialized.value = true
@@ -56,7 +74,7 @@ export const useAuthStore = defineStore('auth', () => {
   async function login(body: LoginRequest): Promise<LoginResponse> {
     const res = await api.post<LoginResponse>('/auth', body)
     if (res.data.user) {
-      user.value = res.data.user
+      replaceUser(await hydrateAvatar(res.data.user))
       useWindowManagerStore().setUser(res.data.user.id)
       if (res.data.needs_setup) {
         needsSetup.value = true
@@ -65,6 +83,20 @@ export const useAuthStore = defineStore('auth', () => {
       ws.connect()
     }
     return res.data
+  }
+
+  async function refreshAvatar(): Promise<string> {
+    if (!user.value) return ''
+    try {
+      const nextAvatar = await loadPublicAvatar(user.value.username)
+      const previousAvatar = user.value.avatar_url
+      user.value.avatar_endpoint = `/user/avatar/${encodeURIComponent(user.value.username)}`
+      user.value.avatar_url = nextAvatar
+      if (previousAvatar && previousAvatar !== nextAvatar) revokeAvatarURL(previousAvatar)
+      return nextAvatar
+    } catch {
+      return user.value.avatar_url || ''
+    }
   }
 
   async function logout(): Promise<void> {
@@ -83,14 +115,14 @@ export const useAuthStore = defineStore('auth', () => {
       await api.delete('/auth')
     } finally {
       useWindowManagerStore().clearUser()
-      user.value = null
+      replaceUser(null)
     }
   }
 
   function clearSession(): void {
     ws.disconnect()
     useWindowManagerStore().clearUser()
-    user.value = null
+    replaceUser(null)
     loading.value = false
     initialized.value = true
   }
@@ -112,6 +144,7 @@ export const useAuthStore = defineStore('auth', () => {
     ensureAuthInitialized,
     verify,
     login,
+    refreshAvatar,
     logout,
   }
 })

@@ -4,17 +4,16 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
-	"path/filepath"
-	"strings"
 	"sync"
-
-	lru "github.com/hashicorp/golang-lru/v2"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
+	"github.com/willvar/dofs"
 
 	"domus/config"
 	"domus/internal/auth"
+	"domus/internal/dofsbridge"
+	"domus/internal/fileview"
 	"domus/internal/middleware"
 	"domus/internal/model"
 	"domus/internal/service"
@@ -24,19 +23,11 @@ import (
 	"domus/internal/ws"
 )
 
-// avatarCacheMaxBytes is the total memory budget for the decrypted avatar LRU cache.
-const avatarCacheMaxBytes = 50 * 1024 * 1024 // 50 MB
-
-// avatarEntry holds a decrypted avatar image in the LRU cache.
-type avatarEntry struct {
-	data []byte
-}
-
 // Handler holds all dependencies for HTTP handlers.
 type Handler struct {
 	Config     *config.Config
 	Repos      *model.Repos
-	Store      store.FileStore
+	Store      store.ControlStore
 	Email      service.EmailSender
 	Audit      *model.AuditWorker
 	Challenges *auth.ChallengeManager
@@ -44,8 +35,8 @@ type Handler struct {
 	Hub        *ws.Hub
 	Terminal   *terminal.Manager
 	Workspace  workspaceRuntime.Service
-
-	avatarCache *lru.Cache[string, *avatarEntry]
+	DOFS       *dofsbridge.Runtime
+	FileSystem *fileview.Repo
 
 	mediaMu         sync.Mutex
 	mediaJobs       map[string]context.CancelFunc
@@ -67,11 +58,6 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	}
 	if h.Hub == nil {
 		h.Hub = ws.NewHub()
-	}
-
-	// Initialize avatar LRU cache (max 500 entries; byte-budget enforced on evict)
-	if h.avatarCache == nil {
-		h.avatarCache, _ = lru.New[string, *avatarEntry](500)
 	}
 
 	// /auth (public)
@@ -115,11 +101,10 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 
 	// /file
 	file := authed.Group("/file")
+	file.Use(rejectFileContentPayload)
 	file.Get("/", h.handleList)
 	file.Get("/search", h.handleSearch)
 	file.Get("/access", h.handleFileAccess)
-	file.Put("/content/diff", h.handlePatchContent)
-	file.Put("/shared/:share_id/content/diff", h.handleSharePatchContent)
 	file.Post("/transcode", h.handleTranscode)
 	file.Post("/mkdir", h.handleMkdir)
 	file.Post("/rename", h.handleRename)
@@ -189,6 +174,7 @@ func (h *Handler) loadUserKEK(userID string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+	defer dofs.Clear(serverKey)
 	wrappedBytes, err := hex.DecodeString(wrappedHex)
 	if err != nil {
 		return nil, fmt.Errorf("decode wrapped KEK: %w", err)
@@ -203,71 +189,15 @@ func (h *Handler) generateWrappedKEK() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("generate KEK: %w", err)
 	}
+	defer dofs.Clear(kek)
 	serverKey, err := auth.ServerKeyFromSecret(h.Config.Server.EncryptionSecret)
 	if err != nil {
 		return "", err
 	}
+	defer dofs.Clear(serverKey)
 	wrapped, err := auth.WrapKEK(serverKey, kek)
 	if err != nil {
 		return "", fmt.Errorf("wrap KEK: %w", err)
 	}
 	return hex.EncodeToString(wrapped), nil
-}
-
-// cloneDirFiles copies file records from srcPrefix to dstPrefix,
-// preserving WrappedDEK, plaintext size, and other metadata.
-func (h *Handler) cloneDirFiles(userID, srcPrefix, dstPrefix string) error {
-	records, err := h.Repos.Files.ListByPrefix(userID, srcPrefix)
-	if err != nil {
-		return err
-	}
-	thumbnailCopies := make(map[string]string, len(records))
-	for _, r := range records {
-		if r.IsDir {
-			continue
-		}
-		newPath := dstPrefix + strings.TrimPrefix(r.Path, srcPrefix)
-		thumbnailCopies[r.StorageKey()] = newPath
-	}
-	type thumbnailUpdate struct {
-		path, key, wrappedDEK string
-		width, height         int
-		duration              float64
-	}
-	thumbnailUpdates := make([]thumbnailUpdate, 0)
-	for _, r := range records {
-		newPath := dstPrefix + strings.TrimPrefix(r.Path, srcPrefix)
-		newName := filepath.Base(strings.TrimSuffix(newPath, "/"))
-		if !r.IsDir && r.StorageKey() != r.Path {
-			if err := h.Store.CopyObject(r.StorageKey(), newPath); err != nil {
-				return err
-			}
-		}
-		var opts []model.UpsertFileOpts
-		if r.WrappedDEK != "" {
-			opts = append(opts, model.UpsertFileOpts{WrappedDEK: r.WrappedDEK})
-		}
-		if err := h.Repos.Files.Upsert(userID, newPath, newName, r.IsDir, r.Size, r.ContentType, r.ContentHash, opts...); err != nil {
-			return err
-		}
-		if r.ThumbnailKey != "" {
-			if copiedThumbnailKey, ok := thumbnailCopies[r.ThumbnailKey]; ok {
-				thumbnailUpdates = append(thumbnailUpdates, thumbnailUpdate{
-					path: newPath, key: copiedThumbnailKey, wrappedDEK: r.ThumbnailWrappedDEK,
-					width: r.MediaWidth, height: r.MediaHeight, duration: r.MediaDuration,
-				})
-			}
-		}
-	}
-	// Attach metadata only after every copied thumbnail row and object exists;
-	// a partial directory copy never publishes a dangling preview pointer.
-	for _, update := range thumbnailUpdates {
-		if err := h.Repos.Files.UpdateThumbnail(
-			userID, update.path, update.key, update.wrappedDEK,
-			update.width, update.height, update.duration,
-		); err != nil {
-			return err
-		}
-	}
-	return nil
 }

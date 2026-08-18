@@ -137,7 +137,7 @@ async function onFileSelected(e: Event) {
 
   try {
     const { writeEncryptedFile } = await import('../../composables/useCryptoUpload')
-    await writeEncryptedFile(`/.user/${path}`, await file.arrayBuffer(), file.type)
+    await writeEncryptedFile(`/.user/${path}`, await file.arrayBuffer(), file.type, { internal: true })
 
     const blobUrl = URL.createObjectURL(file)
     blobCache.set(path, blobUrl)

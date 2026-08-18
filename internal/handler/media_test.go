@@ -139,11 +139,15 @@ func TestServerPreviewDoesNotAttachStaleGeneration(t *testing.T) {
 		result, err := baseExec(ctx, request)
 		if len(request.Command) > 0 && request.Command[0] == "/usr/local/bin/domus-preview" && err == nil {
 			once.Do(func() {
-				updated, updateErr := repos.Files.CommitGeneration(
-					user.ID, source.ID, source.Generation, ".dofs/objects/"+user.ID+"/new-generation", 128,
+				updateErr := repos.Files.Upsert(
+					user.ID, source.Path, source.Name, false, 128, source.ContentType, "",
+					model.UpsertFileOpts{
+						WrappedDEK: source.WrappedDEK,
+						ObjectKey:  ".dofs/objects/" + user.ID + "/new-generation",
+					},
 				)
-				if updateErr != nil || !updated {
-					t.Errorf("CommitGeneration() = %v, %v", updated, updateErr)
+				if updateErr != nil {
+					t.Errorf("replace generation: %v", updateErr)
 				}
 			})
 		}

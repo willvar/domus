@@ -3,19 +3,26 @@ package cmd
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
+	"net"
 	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
+
+	dofssqlite "github.com/willvar/dofs/metadata/sqlite"
 
 	"domus/config"
 	"domus/internal/model"
@@ -25,7 +32,9 @@ import (
 	"domus/shared/version"
 )
 
-const backupManifestVersion = 1
+const backupManifestVersion = 2
+
+const dofsSQLiteBackupName = "dofs-metadata.sqlite"
 
 type backupManifest struct {
 	FormatVersion               int                    `json:"format_version"`
@@ -33,6 +42,7 @@ type backupManifest struct {
 	LegacyZephyrVersion         string                 `json:"zephyr_version,omitempty"`
 	CreatedAt                   time.Time              `json:"created_at"`
 	DatabaseName                string                 `json:"database_name"`
+	DOFSMetadataDriver          string                 `json:"dofs_metadata_driver"`
 	Bucket                      string                 `json:"bucket"`
 	EncryptionSecretFingerprint string                 `json:"encryption_secret_fingerprint"`
 	ObjectCount                 int                    `json:"object_count"`
@@ -138,6 +148,12 @@ func backupInstance(cfg *config.Config, configPath, backupDir string, deps backu
 	if running {
 		return fmt.Errorf("service is running (PID: %d). Stop it before backup", pid)
 	}
+	if err := requireDOFSStopped(cfg.DOFS.ControlSocket); err != nil {
+		return err
+	}
+	if err := requireWorkspaceStopped(cfg.Workspace.ControlSocket); err != nil {
+		return err
+	}
 
 	logger.Info("Backing up Domus instance")
 	logger.Info("  Config file: %s", configPath)
@@ -145,7 +161,7 @@ func backupInstance(cfg *config.Config, configPath, backupDir string, deps backu
 	logger.Info("  Bucket: %s", cfg.OSS.Bucket)
 	logger.Info("  Output: %s", backupDir)
 
-	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+	if err := os.MkdirAll(backupDir, 0o700); err != nil {
 		return fmt.Errorf("create backup directory: %w", err)
 	}
 
@@ -163,6 +179,7 @@ func backupInstance(cfg *config.Config, configPath, backupDir string, deps backu
 		DomusVersion:                version.Version,
 		CreatedAt:                   deps.now().UTC(),
 		DatabaseName:                cfg.Database.DBName,
+		DOFSMetadataDriver:          cfg.DOFS.Metadata.Driver,
 		Bucket:                      cfg.OSS.Bucket,
 		EncryptionSecretFingerprint: encryptionSecretFingerprint(cfg.Server.EncryptionSecret),
 		ObjectCount:                 len(objects),
@@ -176,7 +193,7 @@ func backupInstance(cfg *config.Config, configPath, backupDir string, deps backu
 	completedFileObjects := 0
 
 	objectsDir := filepath.Join(backupDir, "objects")
-	if err := os.MkdirAll(objectsDir, 0o755); err != nil {
+	if err := os.MkdirAll(objectsDir, 0o700); err != nil {
 		return fmt.Errorf("create objects directory: %w", err)
 	}
 
@@ -193,14 +210,14 @@ func backupInstance(cfg *config.Config, configPath, backupDir string, deps backu
 			return fmt.Errorf("invalid object key %q: %w", obj.Key, err)
 		}
 		localPath := filepath.Join(objectsDir, relPath)
-		if err := os.MkdirAll(filepath.Dir(localPath), 0o755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(localPath), 0o700); err != nil {
 			return fmt.Errorf("create object parent directory for %q: %w", obj.Key, err)
 		}
 		reader, err := fileStore.GetObjectContent(obj.Key)
 		if err != nil {
 			return fmt.Errorf("read object %q: %w", obj.Key, err)
 		}
-		if err := writeStreamToFile(localPath, reader); err != nil {
+		if err := writeStreamToFile(localPath, reader, obj.Size); err != nil {
 			_ = reader.Close()
 			return fmt.Errorf("write object %q: %w", obj.Key, err)
 		}
@@ -219,6 +236,9 @@ func backupInstance(cfg *config.Config, configPath, backupDir string, deps backu
 		return fmt.Errorf("dump database: %w", err)
 	}
 	logger.Info("Database dump complete")
+	if err := backupDOFSMetadata(cfg, filepath.Join(backupDir, dofsSQLiteBackupName)); err != nil {
+		return fmt.Errorf("backup DOFS metadata: %w", err)
+	}
 
 	if err := writeManifest(filepath.Join(backupDir, "manifest.json"), manifest); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
@@ -235,6 +255,12 @@ func restoreInstance(cfg *config.Config, configPath, backupDir string, confirmed
 	if running {
 		return fmt.Errorf("service is running (PID: %d). Stop it before restore", pid)
 	}
+	if err := requireDOFSStopped(cfg.DOFS.ControlSocket); err != nil {
+		return err
+	}
+	if err := requireWorkspaceStopped(cfg.Workspace.ControlSocket); err != nil {
+		return err
+	}
 	if !confirmed {
 		return fmt.Errorf("restore is destructive. Re-run with --yes to replace database %q and bucket %q", cfg.Database.DBName, cfg.OSS.Bucket)
 	}
@@ -246,8 +272,23 @@ func restoreInstance(cfg *config.Config, configPath, backupDir string, confirmed
 	if manifest.FormatVersion != backupManifestVersion {
 		return fmt.Errorf("unsupported backup format version %d", manifest.FormatVersion)
 	}
+	if manifest.DOFSMetadataDriver != cfg.DOFS.Metadata.Driver {
+		return fmt.Errorf("backup DOFS metadata driver %q does not match configured driver %q", manifest.DOFSMetadataDriver, cfg.DOFS.Metadata.Driver)
+	}
 	if manifest.EncryptionSecretFingerprint != encryptionSecretFingerprint(cfg.Server.EncryptionSecret) {
 		return fmt.Errorf("backup encryption fingerprint does not match current config")
+	}
+	if err := validateRestoreBundle(cfg, backupDir, manifest); err != nil {
+		return fmt.Errorf("validate backup before destructive restore: %w", err)
+	}
+	if err := validateDOFSMetadataReset(cfg); err != nil {
+		return fmt.Errorf("validate DOFS metadata target before destructive restore: %w", err)
+	}
+	if err := validateDOFSRuntimeStateReset(cfg); err != nil {
+		return fmt.Errorf("validate DOFS runtime state before destructive restore: %w", err)
+	}
+	if err := validateWorkspaceRuntimeStateReset(cfg); err != nil {
+		return fmt.Errorf("validate Workspace runtime state before destructive restore: %w", err)
 	}
 
 	logger.Info("Restoring Domus instance")
@@ -256,15 +297,33 @@ func restoreInstance(cfg *config.Config, configPath, backupDir string, confirmed
 	logger.Info("  Bucket: %s", cfg.OSS.Bucket)
 	logger.Info("  Input: %s", backupDir)
 
-	if err := deps.resetDB(cfg.Database); err != nil {
-		return fmt.Errorf("reset database: %w", err)
-	}
-	logger.Info("Database reset complete")
-
+	// Construct and validate the object-store client before the first
+	// destructive action. A malformed endpoint or credential must not leave a
+	// freshly reset database paired with an untouched bucket.
 	fileStore, err := deps.newStore(cfg.OSS)
 	if err != nil {
 		return fmt.Errorf("init OSS client: %w", err)
 	}
+	checkContext, cancelCheck := context.WithTimeout(context.Background(), 30*time.Second)
+	checkErr := fileStore.Check(checkContext)
+	cancelCheck()
+	if checkErr != nil {
+		return fmt.Errorf("validate OSS bucket before destructive restore: %w", checkErr)
+	}
+
+	if err := deps.resetDB(cfg.Database); err != nil {
+		return fmt.Errorf("reset database: %w", err)
+	}
+	logger.Info("Database reset complete")
+	if err := clearDOFSRuntimeState(cfg); err != nil {
+		return fmt.Errorf("database reset completed, but failed to clear DOFS runtime state: %w", err)
+	}
+	logger.Info("DOFS runtime state reset complete")
+	if err := clearWorkspaceRuntimeState(cfg); err != nil {
+		return fmt.Errorf("database and DOFS state reset completed, but failed to clear Workspace runtime state: %w", err)
+	}
+	logger.Info("Workspace runtime state reset complete")
+
 	if err := fileStore.DeleteAllObjects(nil); err != nil {
 		return fmt.Errorf("clear bucket %q: %w", cfg.OSS.Bucket, err)
 	}
@@ -289,12 +348,26 @@ func restoreInstance(cfg *config.Config, configPath, backupDir string, confirmed
 		if err != nil {
 			return fmt.Errorf("invalid object key %q: %w", obj.Key, err)
 		}
-		data, err := os.ReadFile(filepath.Join(backupDir, "objects", relPath))
+		objectPath := filepath.Join(backupDir, "objects", relPath)
+		file, err := os.Open(objectPath)
 		if err != nil {
-			return fmt.Errorf("read backup object %q: %w", obj.Key, err)
+			return fmt.Errorf("open backup object %q: %w", obj.Key, err)
 		}
-		if err := fileStore.PutObjectBytes(obj.Key, data); err != nil {
+		info, err := file.Stat()
+		if err != nil {
+			_ = file.Close()
+			return fmt.Errorf("inspect backup object %q: %w", obj.Key, err)
+		}
+		if !info.Mode().IsRegular() || info.Size() != obj.Size {
+			_ = file.Close()
+			return fmt.Errorf("backup object %q size differs from manifest", obj.Key)
+		}
+		if err := fileStore.PutObject(obj.Key, file, obj.Size); err != nil {
+			_ = file.Close()
 			return fmt.Errorf("restore object %q: %w", obj.Key, err)
+		}
+		if err := file.Close(); err != nil {
+			return fmt.Errorf("close backup object %q: %w", obj.Key, err)
 		}
 		logObjectProgress("restore files", i+1, len(files), obj.Key)
 	}
@@ -304,6 +377,9 @@ func restoreInstance(cfg *config.Config, configPath, backupDir string, confirmed
 		return fmt.Errorf("import database: %w", err)
 	}
 	logger.Info("Database import complete")
+	if err := restoreDOFSMetadata(cfg, filepath.Join(backupDir, dofsSQLiteBackupName)); err != nil {
+		return fmt.Errorf("restore DOFS metadata: %w", err)
+	}
 	return nil
 }
 
@@ -360,28 +436,365 @@ func encryptionSecretFingerprint(secret string) string {
 }
 
 func objectRelativePath(key string) (string, error) {
-	trimmed := strings.TrimSuffix(key, "/")
-	cleaned := path.Clean("/" + trimmed)
-	rel := strings.TrimPrefix(cleaned, "/")
-	if rel == "" || rel == "." {
+	if key == "" || strings.HasSuffix(key, "/") || strings.IndexByte(key, 0) >= 0 {
 		return "", fmt.Errorf("empty object path")
 	}
-	if strings.Contains(rel, "../") || rel == ".." {
-		return "", fmt.Errorf("path traversal is not allowed")
-	}
-	return filepath.FromSlash(rel), nil
+	// Object keys are opaque S3 bytes, not filesystem paths. Hashing the exact
+	// key avoids traversal, normalization collisions (a//b vs a/b), platform
+	// filename restrictions and deeply nested attacker-controlled paths. The
+	// manifest remains the reversible key-to-object mapping.
+	digest := sha256.Sum256([]byte(key))
+	encoded := hex.EncodeToString(digest[:])
+	return filepath.Join(encoded[:2], encoded), nil
 }
 
-func writeStreamToFile(path string, reader io.Reader) error {
-	file, err := os.Create(path)
+func validateRestoreBundle(cfg *config.Config, backupDir string, manifest backupManifest) error {
+	if manifest.ObjectCount != len(manifest.Objects) {
+		return fmt.Errorf("manifest object_count is %d, but contains %d entries", manifest.ObjectCount, len(manifest.Objects))
+	}
+	seen := make(map[string]struct{}, len(manifest.Objects))
+	var totalSize int64
+	for _, object := range manifest.Objects {
+		if object.Key == "" || strings.IndexByte(object.Key, 0) >= 0 {
+			return errors.New("manifest contains an invalid empty object key")
+		}
+		if _, exists := seen[object.Key]; exists {
+			return fmt.Errorf("manifest contains duplicate object key %q", object.Key)
+		}
+		seen[object.Key] = struct{}{}
+		if object.Size < 0 || totalSize > math.MaxInt64-object.Size {
+			return fmt.Errorf("manifest object %q has an invalid size", object.Key)
+		}
+		totalSize += object.Size
+		if object.IsDir {
+			if !strings.HasSuffix(object.Key, "/") || object.Size != 0 {
+				return fmt.Errorf("manifest directory marker %q is invalid", object.Key)
+			}
+			continue
+		}
+		if strings.HasSuffix(object.Key, "/") {
+			return fmt.Errorf("manifest file object %q ends with a slash", object.Key)
+		}
+		relative, err := objectRelativePath(object.Key)
+		if err != nil {
+			return fmt.Errorf("manifest object %q: %w", object.Key, err)
+		}
+		if err := requireRegularFile(filepath.Join(backupDir, "objects", relative), &object.Size); err != nil {
+			return fmt.Errorf("backup object %q: %w", object.Key, err)
+		}
+	}
+	if totalSize != manifest.TotalSize {
+		return fmt.Errorf("manifest total_size is %d, computed %d", manifest.TotalSize, totalSize)
+	}
+	if err := requireRegularFile(filepath.Join(backupDir, "database.sql"), nil); err != nil {
+		return fmt.Errorf("database.sql: %w", err)
+	}
+	return validateDOFSBackupSnapshot(cfg, filepath.Join(backupDir, dofsSQLiteBackupName))
+}
+
+func requireRegularFile(filePath string, expectedSize *int64) error {
+	info, err := os.Lstat(filePath)
 	if err != nil {
 		return err
 	}
-	defer file.Close()
-	if _, err := io.Copy(file, reader); err != nil {
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return errors.New("must be a regular file, not a symlink")
+	}
+	if expectedSize != nil && info.Size() != *expectedSize {
+		return fmt.Errorf("size is %d, expected %d", info.Size(), *expectedSize)
+	}
+	return nil
+}
+
+func validateDOFSBackupSnapshot(cfg *config.Config, source string) error {
+	switch cfg.DOFS.Metadata.Driver {
+	case "postgres":
+		return nil
+	case "sqlite":
+		if err := requireRegularFile(source, nil); err != nil {
+			return fmt.Errorf("DOFS SQLite snapshot: %w", err)
+		}
+		temporaryDirectory, err := os.MkdirTemp("", "domus-dofs-validate-*")
+		if err != nil {
+			return err
+		}
+		defer func() { _ = os.RemoveAll(temporaryDirectory) }()
+		copyPath := filepath.Join(temporaryDirectory, "metadata.sqlite")
+		if err := copyRegularFile(source, copyPath, 0600); err != nil {
+			return err
+		}
+		metadata, err := dofssqlite.Open(context.Background(), dofssqlite.Config{
+			Path: copyPath, BusyTimeout: time.Duration(cfg.DOFS.Metadata.SQLite.BusyTimeoutSeconds) * time.Second,
+			MaxOpenConnections: cfg.DOFS.Metadata.SQLite.MaxOpenConnections,
+		})
+		if err != nil {
+			return err
+		}
+		if err := metadata.Migrate(context.Background()); err != nil {
+			_ = metadata.Close()
+			return err
+		}
+		if _, err := metadata.ListNamespaces(context.Background()); err != nil {
+			_ = metadata.Close()
+			return err
+		}
+		return metadata.Close()
+	default:
+		return fmt.Errorf("unsupported DOFS metadata driver %q", cfg.DOFS.Metadata.Driver)
+	}
+}
+
+func writeStreamToFile(path string, reader io.Reader, expectedSize int64) error {
+	if expectedSize < 0 {
+		return errors.New("negative object size")
+	}
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+	if err != nil {
 		return err
 	}
-	return file.Close()
+	closed := false
+	defer func() {
+		if !closed {
+			_ = file.Close()
+		}
+	}()
+	written, err := io.Copy(file, reader)
+	if err != nil {
+		return err
+	}
+	if written != expectedSize {
+		return fmt.Errorf("streamed object size is %d, expected %d", written, expectedSize)
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	closed = true
+	return nil
+}
+
+func requireDOFSStopped(socketPath string) error {
+	return requireLocalManagerStopped("DOFS", socketPath)
+}
+
+func requireWorkspaceStopped(socketPath string) error {
+	return requireLocalManagerStopped("Workspace", socketPath)
+}
+
+func requireLocalManagerStopped(service, socketPath string) error {
+	socketPath = strings.TrimSpace(socketPath)
+	if socketPath == "" {
+		return nil
+	}
+	info, err := os.Lstat(socketPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot inspect %s control socket %s: %w", service, socketPath, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || info.Mode()&os.ModeSocket == 0 {
+		return fmt.Errorf("refusing backup, restore, or reset: %s control path %s is not a real Unix socket", service, socketPath)
+	}
+	connection, err := net.DialTimeout("unix", socketPath, 300*time.Millisecond)
+	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, os.ErrNotExist) {
+		// A real but stale socket cannot have a live manager behind it.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("cannot prove %s is stopped at %s: %w", service, socketPath, err)
+	}
+	_ = connection.Close()
+	return fmt.Errorf("%s manager is still running at %s; stop it before backup, restore, or reset", service, socketPath)
+}
+
+func dofsSQLitePath(cfg *config.Config) string {
+	if cfg.DOFS.Metadata.SQLite.Path != "" {
+		return filepath.Clean(cfg.DOFS.Metadata.SQLite.Path)
+	}
+	return filepath.Join(cfg.DOFS.StateRoot, "metadata.sqlite")
+}
+
+func backupDOFSMetadata(cfg *config.Config, destination string) error {
+	switch cfg.DOFS.Metadata.Driver {
+	case "postgres":
+		// The DOFS tables are part of database.sql.
+		return nil
+	case "sqlite":
+		source := dofsSQLitePath(cfg)
+		if err := requireRegularFile(source, nil); err != nil {
+			return fmt.Errorf("DOFS SQLite database: %w", err)
+		}
+		metadata, err := dofssqlite.Open(context.Background(), dofssqlite.Config{
+			Path:               source,
+			BusyTimeout:        time.Duration(cfg.DOFS.Metadata.SQLite.BusyTimeoutSeconds) * time.Second,
+			MaxOpenConnections: cfg.DOFS.Metadata.SQLite.MaxOpenConnections,
+		})
+		if err != nil {
+			return err
+		}
+		if err := metadata.Migrate(context.Background()); err != nil {
+			_ = metadata.Close()
+			return err
+		}
+		if err := metadata.Close(); err != nil {
+			return fmt.Errorf("checkpoint DOFS SQLite database (is another DOFS process still running?): %w", err)
+		}
+		if info, err := os.Stat(source + "-wal"); err == nil && info.Size() != 0 {
+			return errors.New("DOFS SQLite WAL is not empty; stop every DOFS process before backup")
+		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return copyRegularFile(source, destination, 0600)
+	default:
+		return fmt.Errorf("unsupported DOFS metadata driver %q", cfg.DOFS.Metadata.Driver)
+	}
+}
+
+func restoreDOFSMetadata(cfg *config.Config, source string) error {
+	switch cfg.DOFS.Metadata.Driver {
+	case "postgres":
+		// database.sql already restored the DOFS tables.
+		return nil
+	case "sqlite":
+		target := dofsSQLitePath(cfg)
+		parent := filepath.Dir(target)
+		if err := ensurePrivateBackupDirectory(parent); err != nil {
+			return err
+		}
+		if info, err := os.Lstat(target); err == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				return errors.New("configured DOFS SQLite target must be a regular file")
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		temporary, err := os.CreateTemp(parent, ".dofs-restore-*.sqlite")
+		if err != nil {
+			return err
+		}
+		temporaryPath := temporary.Name()
+		if err := temporary.Close(); err != nil {
+			return err
+		}
+		if err := os.Remove(temporaryPath); err != nil {
+			return err
+		}
+		defer func() { _ = os.Remove(temporaryPath) }()
+		if err := copyRegularFile(source, temporaryPath, 0600); err != nil {
+			return err
+		}
+		metadata, err := dofssqlite.Open(context.Background(), dofssqlite.Config{
+			Path:               temporaryPath,
+			BusyTimeout:        time.Duration(cfg.DOFS.Metadata.SQLite.BusyTimeoutSeconds) * time.Second,
+			MaxOpenConnections: cfg.DOFS.Metadata.SQLite.MaxOpenConnections,
+		})
+		if err != nil {
+			return fmt.Errorf("validate DOFS SQLite backup: %w", err)
+		}
+		if err := metadata.Migrate(context.Background()); err != nil {
+			_ = metadata.Close()
+			return fmt.Errorf("validate DOFS SQLite schema: %w", err)
+		}
+		if err := metadata.Close(); err != nil {
+			return err
+		}
+		for _, suffix := range []string{"-wal", "-shm"} {
+			if err := os.Remove(target + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return err
+			}
+		}
+		if err := os.Rename(temporaryPath, target); err != nil {
+			return err
+		}
+		return syncBackupDirectory(parent)
+	default:
+		return fmt.Errorf("unsupported DOFS metadata driver %q", cfg.DOFS.Metadata.Driver)
+	}
+}
+
+func copyRegularFile(source, destination string, mode os.FileMode) error {
+	sourceInfo, err := os.Lstat(source)
+	if err != nil {
+		return err
+	}
+	if sourceInfo.Mode()&os.ModeSymlink != 0 || !sourceInfo.Mode().IsRegular() {
+		return fmt.Errorf("source %s must be a regular file, not a symlink", source)
+	}
+	input, err := os.Open(source)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	info, err := input.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() || !os.SameFile(sourceInfo, info) {
+		return fmt.Errorf("source %s must be a regular file", source)
+	}
+	output, err := os.OpenFile(destination, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	if err != nil {
+		return err
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = output.Close()
+		}
+	}()
+	if _, err := io.Copy(output, input); err != nil {
+		return err
+	}
+	if err := output.Sync(); err != nil {
+		return err
+	}
+	if err := output.Close(); err != nil {
+		return err
+	}
+	closed = true
+	return nil
+}
+
+func syncBackupDirectory(directory string) error {
+	handle, err := os.Open(directory)
+	if err != nil {
+		return err
+	}
+	defer handle.Close()
+	return handle.Sync()
+}
+
+func ensurePrivateBackupDirectory(directory string) error {
+	directory = filepath.Clean(directory)
+	if !filepath.IsAbs(directory) || directory == string(filepath.Separator) {
+		return errors.New("backup state directory must be an absolute non-root path")
+	}
+	volume := filepath.VolumeName(directory)
+	current := volume + string(filepath.Separator)
+	relative := strings.TrimPrefix(directory, current)
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			if err := os.Mkdir(current, 0700); err != nil {
+				return err
+			}
+			info, err = os.Lstat(current)
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("backup state path component %s must be a real directory", current)
+		}
+	}
+	return os.Chmod(directory, 0700)
 }
 
 func writeManifest(path string, manifest backupManifest) error {
@@ -390,7 +803,7 @@ func writeManifest(path string, manifest backupManifest) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, 0o600)
 }
 
 func readManifest(path string) (backupManifest, error) {
@@ -486,19 +899,28 @@ func isTarGzPath(path string) bool {
 }
 
 func createTarGz(srcDir, outputPath string) error {
-	file, err := os.Create(outputPath)
+	absoluteOutput, err := filepath.Abs(outputPath)
 	if err != nil {
-		return fmt.Errorf("create archive %s: %w", outputPath, err)
+		return fmt.Errorf("resolve archive path %s: %w", outputPath, err)
 	}
-	defer file.Close()
+	parent := filepath.Dir(absoluteOutput)
+	file, err := os.CreateTemp(parent, ".domus-backup-*.tar.gz")
+	if err != nil {
+		return fmt.Errorf("create temporary archive for %s: %w", outputPath, err)
+	}
+	temporaryPath := file.Name()
+	published := false
+	defer func() {
+		_ = file.Close()
+		if !published {
+			_ = os.Remove(temporaryPath)
+		}
+	}()
 
 	gzWriter := gzip.NewWriter(file)
-	defer gzWriter.Close()
-
 	tarWriter := tar.NewWriter(gzWriter)
-	defer tarWriter.Close()
 
-	return filepath.WalkDir(srcDir, func(current string, d fs.DirEntry, walkErr error) error {
+	if err := filepath.WalkDir(srcDir, func(current string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -508,6 +930,9 @@ func createTarGz(srcDir, outputPath string) error {
 		info, err := d.Info()
 		if err != nil {
 			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || (!d.IsDir() && !info.Mode().IsRegular()) {
+			return fmt.Errorf("backup source contains unsupported entry %s", current)
 		}
 		relPath, err := filepath.Rel(srcDir, current)
 		if err != nil {
@@ -532,10 +957,32 @@ func createTarGz(srcDir, outputPath string) error {
 		if err != nil {
 			return err
 		}
-		defer reader.Close()
-		_, err = io.Copy(tarWriter, reader)
+		_, copyErr := io.Copy(tarWriter, reader)
+		closeErr := reader.Close()
+		return errors.Join(copyErr, closeErr)
+	}); err != nil {
 		return err
-	})
+	}
+	if err := tarWriter.Close(); err != nil {
+		return err
+	}
+	if err := gzWriter.Close(); err != nil {
+		return err
+	}
+	if err := file.Sync(); err != nil {
+		return err
+	}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(temporaryPath, absoluteOutput); err != nil {
+		return fmt.Errorf("publish archive %s without overwrite: %w", outputPath, err)
+	}
+	if err := os.Remove(temporaryPath); err != nil {
+		return fmt.Errorf("remove temporary archive %s: %w", temporaryPath, err)
+	}
+	published = true
+	return syncBackupDirectory(parent)
 }
 
 func extractTarGz(inputPath, destDir string) error {
@@ -552,6 +999,7 @@ func extractTarGz(inputPath, destDir string) error {
 	defer gzReader.Close()
 
 	tarReader := tar.NewReader(gzReader)
+	seen := make(map[string]struct{})
 	for {
 		header, err := tarReader.Next()
 		if err == io.EOF {
@@ -564,23 +1012,35 @@ func extractTarGz(inputPath, destDir string) error {
 		if err != nil {
 			return err
 		}
+		if _, duplicate := seen[targetPath]; duplicate {
+			return fmt.Errorf("duplicate archive entry %q", header.Name)
+		}
+		seen[targetPath] = struct{}{}
 		switch header.Typeflag {
 		case tar.TypeDir:
-			if err := os.MkdirAll(targetPath, 0o755); err != nil {
+			if err := os.MkdirAll(targetPath, 0o700); err != nil {
 				return fmt.Errorf("create directory %s: %w", targetPath, err)
 			}
 		// A NUL type flag is the historical alternate regular-file marker.
 		case tar.TypeReg, byte(0):
-			if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+			if header.Size < 0 {
+				return fmt.Errorf("archive file %q has a negative size", header.Name)
+			}
+			if err := os.MkdirAll(filepath.Dir(targetPath), 0o700); err != nil {
 				return fmt.Errorf("create parent directory for %s: %w", targetPath, err)
 			}
-			file, err := os.OpenFile(targetPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, os.FileMode(header.Mode))
+			file, err := os.OpenFile(targetPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 			if err != nil {
 				return fmt.Errorf("create file %s: %w", targetPath, err)
 			}
-			if _, err := io.Copy(file, tarReader); err != nil {
+			written, copyErr := io.Copy(file, tarReader)
+			if copyErr != nil {
 				file.Close()
-				return fmt.Errorf("extract file %s: %w", targetPath, err)
+				return fmt.Errorf("extract file %s: %w", targetPath, copyErr)
+			}
+			if written != header.Size {
+				file.Close()
+				return fmt.Errorf("archive file %q size is %d, expected %d", header.Name, written, header.Size)
 			}
 			if err := file.Close(); err != nil {
 				return fmt.Errorf("close file %s: %w", targetPath, err)

@@ -1,19 +1,22 @@
 package handler
 
 import (
-	"bytes"
 	"crypto/hmac"
 	"encoding/hex"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/willvar/dofs"
 
 	"domus/internal/auth"
 	"domus/internal/middleware"
 	"domus/internal/model"
 	"domus/internal/service"
 )
+
+const maxPublicAvatarBytes = 10 * 1024 * 1024
 
 // --- helpers ---
 
@@ -38,14 +41,17 @@ func (h *Handler) issueSession(c *fiber.Ctx, user *model.User, method string) er
 	})
 
 	needsSetup := user.Email == "" && !user.TOTPEnabled
+	avatarEndpoint := h.publicAvatarEndpoint(user)
 
 	return c.JSON(fiber.Map{
 		"user": fiber.Map{
-			"id":           user.ID,
-			"username":     user.Username,
-			"role":         user.Role,
-			"email":        user.Email,
-			"totp_enabled": user.TOTPEnabled,
+			"id":              user.ID,
+			"username":        user.Username,
+			"display_name":    user.DisplayName,
+			"role":            user.Role,
+			"email":           user.Email,
+			"totp_enabled":    user.TOTPEnabled,
+			"avatar_endpoint": avatarEndpoint,
 		},
 		"needs_setup": needsSetup,
 	})
@@ -348,38 +354,37 @@ func (h *Handler) handleMe(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
 	}
 
-	avatarKey := user.Username + "/.user/avatar.webp"
-	var avatarURL string
-	if fr, err := h.Repos.Files.Get(user.ID, avatarKey); err == nil && fr.WrappedDEK != "" {
-		avatarURL = "/user/avatar/" + user.Username
-	}
+	avatarEndpoint := h.publicAvatarEndpoint(user)
 
 	return c.JSON(fiber.Map{
-		"id":           user.ID,
-		"username":     user.Username,
-		"display_name": user.DisplayName,
-		"role":         user.Role,
-		"email":        user.Email,
-		"totp_enabled": user.TOTPEnabled,
-		"avatar_url":   avatarURL,
+		"id":              user.ID,
+		"username":        user.Username,
+		"display_name":    user.DisplayName,
+		"role":            user.Role,
+		"email":           user.Email,
+		"totp_enabled":    user.TOTPEnabled,
+		"avatar_endpoint": avatarEndpoint,
 	})
 }
 
-// handlePublicAvatar serves the decrypted avatar image for a given username (public, no auth).
-// Avatars are encrypted on OSS like all other files. The server decrypts on demand with LRU caching.
+func (h *Handler) publicAvatarEndpoint(user *model.User) string {
+	avatarPath := user.Username + "/.user/avatar.webp"
+	record, err := h.Repos.Files.Get(user.ID, avatarPath)
+	if err != nil || record.Status != "ready" || record.WrappedDEK == "" ||
+		record.Size <= 0 || record.Size > maxPublicAvatarBytes {
+		return ""
+	}
+	return "/user/avatar/" + user.Username
+}
+
+// handlePublicAvatar returns only the control metadata needed for a browser to
+// fetch the encrypted avatar directly from OSS and decrypt it locally. Avatars
+// are intentionally public, so this endpoint exposes their per-file DEK, but
+// the Domus HTTP process never reads or proxies the object body.
 func (h *Handler) handlePublicAvatar(c *fiber.Ctx) error {
 	username := c.Params("username")
 	if username == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "missing_username"})
-	}
-
-	// Check LRU cache
-	if h.avatarCache != nil {
-		if entry, ok := h.avatarCache.Get(username); ok {
-			c.Set("Content-Type", "image/webp")
-			c.Set("Cache-Control", "public, max-age=3600")
-			return c.Send(entry.data)
-		}
 	}
 
 	// Look up avatar file record
@@ -389,15 +394,18 @@ func (h *Handler) handlePublicAvatar(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "no_avatar"})
 	}
 	fileRecord, err := h.Repos.Files.Get(user.ID, avatarKey)
-	if err != nil || fileRecord.WrappedDEK == "" {
+	if err != nil || fileRecord.Status != "ready" || fileRecord.WrappedDEK == "" ||
+		fileRecord.Size <= 0 || fileRecord.Size > maxPublicAvatarBytes {
 		return c.Status(404).JSON(fiber.Map{"error": "no_avatar"})
 	}
 
-	// Decrypt avatar
+	// Unwrap only the public avatar DEK. The ciphertext body remains on the
+	// browser-to-object-store connection.
 	kek, err := h.loadUserKEK(user.ID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
+	defer dofs.Clear(kek)
 	wrappedBytes, err := hex.DecodeString(fileRecord.WrappedDEK)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
@@ -406,33 +414,19 @@ func (h *Handler) handlePublicAvatar(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
-
-	reader, err := h.Store.GetObjectContent(avatarKey)
+	defer dofs.Clear(dek)
+	presignedURL, err := h.Store.GeneratePresignedURL(fileRecord.StorageKey(), 4*time.Hour)
 	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "no_avatar"})
-	}
-	defer func() { _ = reader.Close() }()
-
-	var buf bytes.Buffer
-	if err := auth.DecryptStream(dek, reader, &buf); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "decrypt_failed"})
+		return c.Status(500).JSON(fiber.Map{"error": "presign_failed"})
 	}
 
-	data := buf.Bytes()
-
-	// Store in LRU cache
-	if h.avatarCache != nil && len(data) < avatarCacheMaxBytes {
-		h.avatarCache.Add(username, &avatarEntry{data: data})
-	}
-
-	c.Set("Content-Type", "image/webp")
-	c.Set("Cache-Control", "public, max-age=3600")
-	return c.Send(data)
-}
-
-// InvalidateAvatarCache removes a user's avatar from the LRU cache (call after avatar update).
-func (h *Handler) InvalidateAvatarCache(username string) {
-	if h.avatarCache != nil {
-		h.avatarCache.Remove(username)
-	}
+	c.Set(fiber.HeaderCacheControl, "no-store")
+	return c.JSON(fiber.Map{
+		"url":          presignedURL,
+		"dek":          hex.EncodeToString(dek),
+		"size":         fileRecord.Size,
+		"content_type": "image/webp",
+		"chunk_size":   auth.DefaultChunkSize,
+		"generation":   fileRecord.Generation,
+	})
 }

@@ -22,9 +22,10 @@ Domus 是一个全栈云文件管理平台，提供 Plasma 桌面风格的 Web U
 
 - 用户认证（密码 + TOTP 两步验证 + 邮箱验证）
 - 文件管理（上传、下载、搜索、回收站）
+- 浏览器本地加密、密文直传对象存储
 - 媒体转码与媒体缩略图
 - HTTP API + WebSocket 实时同步
-- 全文搜索与文件索引
+- 基于 DOFS inode/generation 的文件名搜索与分享
 - 管理员面板与审计日志
 
 ## 技术栈
@@ -33,8 +34,9 @@ Domus 是一个全栈云文件管理平台，提供 Plasma 桌面风格的 Web U
 |------|------|
 | 后端语言 | Go 1.26+ |
 | Web 框架 | Fiber v2 |
-| 数据库 | PostgreSQL + GORM |
-| 文件存储 | 阿里云 OSS |
+| 产品数据库 | PostgreSQL + GORM |
+| 文件元数据 | 独立 DOFS（SQLite 默认，PostgreSQL 可选） |
+| 文件对象 | S3 兼容对象存储（阿里云 OSS 等） |
 | 实时通信 | WebSocket (fasthttp/websocket) |
 | 前端框架 | Vue 3 + Vue Router + Pinia |
 | 构建工具 | Vite 8 |
@@ -63,13 +65,13 @@ domus/
 │   │   ├── auth.go             #   登录/登出/验证
 │   │   ├── account.go          #   用户资料与安全设置
 │   │   ├── files.go            #   文件列表 / 搜索 / 文件命令
-│   │   ├── upload.go           #   分片上传
-│   │   ├── content.go          #   文本编辑、原始内容
+│   │   ├── upload.go           #   浏览器加密直传控制面
+│   │   ├── file_payload.go     #   文件 HTTP 正文边界
 │   │   ├── share.go            #   分享关系与共享访问
-│   │   ├── jobs.go             #   后台作业查询与控制
+│   │   ├── media.go            #   固定预览与转码任务
 │   │   ├── task.go             #   用户任务查询与控制
 │   │   ├── workspace.go        #   工作区快照保存 / 读取
-│   │   ├── indexer.go          #   全文搜索索引
+│   │   ├── dofs_events.go      #   DOFS generation 事件投影
 │   │   ├── terminal.go         #   浏览器原始 TTY 会话
 │   │   ├── admin.go            #   管理员用户管理
 │   │   └── ws_handlers.go      #   仅实时订阅 / 会话类 WS 动作
@@ -78,19 +80,19 @@ domus/
 │   ├── model/                  # 数据模型与数据库
 │   │   ├── db.go               #   数据库初始化与表结构管理
 │   │   ├── user.go             #   用户模型（bcrypt 密码哈希）
-│   │   ├── file.go             #   文件记录模型（全文检索向量）
+│   │   ├── file.go             #   DOFS 文件视图 DTO
 │   │   ├── session.go          #   会话管理
-│   │   ├── job.go              #   后台作业
 │   │   ├── task.go             #   用户任务追踪
 │   │   ├── workspace.go        #   工作区快照
 │   │   ├── share.go            #   分享关系
 │   │   └── audit.go            #   审计日志
 │   ├── service/                # 业务逻辑服务
-│   │   ├── dispatcher.go       #   作业队列分发器
 │   │   └── email.go            #   邮件服务 (SMTP)
 │   ├── store/                  # 外部存储抽象
-│   │   └── oss.go              #   阿里云 OSS 客户端
-│   ├── dofs/                   # OSS 加密文件的宿主机 FUSE 数据面
+│   │   └── oss.go              #   S3 控制面与离线维护能力
+│   ├── dofs/                   # DOFS 进程控制与私有路径校验
+│   ├── dofsbridge/             # 独立 DOFS Go 模块集成
+│   ├── fileview/               # DOFS 命名空间的产品元数据投影
 │   ├── terminal/               # 浏览器 TTY 会话管理
 │   ├── workspace/              # Docker 工作区控制面与运行时
 │   └── ws/                     # WebSocket 基础设施
@@ -270,11 +272,12 @@ cd frontend && npm run build    # 输出到 frontend/dist/
 domus backup -c config.yaml -o backup-20260419.tar.gz
 ```
 
-- 执行前必须先停止服务，否则命令会拒绝运行
+- 执行前必须先停止 Domus Web、DOFS 和 Workspace Manager；PID 或任一本地 control socket 仍存活时命令会拒绝运行
 - 备份内容包含 `database.sql`、`manifest.json` 和 `objects/`
 - `-o` 可以指向目录，也可以指向 `.tar.gz` / `.tgz` 归档文件
 - 若未显式传入 `-o`，会默认生成 `domus-backup-YYYYMMDD-HHMMSS.tar.gz`
 - 备份数据库依赖本机可用的 `pg_dump`
+- SQLite 模式下备份还包含 DOFS 元数据库；对象内容始终保持应用层密文
 
 #### 恢复实例
 
@@ -282,10 +285,11 @@ domus backup -c config.yaml -o backup-20260419.tar.gz
 domus restore -c config.yaml -i backup-20260419.tar.gz --yes
 ```
 
-- 执行前必须先停止服务，否则命令会拒绝运行
+- 执行前必须先停止 Domus Web、DOFS 和 Workspace Manager；命令会同时检查三者
 - `restore` 会先清空目标数据库和整个 bucket，再导入备份内容，因此必须带 `--yes`
 - 恢复数据库依赖本机可用的 `psql`
 - 恢复前会校验备份中的 `server.encryption_secret` 指纹；若与当前配置不一致，命令会拒绝执行，避免恢复后文件无法解密
+- 恢复会清掉 DOFS 与 Workspace 的用户瞬态状态，但保留 Workspace `manager-id`，重启后仍可识别精确归属的遗留容器
 - 恢复完成后，重新执行 `domus start -c config.yaml` 即可拉起实例
 
 #### 重置实例
@@ -294,8 +298,9 @@ domus restore -c config.yaml -i backup-20260419.tar.gz --yes
 domus reset -c config.yaml --yes
 ```
 
-- 执行前请先停止服务，否则命令会拒绝运行
-- `reset` 会清空 `config.yaml` 指定的 PostgreSQL 数据库，并清空配置中的整个 OSS bucket
+- 执行前必须先停止 Domus Web、DOFS 和 Workspace Manager；命令会同时检查三者
+- `reset` 会清空 `config.yaml` 指定的 PostgreSQL 数据库、DOFS 元数据库、DOFS/Workspace 用户瞬态状态，并清空配置中的整个 OSS bucket
+- `reset` 保留 Workspace `manager-id` 和配置引用的 root 初始密码文件；后者仍由运维负责保管或轮换
 - `reset` 不会立即创建 `root`；下一次 `domus start` 时会走首次启动逻辑自动初始化
 - 首次启动所需的 root 初始密码仍需通过 `server.root_bootstrap_password_file` 或 `DOMUS_ROOT_BOOTSTRAP_PASSWORD` 提供
 
@@ -391,7 +396,7 @@ cd frontend && npm install       # 前端依赖
 
 | 前缀 | 用途 | 示例 |
 |------|------|------|
-| `ADD:` | 新功能 | `ADD: 全文搜索与文件索引` |
+| `ADD:` | 新功能 | `ADD: 增加浏览器加密直传` |
 | `OPT:` | 优化/重构 | `OPT: 收紧 HTTP / WS 职责边界` |
 | `FIX:` | Bug 修复 | `FIX: 修复绕过数据库直接访问OSS的安全问题` |
 
@@ -404,13 +409,17 @@ cd frontend && npm install       # 前端依赖
 ### 后端请求处理流程
 
 ```
-HTTP 请求
+浏览器文件上传
+  → Domus HTTP（认证、DEK 包装、DOFS generation 预留、presign）
+  → 浏览器本地 AES-256-GCM 分块加密
+  → 浏览器直接 PUT 密文到 OSS
+  → Domus 从 OSS 读取权威分片状态并发布 DOFS generation
+
+普通控制请求
   → Fiber 路由
     → middleware（认证 + 权限检查）
-      → handler（请求解析 + 响应）
-        → service（业务逻辑）
-          → model（数据库操作）
-          → store（OSS 文件存储）
+      → handler（封闭 JSON 控制消息）
+        → DOFS / product model / OSS presign control
 ```
 
 终端和服务端媒体任务统一走 Linux 受限执行面：
@@ -426,7 +435,7 @@ authenticated handler / terminal manager
 
 ### HTTP / WebSocket 边界
 
-- **HTTP 负责普通 query / command**：文件列表、搜索、创建目录、重命名、复制、移动、删除、文本保存、用户资料、安全设置、分享、任务列表、工作区持久化、管理员操作等，都走普通 HTTP API。
+- **HTTP 负责普通 query / command**：文件列表、文件名搜索、创建目录、重命名、复制、移动、删除、上传预留/签名/完成、用户资料、安全设置、分享、任务列表、工作区持久化、管理员操作等，都走普通 HTTP API。文件正文不得进入 Domus HTTP。
 - **WebSocket 负责实时性**：目录订阅推送、`task.update` 进度广播、终端会话输入输出、工作区事件转发、客户端上传任务上报。
 - **设计原则**：不要为同一业务同时维护一套 HTTP 和一套 WS 命令接口；如果一个动作不依赖长连接实时语义，就应该归入 HTTP。
 
@@ -454,18 +463,24 @@ authenticated handler / terminal manager
 | 表名 | 用途 |
 |------|------|
 | `users` | 用户账户（密码哈希、邮箱、TOTP） |
-| `files` | 文件元数据（路径、大小、类型、全文检索向量；回收站文件也在此表中，以 `__trash__` 路径空间表示） |
 | `sessions` | 用户会话（带过期时间） |
-| `jobs` | 后台作业追踪（转码） |
 | `tasks` | 用户任务进度 |
 | `workspace_states` | 工作区布局快照 |
-| `shares` | 文件分享关系 |
+| `shares` | 绑定 DOFS inode 的文件分享关系 |
 | `audit_logs` | 操作审计日志 |
+| `domus_file_metadata` | MIME、摘要、缩略图等产品投影，不保存层级或对象键 |
+| `domus_file_uploads` | 浏览器直传的任务与恢复状态，不复制 DOFS 密钥或对象键 |
+
+DOFS 的 inode、目录层级、generation、对象键、wrapped DEK、租约和事件位于独立
+DOFS 元数据库；单机默认是私有 SQLite 文件，多主机部署可显式选择 PostgreSQL。
+旧 `files` 表不会被静默迁移或删除，启动时会失败并要求显式备份/重置。
 
 ### 安全要点
 
 - 密码使用 bcrypt 哈希存储
-- 文件加密使用用户独立密钥（由 `encryption_secret` + 用户 ID 派生）
+- 每个用户拥有随机 KEK，由 `encryption_secret` 派生的服务端主密钥包装；每个文件使用随机 DEK，并由用户 KEK 包装
+- 上传正文在浏览器本地加密后直传 OSS；Domus HTTP 只接收受限 JSON 控制消息
+- 预览、转码和终端容器只通过精确绑定的用户 DOFS FUSE 挂载访问文件，不获得 OSS 凭证、主密钥、Docker socket 或 `/dev/fuse`
 - 权限控制使用位掩码组合（Read=1, Upload=2, Edit=4, Delete=8）
 - `session_secret` 和 `encryption_secret` 首次启动自动生成，务必妥善保管 `config.yaml`
 - 首次启动若需要自动初始化 `root`，请通过 `server.root_bootstrap_password_file` 或 `DOMUS_ROOT_BOOTSTRAP_PASSWORD` 提供初始密码，避免从日志泄露凭据

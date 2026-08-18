@@ -8,6 +8,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/willvar/dofs"
 
 	"domus/internal/auth"
 	"domus/internal/middleware"
@@ -77,6 +78,7 @@ func (h *Handler) handleCreateShare(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "unwrap_failed"})
 	}
+	defer dofs.Clear(dek)
 
 	// Resolve target user
 	targetUser, err := h.Repos.Users.GetByUsername(body.TargetUsername)
@@ -92,6 +94,7 @@ func (h *Handler) handleCreateShare(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
 	}
+	defer dofs.Clear(targetKEK)
 	wrappedForTarget, err := auth.WrapDEK(targetKEK, dek)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "wrap_failed"})
@@ -104,6 +107,7 @@ func (h *Handler) handleCreateShare(c *fiber.Ctx) error {
 	share := &model.Share{
 		ShareID:      shareID,
 		OwnerID:      session.UserID,
+		FileInode:    fileRecord.ID,
 		FilePath:     resolvedPath,
 		FileName:     fileName,
 		FileSize:     fileRecord.Size,
@@ -146,15 +150,35 @@ func (h *Handler) handleListShares(c *fiber.Ctx) error {
 		return err
 	}
 	session := c.Locals("session").(*model.Session)
-	shares, err := h.Repos.Shares.ListForFile(session.UserID, resolvedPath)
+	fileRecord, err := h.Repos.Files.Get(session.UserID, resolvedPath)
+	if err != nil || fileRecord.IsDir {
+		return c.Status(404).JSON(fiber.Map{"error": "file_not_found"})
+	}
+	owned, err := h.Repos.Shares.ListOwnedByUser(session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "list_failed"})
+	}
+	shares := make([]model.Share, 0)
+	for _, share := range owned {
+		if share.FileInode == fileRecord.ID {
+			share.FilePath, share.FileName, share.FileSize = fileRecord.Path, fileRecord.Name, fileRecord.Size
+			shares = append(shares, share)
+		}
 	}
 	if shares == nil {
 		shares = []model.Share{}
 	}
 	views := make([]fiber.Map, 0, len(shares))
 	for _, share := range shares {
+		if share.FileInode <= 0 {
+			continue
+		}
+		current, currentErr := h.Repos.Files.GetByID(share.OwnerID, share.FileInode)
+		if currentErr != nil || current.IsDir || current.Status != "ready" {
+			continue
+		}
+		share.FilePath, share.FileName, share.FileSize = current.Path, current.Name, current.Size
+		share.ContentType = current.ContentType
 		targetUsername := ""
 		if user, err := h.Repos.Users.GetByID(share.TargetUserID); err == nil {
 			targetUsername = user.Username
@@ -190,6 +214,15 @@ func (h *Handler) handleListOwnedShares(c *fiber.Ctx) error {
 	}
 	views := make([]fiber.Map, 0, len(shares))
 	for _, share := range shares {
+		if share.FileInode <= 0 {
+			continue
+		}
+		current, currentErr := h.Repos.Files.GetByID(share.OwnerID, share.FileInode)
+		if currentErr != nil || current.IsDir || current.Status != "ready" {
+			continue
+		}
+		share.FilePath, share.FileName, share.FileSize = current.Path, current.Name, current.Size
+		share.ContentType = current.ContentType
 		targetUsername := ""
 		if user, err := h.Repos.Users.GetByID(share.TargetUserID); err == nil {
 			targetUsername = user.Username
@@ -220,6 +253,7 @@ func (h *Handler) handleDeleteShare(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_id"})
 	}
 	session := c.Locals("session").(*model.Session)
+	share, lookupErr := h.Repos.Shares.GetByDatabaseID(int64(id))
 	deleted, err := h.Repos.Shares.Delete(int64(id), session.UserID)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
@@ -228,12 +262,20 @@ func (h *Handler) handleDeleteShare(c *fiber.Ctx) error {
 		return c.Status(404).JSON(fiber.Map{"error": "share_not_found"})
 	}
 
-	// Notify the current user to refresh shared directory
+	// Notify both capability holders. Looking up first is safe: an unrelated
+	// caller still receives only the generic not-found response from Delete.
 	if h.Hub != nil {
-		h.Hub.SendToUser(session.UserID, map[string]any{
-			"event": "dir.changed",
-			"data":  map[string]any{"path": "__shared__/", "change_type": "refresh"},
-		})
+		recipients := map[string]struct{}{session.UserID: {}}
+		if lookupErr == nil {
+			recipients[share.OwnerID] = struct{}{}
+			recipients[share.TargetUserID] = struct{}{}
+		}
+		for userID := range recipients {
+			h.Hub.SendToUser(userID, map[string]any{
+				"event": "dir.changed",
+				"data":  map[string]any{"path": "__shared__/", "change_type": "refresh"},
+			})
+		}
 	}
 
 	return c.JSON(fiber.Map{"ok": true})
@@ -247,10 +289,20 @@ func (h *Handler) handleListSharedWithMe(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "list_failed"})
 	}
-	if shares == nil {
-		shares = []model.ShareFileView{}
+	current := make([]model.ShareFileView, 0, len(shares))
+	for _, view := range shares {
+		if view.FileInode <= 0 {
+			continue
+		}
+		record, recordErr := h.Repos.Files.GetByID(view.OwnerID, view.FileInode)
+		if recordErr != nil || record.IsDir || record.Status != "ready" {
+			continue
+		}
+		view.FilePath, view.FileName, view.FileSize = record.Path, record.Name, record.Size
+		view.ContentType = record.ContentType
+		current = append(current, view)
 	}
-	return c.JSON(shares)
+	return c.JSON(current)
 }
 
 // handleShareInfo returns metadata and decryption key for a shared file.
@@ -277,15 +329,18 @@ func (h *Handler) handleShareInfo(c *fiber.Ctx) error {
 		return c.Status(410).JSON(fiber.Map{"error": "share_expired"})
 	}
 
-	objectKey := share.FilePath
-	fileSize := share.FileSize
-	if fileRecord, recordErr := h.Repos.Files.Get(share.OwnerID, share.FilePath); recordErr == nil {
-		if fileRecord.Status != "ready" {
-			return c.Status(404).JSON(fiber.Map{"error": "file_not_found"})
-		}
-		objectKey = fileRecord.StorageKey()
-		fileSize = fileRecord.Size
+	if share.FileInode <= 0 {
+		return c.Status(404).JSON(fiber.Map{"error": "file_not_found"})
 	}
+	fileRecord, recordErr := h.Repos.Files.GetByID(share.OwnerID, share.FileInode)
+	if recordErr != nil || fileRecord.Status != "ready" || fileRecord.IsDir || fileRecord.StorageKey() == "" {
+		return c.Status(404).JSON(fiber.Map{"error": "file_not_found"})
+	}
+	objectKey := fileRecord.StorageKey()
+	fileSize := fileRecord.Size
+	generation := fileRecord.Generation
+	share.FileName = fileRecord.Name
+	share.ContentType = fileRecord.ContentType
 
 	// Generate a URL for the current immutable generation rather than assuming
 	// the logical path is also the physical object key.
@@ -307,6 +362,7 @@ func (h *Handler) handleShareInfo(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "unwrap_failed"})
 	}
+	defer dofs.Clear(dek)
 
 	return c.JSON(fiber.Map{
 		"url":          presignedURL,
@@ -316,5 +372,6 @@ func (h *Handler) handleShareInfo(c *fiber.Ctx) error {
 		"chunk_size":   auth.DefaultChunkSize,
 		"permission":   share.Permission,
 		"dek":          hex.EncodeToString(dek),
+		"generation":   generation,
 	})
 }

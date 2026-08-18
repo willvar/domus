@@ -5,9 +5,12 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -16,9 +19,12 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/compress"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/recover"
+	"github.com/willvar/dofs"
 
 	"domus/config"
 	"domus/internal/auth"
+	"domus/internal/dofsbridge"
+	"domus/internal/fileview"
 	"domus/internal/handler"
 	"domus/internal/middleware"
 	"domus/internal/model"
@@ -38,6 +44,9 @@ const (
 	legacyDaemonEnvKey          = "ZEPHYR_DAEMON"
 	rootBootstrapPasswordEnvKey = "DOMUS_ROOT_BOOTSTRAP_PASSWORD"
 	legacyRootPasswordEnvKey    = "ZEPHYR_ROOT_BOOTSTRAP_PASSWORD"
+	// Browser file bytes bypass Domus and go directly to object storage. Keep
+	// the HTTP process sized for JSON control messages, not payload proxying.
+	maxControlPlaneBodyBytes = 1 * 1024 * 1024
 )
 
 // Execute 执行 CLI
@@ -251,6 +260,12 @@ func resetInstance(cfg *config.Config, configPath string, confirmed bool, deps r
 	if running {
 		return fmt.Errorf("service is running (PID: %d). Stop it before reset", pid)
 	}
+	if err := requireDOFSStopped(cfg.DOFS.ControlSocket); err != nil {
+		return err
+	}
+	if err := requireWorkspaceStopped(cfg.Workspace.ControlSocket); err != nil {
+		return err
+	}
 	if !confirmed {
 		return fmt.Errorf("reset is destructive. Re-run with --yes to clear database %q and bucket %q", cfg.Database.DBName, cfg.OSS.Bucket)
 	}
@@ -260,19 +275,237 @@ func resetInstance(cfg *config.Config, configPath string, confirmed bool, deps r
 	logger.Info("  Database: %s", cfg.Database.DBName)
 	logger.Info("  Bucket: %s", cfg.OSS.Bucket)
 
+	// Resolve every independently configured destructive target before the
+	// first mutation. Reset cannot be globally atomic across PostgreSQL,
+	// SQLite, and S3, but malformed credentials or unsafe local paths must fail
+	// while the instance is still intact.
+	fileStore, err := deps.newStore(cfg.OSS)
+	if err != nil {
+		return fmt.Errorf("failed to init OSS client before reset: %w", err)
+	}
+	checkContext, cancelCheck := context.WithTimeout(context.Background(), 30*time.Second)
+	checkErr := fileStore.Check(checkContext)
+	cancelCheck()
+	if checkErr != nil {
+		return fmt.Errorf("failed to validate OSS bucket before reset: %w", checkErr)
+	}
+	if err := validateDOFSMetadataReset(cfg); err != nil {
+		return fmt.Errorf("failed to validate DOFS metadata target before reset: %w", err)
+	}
+	if err := validateDOFSRuntimeStateReset(cfg); err != nil {
+		return fmt.Errorf("failed to validate DOFS runtime state before reset: %w", err)
+	}
+	if err := validateWorkspaceRuntimeStateReset(cfg); err != nil {
+		return fmt.Errorf("failed to validate Workspace runtime state before reset: %w", err)
+	}
+
 	if err := deps.resetDB(cfg.Database); err != nil {
 		return fmt.Errorf("failed to reset database: %w", err)
 	}
 	logger.Info("Database reset complete")
-
-	fileStore, err := deps.newStore(cfg.OSS)
-	if err != nil {
-		return fmt.Errorf("database reset completed, but failed to init OSS client for bucket cleanup: %w", err)
+	if err := clearDOFSMetadata(cfg); err != nil {
+		return fmt.Errorf("database reset completed, but failed to clear DOFS metadata: %w", err)
 	}
+	logger.Info("DOFS metadata reset complete")
+	if err := clearDOFSRuntimeState(cfg); err != nil {
+		return fmt.Errorf("database and DOFS metadata reset completed, but failed to clear DOFS runtime state: %w", err)
+	}
+	logger.Info("DOFS runtime state reset complete")
+	if err := clearWorkspaceRuntimeState(cfg); err != nil {
+		return fmt.Errorf("database and DOFS state reset completed, but failed to clear Workspace runtime state: %w", err)
+	}
+	logger.Info("Workspace runtime state reset complete")
+
 	if err := fileStore.DeleteAllObjects(nil); err != nil {
 		return fmt.Errorf("database reset completed, but failed to clear bucket %q: %w", cfg.OSS.Bucket, err)
 	}
 	logger.Info("Bucket cleanup complete")
+	return nil
+}
+
+func clearDOFSMetadata(cfg *config.Config) error {
+	if err := validateDOFSMetadataReset(cfg); err != nil {
+		return err
+	}
+	switch cfg.DOFS.Metadata.Driver {
+	case "postgres", "":
+		return nil
+	case "sqlite":
+		target := dofsSQLitePath(cfg)
+		for _, candidate := range []string{target, target + "-wal", target + "-shm"} {
+			info, err := os.Lstat(candidate)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				return fmt.Errorf("refusing to remove non-regular DOFS metadata path %s", candidate)
+			}
+			if err := os.Remove(candidate); err != nil {
+				return err
+			}
+		}
+		if _, err := os.Stat(filepath.Dir(target)); err == nil {
+			return syncBackupDirectory(filepath.Dir(target))
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported DOFS metadata driver %q", cfg.DOFS.Metadata.Driver)
+	}
+}
+
+func validateDOFSMetadataReset(cfg *config.Config) error {
+	switch cfg.DOFS.Metadata.Driver {
+	case "postgres", "":
+		return nil
+	case "sqlite":
+		target := filepath.Clean(dofsSQLitePath(cfg))
+		if target == "" || !filepath.IsAbs(target) || target == string(filepath.Separator) {
+			return errors.New("refusing to clear an unsafe DOFS SQLite path")
+		}
+		parent := filepath.Dir(target)
+		volume := filepath.VolumeName(parent)
+		current := volume + string(filepath.Separator)
+		relative := strings.TrimPrefix(parent, current)
+		for _, component := range strings.Split(relative, string(filepath.Separator)) {
+			if component == "" {
+				continue
+			}
+			current = filepath.Join(current, component)
+			info, err := os.Lstat(current)
+			if errors.Is(err, os.ErrNotExist) {
+				break
+			}
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+				return fmt.Errorf("DOFS metadata parent component %s must be a real directory", current)
+			}
+		}
+		for _, candidate := range []string{target, target + "-wal", target + "-shm"} {
+			info, err := os.Lstat(candidate)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				return fmt.Errorf("refusing to remove non-regular DOFS metadata path %s", candidate)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported DOFS metadata driver %q", cfg.DOFS.Metadata.Driver)
+	}
+}
+
+// validateDOFSRuntimeStateReset confines destructive reset/restore cleanup to
+// the two manager-owned transient trees. The SQLite database, manager lock and
+// unrelated operator files under state_root are deliberately outside it.
+func validateDOFSRuntimeStateReset(cfg *config.Config) error {
+	return validateRuntimeStateReset("DOFS", cfg.DOFS.StateRoot, []string{"desired", "users"})
+}
+
+// Workspace desired markers and generated passwd/group files are transient.
+// manager-id deliberately survives so the restarted manager can recognize and
+// remove any exact-owned container left behind by a host crash.
+func validateWorkspaceRuntimeStateReset(cfg *config.Config) error {
+	return validateRuntimeStateReset("Workspace", cfg.Workspace.StateRoot, []string{"desired", "identities"})
+}
+
+func validateRuntimeStateReset(service, configuredRoot string, treeNames []string) error {
+	stateRoot := filepath.Clean(strings.TrimSpace(configuredRoot))
+	if stateRoot == "" || !filepath.IsAbs(stateRoot) || stateRoot == string(filepath.Separator) {
+		return fmt.Errorf("refusing to clear an unsafe %s state root", service)
+	}
+	if err := validateRealDirectoryChain(service, stateRoot); err != nil {
+		return err
+	}
+	for _, treeName := range treeNames {
+		target := filepath.Join(stateRoot, treeName)
+		info, err := os.Lstat(target)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("%s runtime state path %s must be a real directory", service, target)
+		}
+		if err := filepath.WalkDir(target, func(path string, entry fs.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return walkErr
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return fmt.Errorf("refusing to traverse symbolic link in %s runtime state: %s", service, path)
+			}
+			if !info.IsDir() && !info.Mode().IsRegular() {
+				return fmt.Errorf("refusing to remove special file in %s runtime state: %s", service, path)
+			}
+			return nil
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRealDirectoryChain(service, directory string) error {
+	volume := filepath.VolumeName(directory)
+	current := volume + string(filepath.Separator)
+	relative := strings.TrimPrefix(directory, current)
+	for _, component := range strings.Split(relative, string(filepath.Separator)) {
+		if component == "" {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return fmt.Errorf("%s state parent component %s must be a real directory", service, current)
+		}
+	}
+	return nil
+}
+
+func clearDOFSRuntimeState(cfg *config.Config) error {
+	return clearRuntimeState("DOFS", cfg.DOFS.StateRoot, []string{"desired", "users"})
+}
+
+func clearWorkspaceRuntimeState(cfg *config.Config) error {
+	return clearRuntimeState("Workspace", cfg.Workspace.StateRoot, []string{"desired", "identities"})
+}
+
+func clearRuntimeState(service, configuredRoot string, treeNames []string) error {
+	if err := validateRuntimeStateReset(service, configuredRoot, treeNames); err != nil {
+		return err
+	}
+	stateRoot := filepath.Clean(strings.TrimSpace(configuredRoot))
+	for _, treeName := range treeNames {
+		target := filepath.Join(stateRoot, treeName)
+		if err := os.RemoveAll(target); err != nil {
+			return err
+		}
+	}
+	if _, err := os.Stat(stateRoot); err == nil {
+		return syncBackupDirectory(stateRoot)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
 	return nil
 }
 
@@ -292,7 +525,11 @@ func runServer(cfg *config.Config, configPath string) {
 
 	// Auto-generate session secret if missing
 	if cfg.Server.SessionSecret == "" || cfg.Server.SessionSecret == "change-me-to-random-string" {
-		cfg.Server.SessionSecret = generateRandomSecret(32)
+		secret, err := generateRandomSecret(32)
+		if err != nil {
+			logger.Fatal("Failed to generate session secret: %v", err)
+		}
+		cfg.Server.SessionSecret = secret
 		if saveErr := config.Save(configPath, cfg); saveErr != nil {
 			logger.Fatal("Failed to save config: %v", saveErr)
 		}
@@ -301,7 +538,11 @@ func runServer(cfg *config.Config, configPath string) {
 
 	// Auto-generate encryption secret if missing
 	if cfg.Server.EncryptionSecret == "" {
-		cfg.Server.EncryptionSecret = generateRandomSecret(64)
+		secret, err := generateRandomSecret(64)
+		if err != nil {
+			logger.Fatal("Failed to generate encryption secret: %v", err)
+		}
+		cfg.Server.EncryptionSecret = secret
 		if saveErr := config.Save(configPath, cfg); saveErr != nil {
 			logger.Fatal("Failed to save config: %v", saveErr)
 		}
@@ -336,7 +577,7 @@ func runServer(cfg *config.Config, configPath string) {
 	defer close(stopQPS)
 
 	// Initialize database
-	db, hasFTS, err := model.InitDB(cfg.Database)
+	db, err := model.InitDB(cfg.Database)
 	if err != nil {
 		logger.Fatal("Failed to init database: %v", err)
 	}
@@ -352,7 +593,7 @@ func runServer(cfg *config.Config, configPath string) {
 	onTaskUpdate := model.TaskUpdateFunc(func(userID, taskID, taskType, name, status, clientInstanceID string, progress float64, phase string) {
 		hub.PushTaskUpdate(userID, taskID, taskType, name, status, clientInstanceID, progress, phase)
 	})
-	repos := model.NewRepos(db, hasFTS, onTaskUpdate)
+	repos := model.NewRepos(db, onTaskUpdate)
 
 	// Wire session KEK population
 	repos.Sessions.SetPopulateKEK(func(s *model.Session) {
@@ -383,6 +624,22 @@ func runServer(cfg *config.Config, configPath string) {
 	if err != nil {
 		logger.Fatal("Failed to init OSS: %v", err)
 	}
+	dofsRuntime, err := dofsbridge.Open(context.Background(), db, cfg, serverKey, repos.Users)
+	if err != nil {
+		logger.Fatal("Failed to initialize independent DOFS: %v", err)
+	}
+	defer dofsRuntime.Close()
+	if err := dofsRuntime.Check(context.Background()); err != nil {
+		logger.Fatal("Independent DOFS is unavailable: %v", err)
+	}
+	if err := dofsRuntime.EnsureAllUsers(context.Background()); err != nil {
+		logger.Fatal("Failed to initialize DOFS namespaces: %v", err)
+	}
+	fileSystem, err := fileview.Open(db, dofsRuntime)
+	if err != nil {
+		logger.Fatal("Failed to initialize Domus file projection: %v", err)
+	}
+	repos.Files = fileSystem
 
 	// Initialize services
 	mid := middleware.New(repos.Sessions, cfg.Server.SessionSecret)
@@ -432,15 +689,17 @@ func runServer(cfg *config.Config, configPath string) {
 		Hub:        hub,
 		Terminal:   terminalMgr,
 		Workspace:  workspaceClient,
+		DOFS:       dofsRuntime,
+		FileSystem: fileSystem,
 	}
 
 	// Clean orphan uploads at startup, then periodically
 	go func() {
-		cleanOrphanUploads(fileStore, repos)
+		cleanOrphanUploads(fileStore, repos, fileSystem)
 		ticker := time.NewTicker(1 * time.Hour)
 		defer ticker.Stop()
 		for range ticker.C {
-			cleanOrphanUploads(fileStore, repos)
+			cleanOrphanUploads(fileStore, repos, fileSystem)
 		}
 	}()
 
@@ -458,17 +717,19 @@ func runServer(cfg *config.Config, configPath string) {
 		if err != nil {
 			logger.Fatal("Failed to create root user: %v", err)
 		}
-		// Initialize home directory
-		_ = fileStore.CreateDirectory("root/")
-		_ = fileStore.CreateDirectory("root/home/")
-		_ = fileStore.CreateDirectory("root/home/root/")
-		_ = repos.Files.Upsert(user.ID, "root/home/", "home", true, 0, "", "")
-		_ = repos.Files.Upsert(user.ID, "root/home/root/", "root", true, 0, "", "")
+		if err := dofsRuntime.EnsureUser(context.Background(), user); err != nil {
+			logger.Fatal("Failed to initialize root DOFS namespace: %v", err)
+		}
 		logger.Info("Root user initialized from bootstrap password source")
+	}
+	dofsEventContext, cancelDOFSEvents := context.WithCancel(context.Background())
+	defer cancelDOFSEvents()
+	if err := h.StartDOFSEventRelay(dofsEventContext); err != nil {
+		logger.Fatal("Failed to start DOFS event relay: %v", err)
 	}
 
 	app := fiber.New(fiber.Config{
-		BodyLimit:             1024 * 1024 * 1024,
+		BodyLimit:             maxControlPlaneBodyBytes,
 		DisableStartupMessage: true,
 	})
 
@@ -513,6 +774,7 @@ func runServer(cfg *config.Config, configPath string) {
 		if err := app.ShutdownWithTimeout(10 * time.Second); err != nil {
 			logger.Info("Failed to stop HTTP service cleanly: %v", err)
 		}
+		cancelDOFSEvents()
 		hub.CloseAll()
 
 		mediaTimeout := time.Duration(max(45, cfg.Workspace.ShutdownTimeoutSeconds)) * time.Second
@@ -577,10 +839,12 @@ func generateWrappedKEKForUser(encryptionSecret string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer dofs.Clear(kek)
 	serverKey, err := auth.ServerKeyFromSecret(encryptionSecret)
 	if err != nil {
 		return "", err
 	}
+	defer dofs.Clear(serverKey)
 	wrapped, err := auth.WrapKEK(serverKey, kek)
 	if err != nil {
 		return "", err
@@ -588,13 +852,18 @@ func generateWrappedKEKForUser(encryptionSecret string) (string, error) {
 	return hex.EncodeToString(wrapped), nil
 }
 
-func generateRandomSecret(length int) string {
-	b := make([]byte, length)
-	rand.Read(b)
-	return hex.EncodeToString(b)[:length]
+func generateRandomSecret(length int) (string, error) {
+	if length <= 0 {
+		return "", errors.New("secret length must be positive")
+	}
+	b := make([]byte, (length+1)/2)
+	if _, err := rand.Read(b); err != nil {
+		return "", fmt.Errorf("read cryptographic randomness: %w", err)
+	}
+	return hex.EncodeToString(b)[:length], nil
 }
 
-func cleanOrphanUploads(s store.FileStore, repos *model.Repos) {
+func cleanOrphanUploads(s store.FileStore, repos *model.Repos, files *fileview.Repo) {
 	const staleThreshold = 24 * time.Hour
 
 	stale, err := repos.Files.GetStaleUploads(staleThreshold)
@@ -604,12 +873,11 @@ func cleanOrphanUploads(s store.FileStore, repos *model.Repos) {
 	}
 	for _, r := range stale {
 		if r.OSSUploadID != "" {
-			_ = s.AbortMultipartUpload(r.Path, r.OSSUploadID)
+			_ = s.AbortMultipartUpload(r.StorageKey(), r.OSSUploadID)
 		}
-		if _, err := s.HeadObject(r.Path); err == nil {
-			_ = s.DeleteObject(r.Path)
+		if files != nil {
+			_ = files.AbortDirectUpload(context.Background(), r.UserID, r.UploadID)
 		}
-		_ = repos.Files.Delete(r.UserID, r.Path)
 		logger.Info("[cleanup] Cleaned stale upload: %s (file: %s)", r.UploadID, r.Name)
 	}
 }

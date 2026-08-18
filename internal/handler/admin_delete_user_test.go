@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -57,10 +56,15 @@ func seedUserDeleteFixture(t *testing.T, repos *model.Repos, victim, other, targ
 	ownedShareID := "share-owned-" + victim.Username
 	incomingShareID := "share-incoming-" + victim.Username
 	keepShareID := "share-keep-" + victim.Username
+	victimFile, err := repos.Files.Get(victim.ID, filePath)
+	if err != nil {
+		t.Fatalf("get victim file: %v", err)
+	}
 
 	if err := repos.Shares.Create(&model.Share{
 		ShareID:      ownedShareID,
 		OwnerID:      victim.ID,
+		FileInode:    victimFile.ID,
 		FilePath:     filePath,
 		FileName:     "doc.txt",
 		FileSize:     123,
@@ -74,6 +78,7 @@ func seedUserDeleteFixture(t *testing.T, repos *model.Repos, victim, other, targ
 	if err := repos.Shares.Create(&model.Share{
 		ShareID:      incomingShareID,
 		OwnerID:      other.ID,
+		FileInode:    1,
 		FilePath:     other.Username + "/home/" + other.Username + "/from-other.txt",
 		FileName:     "from-other.txt",
 		FileSize:     1,
@@ -87,6 +92,7 @@ func seedUserDeleteFixture(t *testing.T, repos *model.Repos, victim, other, targ
 	if err := repos.Shares.Create(&model.Share{
 		ShareID:      keepShareID,
 		OwnerID:      other.ID,
+		FileInode:    2,
 		FilePath:     other.Username + "/home/" + other.Username + "/keep.txt",
 		FileName:     "keep.txt",
 		FileSize:     1,
@@ -184,7 +190,7 @@ func TestDeleteUserHTTPCleansRelatedData(t *testing.T) {
 	assertUserDeletedCompletely(t, repos, victim, fx)
 }
 
-func TestDeleteUserCompletelyIgnoresStorageCleanupError(t *testing.T) {
+func TestDeleteUserCompletelyWithoutDOFSLeavesNoApplicationIdentity(t *testing.T) {
 	repos := model.NewMemRepos(nil)
 
 	victim, _ := repos.Users.Create("victim-store-fail", "pass", "user", "")
@@ -192,28 +198,18 @@ func TestDeleteUserCompletelyIgnoresStorageCleanupError(t *testing.T) {
 		t.Fatalf("upsert file: %v", err)
 	}
 
-	var calledPrefixes []string
 	h := &Handler{
 		Repos:     repos,
 		Workspace: cleanupWorkspaceService{},
-		Store: &MockFileStore{
-			RecursiveDeleteFn: func(prefix string, _ func(done, total int, current string)) error {
-				calledPrefixes = append(calledPrefixes, prefix)
-				return errors.New("mock storage failure")
-			},
-		},
-		Hub: ws.NewHub(),
+		Store:     &MockFileStore{},
+		Hub:       ws.NewHub(),
 	}
 
 	if err := h.deleteUserCompletely(victim); err != nil {
-		t.Fatalf("deleteUserCompletely should not fail on storage cleanup error: %v", err)
-	}
-	wantPrefixes := []string{victim.Username + "/", model.DOFSObjectRoot(victim.ID)}
-	if !reflect.DeepEqual(calledPrefixes, wantPrefixes) {
-		t.Fatalf("expected cleanup prefixes %q, got %q", wantPrefixes, calledPrefixes)
+		t.Fatalf("deleteUserCompletely: %v", err)
 	}
 	if _, err := repos.Users.GetByID(victim.ID); err == nil {
-		t.Fatal("expected user to be deleted even when storage cleanup fails")
+		t.Fatal("expected user to be deleted")
 	}
 }
 

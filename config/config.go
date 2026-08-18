@@ -31,18 +31,33 @@ type Config struct {
 // and host-local because FUSE mounts and their plaintext writeback state must
 // never be placed in object storage or a container writable layer.
 type DOFSConfig struct {
-	MountRoot                string `yaml:"mount_root"`
-	StateRoot                string `yaml:"state_root"`
-	ControlSocket            string `yaml:"control_socket"`
-	SocketGroup              string `yaml:"socket_group"`
-	UID                      uint32 `yaml:"uid"`
-	GID                      uint32 `yaml:"gid"`
-	AllowOther               bool   `yaml:"allow_other"`
-	Writable                 bool   `yaml:"writable"`
-	MaxMounts                int    `yaml:"max_mounts"`
-	ReconcileIntervalSeconds int    `yaml:"reconcile_interval_seconds"`
-	MountTimeoutSeconds      int    `yaml:"mount_timeout_seconds"`
-	ShutdownTimeoutSeconds   int    `yaml:"shutdown_timeout_seconds"`
+	Metadata                 DOFSMetadataConfig `yaml:"metadata"`
+	MountRoot                string             `yaml:"mount_root"`
+	StateRoot                string             `yaml:"state_root"`
+	ControlSocket            string             `yaml:"control_socket"`
+	SocketGroup              string             `yaml:"socket_group"`
+	UID                      uint32             `yaml:"uid"`
+	GID                      uint32             `yaml:"gid"`
+	AllowOther               bool               `yaml:"allow_other"`
+	Writable                 bool               `yaml:"writable"`
+	MaxMounts                int                `yaml:"max_mounts"`
+	ReconcileIntervalSeconds int                `yaml:"reconcile_interval_seconds"`
+	MountTimeoutSeconds      int                `yaml:"mount_timeout_seconds"`
+	ShutdownTimeoutSeconds   int                `yaml:"shutdown_timeout_seconds"`
+}
+
+// DOFSMetadataConfig mirrors the standalone DOFS deployment contract. SQLite
+// is the single-host default; PostgreSQL reuses Domus' configured database and
+// is intended for multiple DOFS hosts sharing one namespace catalog.
+type DOFSMetadataConfig struct {
+	Driver string                   `yaml:"driver"`
+	SQLite DOFSSQLiteMetadataConfig `yaml:"sqlite"`
+}
+
+type DOFSSQLiteMetadataConfig struct {
+	Path               string `yaml:"path"`
+	BusyTimeoutSeconds int    `yaml:"busy_timeout_seconds"`
+	MaxOpenConnections int    `yaml:"max_open_connections"`
 }
 
 // WorkspaceConfig controls the Linux workspace execution plane. The main
@@ -179,6 +194,9 @@ func (c *Config) Validate() error {
 	if c.Server.EncryptionSecret == "" {
 		return fmt.Errorf("config: server.encryption_secret is required")
 	}
+	if err := c.validateDOFSMetadata(); err != nil {
+		return err
+	}
 	if err := validateAbsoluteNonRootPath("workspace.control_socket", c.Workspace.ControlSocket); err != nil {
 		return err
 	}
@@ -216,6 +234,9 @@ func (c *Config) ValidateDOFS() error {
 	}
 	if c.OSS.Region == "" {
 		return fmt.Errorf("config: oss.region is required")
+	}
+	if err := c.validateDOFSMetadata(); err != nil {
+		return err
 	}
 
 	paths := []struct {
@@ -263,6 +284,30 @@ func (c *Config) ValidateDOFS() error {
 	}
 	if c.DOFS.ShutdownTimeoutSeconds <= 0 {
 		return fmt.Errorf("config: dofs.shutdown_timeout_seconds must be greater than 0")
+	}
+	return nil
+}
+
+func (c *Config) validateDOFSMetadata() error {
+	switch c.DOFS.Metadata.Driver {
+	case "sqlite":
+		path := c.DOFS.Metadata.SQLite.Path
+		if path != "" {
+			if err := validateAbsoluteNonRootPath("dofs.metadata.sqlite.path", path); err != nil {
+				return err
+			}
+		}
+		if c.DOFS.Metadata.SQLite.BusyTimeoutSeconds <= 0 {
+			return fmt.Errorf("config: dofs.metadata.sqlite.busy_timeout_seconds must be greater than 0")
+		}
+		if c.DOFS.Metadata.SQLite.MaxOpenConnections <= 0 {
+			return fmt.Errorf("config: dofs.metadata.sqlite.max_open_connections must be greater than 0")
+		}
+	case "postgres":
+		// The PostgreSQL adapter deliberately reuses database.* so credentials
+		// stay in one Domus secret source.
+	default:
+		return fmt.Errorf("config: dofs.metadata.driver must be sqlite or postgres")
 	}
 	return nil
 }
@@ -425,6 +470,13 @@ func Load(path string) (*Config, error) {
 		// New deployments use the explicit Domus values in config.example.yaml.
 		Server: ServerConfig{Port: 8080, PidFile: "zephyr.pid"},
 		DOFS: DOFSConfig{
+			Metadata: DOFSMetadataConfig{
+				Driver: "sqlite",
+				SQLite: DOFSSQLiteMetadataConfig{
+					BusyTimeoutSeconds: 5,
+					MaxOpenConnections: 8,
+				},
+			},
 			MountRoot:                "/var/lib/domus/dofs/mounts",
 			StateRoot:                "/var/lib/domus/dofs/state",
 			ControlSocket:            "/run/domus/dofs.sock",
@@ -490,6 +542,7 @@ func Load(path string) (*Config, error) {
 	if cfg.OSS.MaxPresignBatch <= 0 {
 		cfg.OSS.MaxPresignBatch = 100
 	}
+	cfg.DOFS.Metadata.Driver = strings.ToLower(strings.TrimSpace(cfg.DOFS.Metadata.Driver))
 
 	// Database defaults
 	if cfg.Database.Host == "" {
