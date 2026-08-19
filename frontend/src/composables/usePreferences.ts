@@ -1,5 +1,4 @@
 import { reactive } from 'vue'
-import { useWebSocket } from './useWebSocket'
 import { readEncryptedFile, writeEncryptedFile } from './useCryptoUpload'
 import type { UserPreferences } from '../types'
 
@@ -42,8 +41,6 @@ function save(): void {
       const json = JSON.stringify({ ...prefs })
       const buf = new TextEncoder().encode(json).buffer as ArrayBuffer
       await writeEncryptedFile(PREFS_PATH, buf, 'application/json', { internal: true })
-      const ws = useWebSocket()
-      ws.request('workspace.event', { action: 'prefs.changed', data: { ...prefs } }).catch(() => {})
     } catch { /* silent */ }
   }, 500)
 }

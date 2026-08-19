@@ -12,9 +12,9 @@
 - [认证 `/auth`](./docs/api/auth.md)
 - [当前用户 `/user`](./docs/api/user.md)
 - [审计与管理 `/audit` + `/admin`](./docs/api/audit-admin.md)
-- [文件 / 上传 / 分享 `/file`](./docs/api/file.md)
+- [文件与上传 `/file`](./docs/api/file.md)
 - [任务 `/task`](./docs/api/jobs-tasks.md)
-- [桌面布局工作区 `/workspace`](./docs/api/workspace.md)
+- [已移除的桌面状态接口](./docs/api/workspace.md)
 
 ### WebSocket
 - [WebSocket 协议](./docs/api/websocket.md)

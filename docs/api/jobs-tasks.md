@@ -22,8 +22,7 @@
 ```
 
 ### `DELETE /task/:id`
-取消任务；上传任务会联动中止上传，`preview` / `transcode` 会取消容器内执行并
-尽力清理部分输出。
+取消任务；上传任务会联动中止 multipart 上传和 DOFS reservation。
 
 鉴权：已登录（任务拥有者或 Root）
 
@@ -32,11 +31,6 @@
 {"ok": true}
 ```
 
-当前服务端任务类型包括：
-
-- `upload`；
-- `preview`（工作区生成缩略图）；
-- `transcode`（固定媒体配置转码）。
-
-预览/转码常见阶段为 `generating`、`thumbnail`、`transcoding`、`finalizing`，
-最终状态为 `completed`、`failed` 或 `cancelled`。
+当前唯一用户可见任务类型是 `upload`。浏览器可能上报 `generating`、`encrypting`、
+`uploading`、`thumbnail` 和 `processing` 阶段；其中 `thumbnail` 表示浏览器正在加密直传
+缩略图，不是服务端预览任务。最终状态为 `completed`、`failed` 或 `cancelled`。

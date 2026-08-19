@@ -3,13 +3,12 @@
 set -euo pipefail
 
 if [[ "$#" -ne 0 ]]; then
-  echo "usage: configure DOMUS_E2E_CONFIG, DOMUS_E2E_RUNTIME_ROOT, DOMUS_E2E_WORKSPACE_IMAGE and DOMUS_E2E_API_BASE" >&2
+  echo "usage: configure DOMUS_E2E_CONFIG, DOMUS_E2E_RUNTIME_ROOT and DOMUS_E2E_API_BASE" >&2
   exit 64
 fi
 
 config_path="${DOMUS_E2E_CONFIG:-config.yaml}"
 runtime_root="${DOMUS_E2E_RUNTIME_ROOT:-tmp/dev}"
-workspace_image="${DOMUS_E2E_WORKSPACE_IMAGE:-domus-workspace:0.1.0}"
 api_base_url="${DOMUS_E2E_API_BASE:-http://127.0.0.1:8088}"
 api_base_url="${api_base_url%/}"
 
@@ -70,9 +69,8 @@ trap shutdown EXIT
 
 while true; do
   # Playwright shuts web servers down by signalling their process group. Keep the
-  # Domus stack in its own session so only this supervisor receives that signal
-  # and can preserve the web -> workspace -> DOFS shutdown order.
-  setsid "$backend_binary" dev -c "$config_path" --runtime-root "$runtime_root" --image "$workspace_image" &
+  # Domus Web in its own session so only this supervisor receives that signal.
+  setsid "$backend_binary" dev -c "$config_path" --runtime-root "$runtime_root" &
   backend_pid="$!"
 
   backend_ready=0

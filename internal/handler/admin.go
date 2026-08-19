@@ -7,8 +7,21 @@ import (
 	"github.com/gofiber/fiber/v2"
 
 	"domus/internal/model"
-	workspaceRuntime "domus/internal/workspace"
 )
+
+func validUsername(value string) bool {
+	if len(value) == 0 || len(value) > 128 || value[0] == '.' || value[0] == '-' {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' || character == '_' || character == '.' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
 
 func (h *Handler) handleListUsers(c *fiber.Ctx) error {
 	users, err := h.Repos.Users.List()
@@ -34,8 +47,8 @@ func (h *Handler) handleCreateUser(c *fiber.Ctx) error {
 	if body.Username == "" || body.Password == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "username_password_required"})
 	}
-	if !workspaceRuntime.ValidIdentityName(body.Username) {
-		return c.Status(400).JSON(fiber.Map{"error": "workspace_incompatible_username"})
+	if !validUsername(body.Username) {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_username"})
 	}
 	if body.Role == "" {
 		body.Role = "user"

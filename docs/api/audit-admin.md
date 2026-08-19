@@ -34,7 +34,7 @@
 
 请求体：
 ```json
-{"path": "/home/alice/a.txt", "duration_ms": 1234, "type": "preview"}
+{"path": "/a.txt", "duration_ms": 1234, "type": "preview"}
 ```
 
 响应：通常为 `204 No Content`。
@@ -58,10 +58,9 @@
 
 响应：`201 Created`，返回用户对象。
 
-启用 Workspace 执行面时，用户名必须匹配
-`[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}`；否则返回
-`400 workspace_incompatible_username`。这是动态 Unix 身份文件与用户 home
-路径的安全约束。
+用户名必须匹配 `[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}`，且不能以 `.` 或 `-` 开头；
+否则返回 `400 invalid_username`。用户名用于登录和 namespace 展示标签，不进入文件
+路径，也不再与容器或 Unix 账户创建相关。
 
 ### `PUT /audit/user/:id`
 更新用户角色或密码。

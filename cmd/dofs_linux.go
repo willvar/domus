@@ -161,7 +161,7 @@ func runDOFSMount(configPath string, options dofsMountOptions) error {
 		return err
 	}
 	backend, err := dofscore.NewBackend(context.Background(), user.ID, runtime.Metadata, runtime.Objects, runtime.Keys,
-		dofscore.BackendOptions{Writable: options.writable})
+		dofscore.BackendOptions{Writable: options.writable, Mounted: true})
 	if err != nil {
 		return err
 	}
@@ -457,7 +457,7 @@ func (p *productionDOFSMountProvider) Mount(
 		return nil, err
 	}
 	backend, err := dofscore.NewBackend(ctx, identity.UserID, p.runtime.Metadata, p.runtime.Objects, p.runtime.Keys,
-		dofscore.BackendOptions{Writable: options.Writable})
+		dofscore.BackendOptions{Writable: options.Writable, Mounted: true})
 	if err != nil {
 		return nil, err
 	}

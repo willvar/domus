@@ -17,9 +17,8 @@
 - [认证 `/auth`](./auth.md)
 - [当前用户 `/user`](./user.md)
 - [审计与管理 `/audit` + `/admin`](./audit-admin.md)
-- [文件 / 上传 / 分享 `/file`](./file.md)
+- [文件与上传 `/file`](./file.md)
 - [任务 `/task`](./jobs-tasks.md)
-- [桌面布局工作区 `/workspace`](./workspace.md)
 
 ### WebSocket
 - [WebSocket 协议](./websocket.md)
@@ -35,9 +34,8 @@
 ### 常见响应
 - 成功通常返回 JSON，例如：`{"ok": true}`。
 - 失败通常返回 JSON，例如：`{"error": "invalid_request"}`。
-- 某些接口返回流：
-  - 文件/任务进度：`text/event-stream`
-  - 头像：`image/webp`
+- 某些目录命令可返回 `text/event-stream` 进度；头像端点返回的是 OSS
+  访问与浏览器解密元数据，不代理图片正文。
 
 ## SSE 约定
 
@@ -48,7 +46,7 @@
 
 文件类 SSE 常见事件数据格式：
 ```json
-{"done": 3, "total": 10, "current": "user/home/a.txt"}
+{"done": 3, "total": 10, "current": "/archive/a.txt"}
 ```
 
 完成时通常发送：

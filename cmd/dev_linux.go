@@ -19,16 +19,11 @@ import (
 	"time"
 
 	"domus/config"
-	"domus/internal/dofs"
-	"domus/internal/workspace"
 	"domus/shared/logger"
 )
 
-const defaultDevWorkspaceImage = "domus-workspace:0.1.0"
-
 type devOptions struct {
 	runtimeRoot string
-	image       string
 }
 
 type devChild struct {
@@ -44,10 +39,9 @@ func devCommand(defaultConfigPath string, args []string) {
 	flags := flag.NewFlagSet("dev", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	configPath := defaultConfigPath
-	options := devOptions{runtimeRoot: "tmp/dev", image: defaultDevWorkspaceImage}
+	options := devOptions{runtimeRoot: "tmp/dev"}
 	flags.StringVar(&configPath, "c", configPath, "配置文件路径")
 	flags.StringVar(&options.runtimeRoot, "runtime-root", options.runtimeRoot, "本地运行状态目录")
-	flags.StringVar(&options.image, "image", options.image, "Workspace 容器镜像")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return
@@ -64,7 +58,7 @@ func devCommand(defaultConfigPath string, args []string) {
 
 func runDev(configPath string, options devOptions) error {
 	if os.Getuid() == 0 || os.Getgid() == 0 {
-		return errors.New("run the development stack as a non-root user with Docker access")
+		return errors.New("run the development stack as a non-root user")
 	}
 	runtimeRoot, err := filepath.Abs(strings.TrimSpace(options.runtimeRoot))
 	if err != nil {
@@ -108,24 +102,13 @@ func runDev(configPath string, options devOptions) error {
 		}
 		logger.Info("Generated instance secrets and saved them to %s", configPath)
 	}
-	uid := uint32(os.Getuid())
-	gid := uint32(os.Getgid())
-	applyDevRuntimeConfig(cfg, runtimeRoot, strings.TrimSpace(options.image), uid, gid)
+	applyDevRuntimeConfig(cfg, runtimeRoot)
 	if err := ensureDevBootstrapPassword(cfg.Server.RootBootstrapPasswordFile); err != nil {
 		return fmt.Errorf("prepare development root bootstrap password: %w", err)
 	}
 
 	if err := cfg.Validate(); err != nil {
 		return err
-	}
-	if err := cfg.ValidateDOFS(); err != nil {
-		return err
-	}
-	if err := cfg.ValidateWorkspace(); err != nil {
-		return err
-	}
-	if err := dofs.ValidateHostRequirements(true); err != nil {
-		return fmt.Errorf("development DOFS host prerequisite: %w", err)
 	}
 	if err := os.MkdirAll(filepath.Join(runtimeRoot, "run"), 0700); err != nil {
 		return fmt.Errorf("create development runtime directory: %w", err)
@@ -145,40 +128,13 @@ func runDev(configPath string, options devOptions) error {
 	if err != nil {
 		return fmt.Errorf("resolve Domus executable: %w", err)
 	}
-	children := make([]*devChild, 0, 3)
+	children := make([]*devChild, 0, 1)
 	shutdown := func() {
 		for index := len(children) - 1; index >= 0; index-- {
 			stopDevChild(children[index], 2*time.Minute)
 		}
 	}
 	defer shutdown()
-
-	dofsChild, err := startDevChild("DOFS", executable, "dofs", "serve", "-c", generatedConfig)
-	if err != nil {
-		return err
-	}
-	children = append(children, dofsChild)
-	if err := waitForDevService(dofsChild, 45*time.Second, func(ctx context.Context) error {
-		_, healthErr := (dofs.ControlClient{SocketPath: cfg.DOFS.ControlSocket, Timeout: time.Second}).Health(ctx, true)
-		return healthErr
-	}); err != nil {
-		return err
-	}
-
-	workspaceChild, err := startDevChild("Workspace Manager", executable, "workspace", "serve", "-c", generatedConfig)
-	if err != nil {
-		return err
-	}
-	children = append(children, workspaceChild)
-	if err := waitForDevService(workspaceChild, 90*time.Second, func(ctx context.Context) error {
-		health, healthErr := (workspace.ControlClient{SocketPath: cfg.Workspace.ControlSocket, Timeout: time.Second}).Health(ctx, true)
-		if healthErr == nil && health.ProtocolVersion != workspace.ControlProtocolVersion {
-			return fmt.Errorf("workspace protocol mismatch: %d", health.ProtocolVersion)
-		}
-		return healthErr
-	}); err != nil {
-		return err
-	}
 
 	webChild, err := startDevChild("Web", executable, "start", "-c", generatedConfig)
 	if err != nil {
@@ -203,16 +159,12 @@ func runDev(configPath string, options devOptions) error {
 	case <-serviceContext.Done():
 		logger.Info("Stopping development stack...")
 		return nil
-	case <-dofsChild.done:
-		return devChildExitError(dofsChild)
-	case <-workspaceChild.done:
-		return devChildExitError(workspaceChild)
 	case <-webChild.done:
 		return devChildExitError(webChild)
 	}
 }
 
-func applyDevRuntimeConfig(cfg *config.Config, runtimeRoot, image string, uid, gid uint32) {
+func applyDevRuntimeConfig(cfg *config.Config, runtimeRoot string) {
 	runRoot := filepath.Join(runtimeRoot, "run")
 	cfg.Server.PidFile = filepath.Join(runtimeRoot, "domus.pid")
 	// Never borrow a production secret-file path for the development process.
@@ -226,19 +178,9 @@ func applyDevRuntimeConfig(cfg *config.Config, runtimeRoot, image string, uid, g
 	}
 	cfg.DOFS.ControlSocket = filepath.Join(runRoot, "dofs.sock")
 	cfg.DOFS.SocketGroup = ""
-	cfg.DOFS.UID = uid
-	cfg.DOFS.GID = gid
-	cfg.DOFS.AllowOther = true
-	cfg.Workspace.ControlSocket = filepath.Join(runRoot, "workspace.sock")
-	cfg.Workspace.SocketGroup = ""
-	cfg.Workspace.StateRoot = filepath.Join(runtimeRoot, "workspace")
-	cfg.Workspace.DOFSControlSocket = cfg.DOFS.ControlSocket
-	cfg.Workspace.DOFSMountRoot = cfg.DOFS.MountRoot
-	cfg.Workspace.Image = image
-	cfg.Workspace.PullPolicy = "never"
-	cfg.Workspace.ContainerPrefix = "domus-dev-" + strconv.FormatUint(uint64(uid), 10)
-	cfg.Workspace.UID = uid
-	cfg.Workspace.GID = gid
+	cfg.DOFS.UID = uint32(os.Getuid())
+	cfg.DOFS.GID = uint32(os.Getgid())
+	cfg.DOFS.AllowOther = false
 	cfg.Log.File = ""
 }
 
@@ -351,8 +293,8 @@ func startDevChild(name, executable string, args ...string) (*devChild, error) {
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
 	// Put each service in its own process group so terminal Ctrl+C reaches this
-	// supervisor first; it can then preserve Web -> Workspace -> DOFS shutdown
-	// ordering. Pdeathsig prevents orphan services if the supervisor crashes.
+	// supervisor first. Pdeathsig prevents an orphan Web process if the
+	// supervisor crashes.
 	command.SysProcAttr = &syscall.SysProcAttr{Pdeathsig: syscall.SIGTERM, Setpgid: true}
 	if err := command.Start(); err != nil {
 		return nil, fmt.Errorf("start %s: %w", name, err)

@@ -12,30 +12,22 @@ import (
 
 func TestApplyDevRuntimeConfigUsesOnePrivateRuntimeTree(t *testing.T) {
 	runtimeRoot := filepath.Join(t.TempDir(), "runtime")
-	cfg := &config.Config{}
-	applyDevRuntimeConfig(cfg, runtimeRoot, "workspace:test", 1234, 2345)
+	cfg := &config.Config{DOFS: config.DOFSConfig{Metadata: config.DOFSMetadataConfig{Driver: "sqlite"}}}
+	applyDevRuntimeConfig(cfg, runtimeRoot)
 
 	if cfg.DOFS.MountRoot != filepath.Join(runtimeRoot, "dofs", "mounts") ||
 		cfg.DOFS.StateRoot != filepath.Join(runtimeRoot, "dofs", "state") ||
 		cfg.DOFS.ControlSocket != filepath.Join(runtimeRoot, "run", "dofs.sock") {
 		t.Fatalf("unexpected DOFS dev layout: %+v", cfg.DOFS)
 	}
-	if cfg.Workspace.ControlSocket != filepath.Join(runtimeRoot, "run", "workspace.sock") ||
-		cfg.Workspace.DOFSControlSocket != cfg.DOFS.ControlSocket ||
-		cfg.Workspace.DOFSMountRoot != cfg.DOFS.MountRoot ||
-		cfg.Workspace.StateRoot != filepath.Join(runtimeRoot, "workspace") {
-		t.Fatalf("unexpected workspace dev layout: %+v", cfg.Workspace)
-	}
-	if cfg.DOFS.SocketGroup != "" || cfg.Workspace.SocketGroup != "" ||
-		cfg.DOFS.UID != 1234 || cfg.DOFS.GID != 2345 ||
-		cfg.Workspace.UID != 1234 || cfg.Workspace.GID != 2345 || !cfg.DOFS.AllowOther {
-		t.Fatalf("unexpected development identity/socket policy: dofs=%+v workspace=%+v", cfg.DOFS, cfg.Workspace)
-	}
-	if cfg.Workspace.Image != "workspace:test" || cfg.Workspace.PullPolicy != "never" {
-		t.Fatalf("unexpected development image policy: %+v", cfg.Workspace)
+	if cfg.DOFS.Metadata.SQLite.Path != filepath.Join(runtimeRoot, "dofs", "state", "metadata.sqlite") {
+		t.Fatalf("unexpected DOFS metadata path: %q", cfg.DOFS.Metadata.SQLite.Path)
 	}
 	if cfg.Server.RootBootstrapPasswordFile != filepath.Join(runtimeRoot, "root-bootstrap-password") {
 		t.Fatalf("unexpected development bootstrap path: %q", cfg.Server.RootBootstrapPasswordFile)
+	}
+	if cfg.DOFS.SocketGroup != "" || cfg.DOFS.AllowOther {
+		t.Fatalf("unexpected optional FUSE exposure in dev config: %+v", cfg.DOFS)
 	}
 }
 

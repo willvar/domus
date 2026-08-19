@@ -2,9 +2,9 @@ package handler
 
 import (
 	"encoding/json"
-	"path"
 	"strings"
 
+	"domus/internal/middleware"
 	"domus/internal/ws"
 )
 
@@ -16,15 +16,6 @@ func (h *Handler) registerWSActions() {
 	// --- Client-driven task reporting ---
 	r.Handle("task.report", h.wsTaskReport)
 
-	// --- Terminal Session ---
-	r.Handle("session.open", h.wsSessionOpen)
-	r.Handle("session.input", h.wsSessionInput)
-	r.Handle("session.resize", h.wsSessionResize)
-	r.Handle("session.close", h.wsSessionClose)
-
-	// --- Workspace sync ---
-	r.Handle("workspace.event", h.wsWorkspaceEvent)
-
 	// --- Subscriptions ---
 	r.Handle("subscribe.directory", h.wsSubscribeDirectory)
 	r.Handle("unsubscribe.directory", h.wsUnsubscribeDirectory)
@@ -32,34 +23,16 @@ func (h *Handler) registerWSActions() {
 
 // --- Shared path resolution (no *fiber.Ctx dependency) ---
 
-func resolvePath(username, p string) (string, error) {
-	if len(p) == 0 || p[0] != '/' {
-		p = "/" + p
-	}
-
-	// Preserve trailing slash (directory marker) since path.Clean strips it.
-	trailingSlash := strings.HasSuffix(p, "/") && p != "/"
-
-	cleaned := path.Clean(p)
-	if strings.Contains(cleaned, "..") {
+func resolvePath(p string) (string, error) {
+	resolved, err := middleware.ResolveApplicationPath(p)
+	if err != nil {
 		return "", errInvalidPath
 	}
-	if !strings.HasPrefix(cleaned, "/") {
-		return "", errInvalidPath
-	}
-	if trailingSlash {
-		cleaned += "/"
-	}
-
-	return username + cleaned, nil
+	return resolved, nil
 }
 
 func toAppPath(ossPath, username string) string {
-	prefix := username + "/"
-	if len(ossPath) > len(prefix) && ossPath[:len(prefix)] == prefix {
-		return "/" + ossPath[len(prefix):]
-	}
-	return "/" + ossPath
+	return middleware.ToAppPath(ossPath, username)
 }
 
 var errInvalidPath = &wsError{Code: "invalid_path"}
@@ -121,7 +94,7 @@ func (h *Handler) wsSubscribeDirectory(conn *ws.Conn, _ string, data json.RawMes
 		return nil, &wsError{Code: "invalid_request"}
 	}
 
-	resolvedPath, err := resolvePath(conn.Session.Username, p.Path)
+	resolvedPath, err := resolvePath(p.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +111,7 @@ func (h *Handler) wsUnsubscribeDirectory(conn *ws.Conn, _ string, data json.RawM
 		return nil, &wsError{Code: "invalid_request"}
 	}
 
-	resolvedPath, err := resolvePath(conn.Session.Username, p.Path)
+	resolvedPath, err := resolvePath(p.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -147,26 +120,14 @@ func (h *Handler) wsUnsubscribeDirectory(conn *ws.Conn, _ string, data json.RawM
 	return map[string]any{"ok": true}, nil
 }
 
-// --- Workspace sync ---
-
-// wsWorkspaceEvent relays a workspace event to other connections of the same user.
-func (h *Handler) wsWorkspaceEvent(conn *ws.Conn, _ string, data json.RawMessage) (any, error) {
-	var payload any
-	if err := json.Unmarshal(data, &payload); err != nil {
-		return nil, &wsError{Code: "invalid_request"}
-	}
-	h.Hub.PushWorkspaceEvent(conn.UserID, conn.ID, payload)
-	return nil, nil
-}
-
 // --- Helpers ---
 
 // notifyParentDir notifies subscribers of the parent directory that it changed.
-func (h *Handler) notifyParentDir(username, resolvedPath string) {
+func (h *Handler) notifyParentDir(userID, resolvedPath string) {
 	parent := parentDirOf(resolvedPath)
 	if parent != "" {
-		appPath := toAppPath(parent, username)
-		h.Hub.PushDirChanged(parent, appPath, "refresh")
+		appPath := middleware.ToAppPath(parent, "")
+		h.Hub.PushDirChanged(userID, parent, appPath, "refresh")
 	}
 }
 

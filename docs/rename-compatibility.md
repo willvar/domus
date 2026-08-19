@@ -31,9 +31,9 @@ Domus 是新的产品名、Go module、CLI/binary 名称与前端品牌。升级
 切换 service unit 或脚本时，应在部署层暂时提供软链接，然后把调用方迁移到
 `domus`。
 
-用户执行面不提供旧架构回退：`workspace.enabled` 已移除，VSH 与进程内 SSH 也已
-删除。升级前必须部署 DOFS、Workspace Manager 和 Workspace 容器镜像；Domus Web
-在执行面未就绪时会拒绝启动。`session.open` 的模式字段以及旧的
-`session.complete`、`session.done`、`session.ssh` 协议也随之移除，后端与前端应
-作为同一次版本发布部署。配置文件若仍包含 `workspace.enabled` 会得到明确的校验
-错误，升级时应删除该字段，而不是把它改成另一个布尔值。
+用户执行面不提供旧架构回退：VSH、进程内 SSH、Docker Workspace、服务端预览和转码
+均已删除。`session.open`、`session.complete`、`session.done`、`session.ssh` 与
+`workspace.event` 不再注册，后端与前端应作为同一次版本发布部署。
+
+为避免旧配置阻断升级，遗留的整个 `workspace:` YAML 段会被忽略，并在下一次保存配置
+时消失；这只是一项配置读取兼容，不会启动 Manager、容器或其他备用执行路径。

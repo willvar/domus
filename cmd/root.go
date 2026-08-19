@@ -30,8 +30,6 @@ import (
 	"domus/internal/model"
 	"domus/internal/service"
 	"domus/internal/store"
-	"domus/internal/terminal"
-	workspaceRuntime "domus/internal/workspace"
 	"domus/internal/ws"
 	"domus/shared/bootstrap"
 	"domus/shared/logger"
@@ -98,8 +96,6 @@ func Execute() {
 		restore(configPath, getFlagValue(os.Args[2:], "-i"), hasFlag(os.Args[2:], "--yes"))
 	case "dofs":
 		dofsCommand(configPath, os.Args[2:])
-	case "workspace":
-		workspaceCommand(configPath, os.Args[2:])
 	case "dev":
 		devCommand(configPath, os.Args[2:])
 	case "help", "-h", "--help":
@@ -263,9 +259,6 @@ func resetInstance(cfg *config.Config, configPath string, confirmed bool, deps r
 	if err := requireDOFSStopped(cfg.DOFS.ControlSocket); err != nil {
 		return err
 	}
-	if err := requireWorkspaceStopped(cfg.Workspace.ControlSocket); err != nil {
-		return err
-	}
 	if !confirmed {
 		return fmt.Errorf("reset is destructive. Re-run with --yes to clear database %q and bucket %q", cfg.Database.DBName, cfg.OSS.Bucket)
 	}
@@ -295,9 +288,6 @@ func resetInstance(cfg *config.Config, configPath string, confirmed bool, deps r
 	if err := validateDOFSRuntimeStateReset(cfg); err != nil {
 		return fmt.Errorf("failed to validate DOFS runtime state before reset: %w", err)
 	}
-	if err := validateWorkspaceRuntimeStateReset(cfg); err != nil {
-		return fmt.Errorf("failed to validate Workspace runtime state before reset: %w", err)
-	}
 
 	if err := deps.resetDB(cfg.Database); err != nil {
 		return fmt.Errorf("failed to reset database: %w", err)
@@ -311,11 +301,6 @@ func resetInstance(cfg *config.Config, configPath string, confirmed bool, deps r
 		return fmt.Errorf("database and DOFS metadata reset completed, but failed to clear DOFS runtime state: %w", err)
 	}
 	logger.Info("DOFS runtime state reset complete")
-	if err := clearWorkspaceRuntimeState(cfg); err != nil {
-		return fmt.Errorf("database and DOFS state reset completed, but failed to clear Workspace runtime state: %w", err)
-	}
-	logger.Info("Workspace runtime state reset complete")
-
 	if err := fileStore.DeleteAllObjects(nil); err != nil {
 		return fmt.Errorf("database reset completed, but failed to clear bucket %q: %w", cfg.OSS.Bucket, err)
 	}
@@ -410,13 +395,6 @@ func validateDOFSRuntimeStateReset(cfg *config.Config) error {
 	return validateRuntimeStateReset("DOFS", cfg.DOFS.StateRoot, []string{"desired", "users"})
 }
 
-// Workspace desired markers and generated passwd/group files are transient.
-// manager-id deliberately survives so the restarted manager can recognize and
-// remove any exact-owned container left behind by a host crash.
-func validateWorkspaceRuntimeStateReset(cfg *config.Config) error {
-	return validateRuntimeStateReset("Workspace", cfg.Workspace.StateRoot, []string{"desired", "identities"})
-}
-
 func validateRuntimeStateReset(service, configuredRoot string, treeNames []string) error {
 	stateRoot := filepath.Clean(strings.TrimSpace(configuredRoot))
 	if stateRoot == "" || !filepath.IsAbs(stateRoot) || stateRoot == string(filepath.Separator) {
@@ -484,10 +462,6 @@ func validateRealDirectoryChain(service, directory string) error {
 
 func clearDOFSRuntimeState(cfg *config.Config) error {
 	return clearRuntimeState("DOFS", cfg.DOFS.StateRoot, []string{"desired", "users"})
-}
-
-func clearWorkspaceRuntimeState(cfg *config.Config) error {
-	return clearRuntimeState("Workspace", cfg.Workspace.StateRoot, []string{"desired", "identities"})
 }
 
 func clearRuntimeState(service, configuredRoot string, treeNames []string) error {
@@ -643,39 +617,6 @@ func runServer(cfg *config.Config, configPath string) {
 
 	// Initialize services
 	mid := middleware.New(repos.Sessions, cfg.Server.SessionSecret)
-	workspaceClient := workspaceRuntime.ControlClient{
-		SocketPath: cfg.Workspace.ControlSocket,
-		Timeout: time.Duration(max(
-			cfg.Workspace.OperationTimeoutSeconds,
-			cfg.Workspace.ExecTimeoutSeconds+30,
-		)) * time.Second,
-	}
-	workspaceContext, cancelWorkspace := context.WithTimeout(
-		context.Background(), time.Duration(cfg.Workspace.OperationTimeoutSeconds)*time.Second,
-	)
-	health, healthErr := workspaceClient.Health(workspaceContext, true)
-	cancelWorkspace()
-	if healthErr != nil && health.Status != "degraded" {
-		logger.Fatal("Workspace manager is unavailable: %v", healthErr)
-	}
-	if health.ProtocolVersion != workspaceRuntime.ControlProtocolVersion {
-		logger.Fatal("Workspace control protocol mismatch: daemon=%d server=%d", health.ProtocolVersion, workspaceRuntime.ControlProtocolVersion)
-	}
-	if healthErr != nil {
-		logger.Info("Workspace manager starts degraded; reconciliation remains active: %v", healthErr)
-	}
-	logger.Info("Workspace manager ready via %s", cfg.Workspace.ControlSocket)
-
-	terminalMgr := terminal.NewManager(workspaceClient, cfg.Workspace.MaxSessionsPerUser)
-	terminalMgr.OnPushBytes = func(connID, sessionID string, data []byte) {
-		hub.PushSessionOutputBytes(connID, sessionID, data)
-	}
-	terminalMgr.OnPushExit = func(connID, sessionID, reason string) {
-		hub.PushSessionExit(connID, sessionID, reason)
-	}
-	hub.OnConnClose = func(connID string) {
-		terminalMgr.CloseByConn(connID)
-	}
 
 	// Initialize handler
 	h := &handler.Handler{
@@ -687,8 +628,6 @@ func runServer(cfg *config.Config, configPath string) {
 		Challenges: challenges,
 		Mid:        mid,
 		Hub:        hub,
-		Terminal:   terminalMgr,
-		Workspace:  workspaceClient,
 		DOFS:       dofsRuntime,
 		FileSystem: fileSystem,
 	}
@@ -727,6 +666,7 @@ func runServer(cfg *config.Config, configPath string) {
 	if err := h.StartDOFSEventRelay(dofsEventContext); err != nil {
 		logger.Fatal("Failed to start DOFS event relay: %v", err)
 	}
+	h.StartDOFSReclaimer(dofsEventContext)
 
 	app := fiber.New(fiber.Config{
 		BodyLimit:             maxControlPlaneBodyBytes,
@@ -768,21 +708,11 @@ func runServer(cfg *config.Config, configPath string) {
 		defer close(shutdownComplete)
 		logger.Info("Shutting down service...")
 
-		// Stop admitting requests first. The listener shutdown is independent of
-		// media cleanup so one slow derived-file removal cannot consume every
-		// remaining shutdown stage's deadline.
 		if err := app.ShutdownWithTimeout(10 * time.Second); err != nil {
 			logger.Info("Failed to stop HTTP service cleanly: %v", err)
 		}
 		cancelDOFSEvents()
 		hub.CloseAll()
-
-		mediaTimeout := time.Duration(max(45, cfg.Workspace.ShutdownTimeoutSeconds)) * time.Second
-		mediaContext, cancelMedia := context.WithTimeout(context.Background(), mediaTimeout)
-		if err := h.ShutdownMediaJobs(mediaContext); err != nil {
-			logger.Info("Failed to stop media jobs cleanly: %v", err)
-		}
-		cancelMedia()
 	}()
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
@@ -897,8 +827,7 @@ func printHelp() {
 	fmt.Println("  reset     清空数据库并清空整个 bucket（危险）")
 	fmt.Println("  restore   从备份恢复数据库和整个 bucket（危险，需先停服务）")
 	fmt.Println("  dofs      管理 DOFS 挂载服务或执行单用户挂载（Linux）")
-	fmt.Println("  workspace 管理按用户隔离的容器执行服务（Linux）")
-	fmt.Println("  dev       启动完整本地开发栈（Linux）")
+	fmt.Println("  dev       启动本地 Web 开发服务")
 	fmt.Println()
 	fmt.Println("选项:")
 	fmt.Println("  -c string  配置文件路径 (默认: config.yaml)")
@@ -919,7 +848,5 @@ func printHelp() {
 	fmt.Println("  domus dofs mount -c config.yaml --user root --mountpoint /mnt/dofs-root")
 	fmt.Println("  domus dofs serve -c /etc/domus/config.yaml")
 	fmt.Println("  domus dofs status -c /etc/domus/config.yaml")
-	fmt.Println("  domus workspace serve -c /etc/domus/workspace.yaml")
-	fmt.Println("  domus workspace health -c /etc/domus/workspace.yaml --ready")
 	fmt.Println("  domus dev -c config.yaml --runtime-root ./tmp/dev")
 }

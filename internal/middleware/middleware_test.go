@@ -67,17 +67,25 @@ func TestResolvePath_UserEmptyPath(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "/" {
+		t.Fatalf("expected namespace root, got %q", body)
+	}
 }
 
 func TestResolvePath_UserValidPath(t *testing.T) {
 	app := resolvePathTestApp()
-	req := httptest.NewRequest("GET", "/resolve?username=alice&role=user&path=alice/docs/file.txt", nil)
+	req := httptest.NewRequest("GET", "/resolve?username=alice&role=user&path=docs/file.txt", nil)
 	resp, err := app.Test(req)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "/docs/file.txt" {
+		t.Fatalf("expected canonical namespace path, got %q", body)
 	}
 }
 
@@ -92,12 +100,12 @@ func TestResolvePath_UserPathTraversalNormalized(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if string(body) != "alice/bob/secret.txt" {
-		t.Fatalf("expected normalized path alice/bob/secret.txt, got %s", body)
+	if string(body) != "/bob/secret.txt" {
+		t.Fatalf("expected normalized path /bob/secret.txt, got %s", body)
 	}
 }
 
-func TestResolvePath_UserPathAlwaysNamespaced(t *testing.T) {
+func TestResolvePath_IdentityComesFromSessionNotPath(t *testing.T) {
 	app := resolvePathTestApp()
 	req := httptest.NewRequest("GET", "/resolve?username=alice&role=user&path=bob/file.txt", nil)
 	resp, err := app.Test(req)
@@ -108,12 +116,12 @@ func TestResolvePath_UserPathAlwaysNamespaced(t *testing.T) {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if string(body) != "alice/bob/file.txt" {
-		t.Fatalf("expected namespaced path alice/bob/file.txt, got %s", body)
+	if string(body) != "/bob/file.txt" {
+		t.Fatalf("expected namespace-relative path /bob/file.txt, got %s", body)
 	}
 }
 
-func TestResolvePath_AdminEmptyPath(t *testing.T) {
+func TestResolvePath_RoleDoesNotChangeNamespaceRoot(t *testing.T) {
 	app := resolvePathTestApp()
 	req := httptest.NewRequest("GET", "/resolve?username=admin&role=admin&path=", nil)
 	resp, err := app.Test(req)
@@ -123,9 +131,13 @@ func TestResolvePath_AdminEmptyPath(t *testing.T) {
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "/" {
+		t.Fatalf("expected namespace root, got %q", body)
+	}
 }
 
-func TestResolvePath_AdminCrossUser(t *testing.T) {
+func TestResolvePath_PathSegmentIsNotATenantSelector(t *testing.T) {
 	app := resolvePathTestApp()
 	req := httptest.NewRequest("GET", "/resolve?username=admin&role=admin&path=alice/file.txt", nil)
 	resp, err := app.Test(req)
@@ -133,7 +145,52 @@ func TestResolvePath_AdminCrossUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	if resp.StatusCode != 200 {
-		t.Fatalf("expected 200 for admin cross-user, got %d", resp.StatusCode)
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if string(body) != "/alice/file.txt" {
+		t.Fatalf("expected ordinary namespace path /alice/file.txt, got %q", body)
+	}
+}
+
+func TestResolvePath_MapsVirtualTrashToReservedStorage(t *testing.T) {
+	app := resolvePathTestApp()
+	req := httptest.NewRequest("GET", "/resolve?path=/__trash__/docs/file.txt", nil)
+	resp, err := app.Test(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK || string(body) != "/.domus/trash/docs/file.txt" {
+		t.Fatalf("trash mapping status=%d body=%q", resp.StatusCode, body)
+	}
+	if got := ToAppPath(string(body), "ignored"); got != "/__trash__/docs/file.txt" {
+		t.Fatalf("trash reverse mapping = %q", got)
+	}
+}
+
+func TestResolvePath_RejectsPrivateStorage(t *testing.T) {
+	app := resolvePathTestApp()
+	for _, requested := range []string{"/.domus/", "/.domus/trash/a", "/.user/preferences.json"} {
+		req := httptest.NewRequest("GET", "/resolve?path="+requested, nil)
+		resp, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resp.StatusCode != http.StatusForbidden {
+			t.Fatalf("path %q status=%d, want 403", requested, resp.StatusCode)
+		}
+	}
+}
+
+func TestResolveInternalPath_MapsPrivateUserFiles(t *testing.T) {
+	got, err := ResolveInternalApplicationPath("/.user/preferences.json")
+	if err != nil || got != "/.domus/user/preferences.json" {
+		t.Fatalf("private user path = %q, %v", got, err)
+	}
+	got, err = ResolveInternalApplicationPath("/.user/thumbnails/thumb.webp")
+	if err != nil || got != "/.domus/thumbnails/thumb.webp" {
+		t.Fatalf("thumbnail path = %q, %v", got, err)
 	}
 }
 

@@ -25,8 +25,9 @@ server:
   # ZEPHYR_ROOT_BOOTSTRAP_PASSWORD remains accepted during upgrades.
   root_bootstrap_password_file: ""
 
-# Linux-only DOFS data plane. Run it as a separate foreground systemd service
-# with `domus dofs serve -c /etc/domus/config.yaml`.
+# DOFS is Domus' encrypted namespace/storage implementation. The Web process
+# uses metadata.* directly. The remaining mount/control fields are only needed
+# when exposing an optional Linux FUSE mount with `domus dofs serve`.
 dofs:
   # SQLite is the default for one Domus server. Use `driver: postgres` only
   # when several DOFS hosts must share the same namespace metadata; PostgreSQL
@@ -37,30 +38,23 @@ dofs:
       path: "/var/lib/domus/dofs/state/metadata.sqlite"
       busy_timeout_seconds: 5
       max_open_connections: 8
-  # Keep the mount tree and plaintext writeback state on separate, private host
-  # paths. state_root should be backed by an encrypted local volume.
+  # Optional Linux FUSE runtime paths. Keep plaintext writeback state on a
+  # private encrypted local volume when the mount service is enabled.
   mount_root: "/var/lib/domus/dofs/mounts"
   state_root: "/var/lib/domus/dofs/state"
   control_socket: "/run/domus/dofs.sock"
-  # Empty means owner-only (0600). Set to the trusted Domus service group to
-  # allow a separately-accounted control-plane process to request mounts.
-  # The supplied workspace unit runs with primary group `domus`, so production
-  # deployments use that group. `domus dev` overrides this to owner-only.
-  socket_group: "domus"
-  # UID/GID presented inside the FUSE filesystem and user containers.
+  # Empty means owner-only (0600). Set a trusted group only when another local
+  # process must request FUSE mounts.
+  socket_group: ""
+  # UID/GID presented through the optional FUSE filesystem.
   uid: 1000
   gid: 1000
-  allow_other: true
+  allow_other: false
   writable: true
   max_mounts: 32
   reconcile_interval_seconds: 30
   mount_timeout_seconds: 60
   shutdown_timeout_seconds: 30
-
-# Required Linux container execution plane. The web process only consumes this
-# Unix socket and never receives access to Docker's root-equivalent socket.
-workspace:
-  control_socket: "/run/domus-workspace/control.sock"
 
 log:
   level: "info"

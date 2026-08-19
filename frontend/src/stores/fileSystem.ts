@@ -10,7 +10,6 @@ import { ICONS } from '../composables/useFileIcon'
 import { showPrompt, showConfirm, showDuplicateDialog } from '../composables/useNativeDialog'
 import { useMessage } from '../composables/useMessage'
 import { usePreferences } from '../composables/usePreferences'
-import { useWorkspaceSync } from '../composables/useWorkspaceSync'
 import { useServiceWorker } from '../composables/useServiceWorker'
 import { registerFileDecrypt } from '../composables/useFileAccess'
 import { readMigratedStorage } from '../utils/storageCompat'
@@ -141,7 +140,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const wm = useWindowManagerStore()
   const ws = useWebSocket()
   const { t, te } = useI18n()
-  const sync = useWorkspaceSync()
   const message = useMessage()
 
   function pendingLabel(type: PendingOpInput['type']): string {
@@ -308,7 +306,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   // --- Tab operations ---
   function createTab(path?: string, { remote }: RemoteFlag = {}): string {
     const id: string = nextTabId()
-    const requestedPath: string = path || `/home/${auth.username}/`
+    const requestedPath: string = path || '/'
     const initialPath: string = requestedPath === '__shared__/' ? requestedPath : normalizeDirPath(requestedPath)
     const tab: FileTab = {
       id,
@@ -334,10 +332,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
     loadFiles(initialPath)
 
-    if (!remote) {
-      sync.emitEvent({ action: 'tab.open', path: initialPath })
-    }
-
     return id
   }
 
@@ -355,10 +349,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     }
     if (idx < 0) return
 
-    if (!remote) {
-      sync.emitEvent({ action: 'tab.close', index: idx })
-    }
-
     tabs.value.splice(idx, 1)
     if (activeTabId.value === id) {
       const newIdx: number = Math.min(idx, tabs.value.length - 1)
@@ -370,9 +360,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const idx: number = tabs.value.findIndex(t => t.id === id)
     if (idx >= 0) {
       activeTabId.value = id
-      if (!remote) {
-        sync.emitEvent({ action: 'tab.switch', index: idx })
-      }
     }
   }
 
@@ -425,13 +412,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       history.value = history.value.slice(0, historyIndex.value + 1)
       history.value.push(path)
       historyIndex.value = history.value.length - 1
-    }
-
-    if (!remote) {
-      const tabIndex: number = tabs.value.findIndex(t => t.id === tabId)
-      if (tabIndex >= 0) {
-        sync.emitEvent({ action: 'tab.navigate', index: tabIndex, path })
-      }
     }
 
     // Subscribe to new directory
@@ -1400,7 +1380,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
     for (const st of serializedTabs) {
       const id: string = nextTabId()
-      const requestedPath = st.path || `/home/${auth.username}/`
+      const requestedPath = st.path || '/'
       const restoredPath = requestedPath === '__shared__/' ? requestedPath : normalizeDirPath(requestedPath)
       const tab: FileTab = {
         id,

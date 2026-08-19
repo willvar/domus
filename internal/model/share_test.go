@@ -17,7 +17,7 @@ func testShare(shareID, ownerID, targetID string, inode int64) Share {
 		ShareID:      shareID,
 		OwnerID:      ownerID,
 		FileInode:    inode,
-		FilePath:     ownerID + "/home/" + ownerID + "/file.txt",
+		FilePath:     "/file.txt",
 		FileName:     "file.txt",
 		FileSize:     1024,
 		ContentType:  "text/plain",
@@ -156,7 +156,7 @@ func TestShareSyncAndDeleteByInode(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := repos.Shares.SyncByInode("owner-1", 401, "owner-1/home/owner-1/renamed.md", "renamed.md", 2048, "text/markdown"); err != nil {
+	if err := repos.Shares.SyncByInode("owner-1", 401, "/renamed.md", "renamed.md", 2048, "text/markdown"); err != nil {
 		t.Fatal(err)
 	}
 	for _, shareID := range []string{"match-a", "match-b"} {

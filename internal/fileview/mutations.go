@@ -19,8 +19,8 @@ func (r *Repo) controller(ctx context.Context, userID string) (*dofs.Backend, er
 	return r.runtime.OpenControl(ctx, userID)
 }
 
-func (r *Repo) ensureDirectoryPath(ctx context.Context, user *model.User, physical string) (dofs.Node, error) {
-	segments, _, err := splitPhysicalPath(user, physical)
+func (r *Repo) ensureDirectoryPath(ctx context.Context, user *model.User, namespacePath string) (dofs.Node, error) {
+	segments, _, err := splitNamespacePath(user, namespacePath)
 	if err != nil {
 		return dofs.Node{}, err
 	}
@@ -67,7 +67,7 @@ func (r *Repo) upsertMetadata(userID string, inode uint64, updates map[string]an
 	return r.db.Model(&metadataRecord{}).Where("user_id = ? AND inode = ?", userID, inode).Updates(updates).Error
 }
 
-func (r *Repo) Upsert(userID, physical, name string, isDir bool, size int64, contentType, contentHash string, options ...model.UpsertFileOpts) error {
+func (r *Repo) Upsert(userID, namespacePath, name string, isDir bool, size int64, contentType, contentHash string, options ...model.UpsertFileOpts) error {
 	ctx, cancel := operationContext()
 	defer cancel()
 	user, err := r.user(userID)
@@ -75,10 +75,10 @@ func (r *Repo) Upsert(userID, physical, name string, isDir bool, size int64, con
 		return err
 	}
 	if isDir {
-		_, err := r.ensureDirectoryPath(ctx, user, physical)
+		_, err := r.ensureDirectoryPath(ctx, user, namespacePath)
 		return err
 	}
-	node, err := r.resolve(ctx, user, physical)
+	node, err := r.resolve(ctx, user, namespacePath)
 	if err != nil {
 		return fmt.Errorf("file content must be published through DOFS before catalog update: %w", err)
 	}
@@ -95,6 +95,9 @@ func (r *Repo) Upsert(userID, physical, name string, isDir bool, size int64, con
 	}
 	return r.upsertMetadata(userID, node.Inode, map[string]any{
 		"generation": node.Generation, "content_type": contentType, "content_hash": contentHash,
+		// Product metadata is generation-scoped. A replacement must never show
+		// dimensions or a thumbnail generated from the previous plaintext.
+		"thumbnail": 0, "media_width": 0, "media_height": 0, "media_duration": 0,
 	})
 }
 
@@ -116,19 +119,31 @@ func (r *Repo) deleteNode(ctx context.Context, controller *dofs.Backend, userID 
 	if err := controller.Remove(ctx, node.Parent, node.Name, node.IsDir()); err != nil {
 		return err
 	}
-	return r.db.Where("user_id = ? AND inode = ?", userID, node.Inode).Delete(&metadataRecord{}).Error
+	return r.deleteInodeProjection(userID, node.Inode)
 }
 
-func (r *Repo) Delete(userID, physical string) error {
+func (r *Repo) deleteInodeProjection(userID string, inode uint64) error {
+	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ? AND inode = ?", userID, inode).Delete(&metadataRecord{}).Error; err != nil {
+			return err
+		}
+		// uploadRecord is transient resume/idempotency state, not file identity.
+		// Once the inode is deleted, retaining it would make path fallback report
+		// a ghost file and prevent the same logical name from being reused.
+		return tx.Where("user_id = ? AND inode = ?", userID, inode).Delete(&uploadRecord{}).Error
+	})
+}
+
+func (r *Repo) Delete(userID, namespacePath string) error {
 	ctx, cancel := operationContext()
 	defer cancel()
 	user, err := r.user(userID)
 	if err != nil {
 		return err
 	}
-	node, err := r.resolve(ctx, user, physical)
+	node, err := r.resolve(ctx, user, namespacePath)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return r.db.Where("user_id = ? AND path = ?", userID, physical).Delete(&uploadRecord{}).Error
+		return r.db.Where("user_id = ? AND path = ?", userID, namespacePath).Delete(&uploadRecord{}).Error
 	}
 	if err != nil {
 		return err
@@ -188,7 +203,7 @@ func (r *Repo) move(userID, oldPath, newPath string) error {
 		return err
 	}
 	if replacedInode != 0 && replacedInode != source.Inode {
-		if err := r.db.Where("user_id = ? AND inode = ?", userID, replacedInode).Delete(&metadataRecord{}).Error; err != nil {
+		if err := r.deleteInodeProjection(userID, replacedInode); err != nil {
 			return err
 		}
 	}
@@ -217,8 +232,8 @@ func (r *Repo) thumbnailInode(userID, objectKey, wrapped string) (uint64, error)
 	return uint64(record.ID), nil
 }
 
-func (r *Repo) UpdateThumbnail(userID, physical, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) error {
-	record, err := r.Get(userID, physical)
+func (r *Repo) UpdateThumbnail(userID, namespacePath, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) error {
+	record, err := r.Get(userID, namespacePath)
 	if err != nil {
 		return err
 	}
@@ -231,8 +246,8 @@ func (r *Repo) UpdateThumbnail(userID, physical, thumbnailKey, thumbnailWrappedD
 	})
 }
 
-func (r *Repo) UpdateThumbnailIfGeneration(userID, physical string, fileID, generation int64, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) (bool, error) {
-	record, err := r.Get(userID, physical)
+func (r *Repo) UpdateThumbnailIfGeneration(userID, namespacePath string, fileID, generation int64, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) (bool, error) {
+	record, err := r.Get(userID, namespacePath)
 	if errors.Is(err, gorm.ErrRecordNotFound) || record.ID != fileID || record.Generation != generation || record.Status != "ready" {
 		return false, nil
 	}
@@ -245,15 +260,15 @@ func (r *Repo) UpdateThumbnailIfGeneration(userID, physical string, fileID, gene
 	}
 	// Stamp the generation that was actually probed. If a writer commits after
 	// this check, recordFromNode ignores this now-stale row instead of attaching
-	// an old preview to the new contents.
+	// an old thumbnail to the new contents.
 	return true, r.upsertMetadata(userID, uint64(record.ID), map[string]any{
 		"generation": generation, "thumbnail": thumbnail, "media_width": width,
 		"media_height": height, "media_duration": duration,
 	})
 }
 
-func (r *Repo) UpdateContentType(userID, physical, contentType string) error {
-	record, err := r.Get(userID, physical)
+func (r *Repo) UpdateContentType(userID, namespacePath, contentType string) error {
+	record, err := r.Get(userID, namespacePath)
 	if err != nil {
 		return err
 	}
@@ -284,7 +299,7 @@ func (r *Repo) SearchFiles(userID, query string, limit int) ([]model.SearchFileR
 		if len(result) == limit {
 			break
 		}
-		if strings.HasPrefix(record.Name, ".") || strings.Contains(record.Path, "/__trash__/") {
+		if strings.HasPrefix(record.Path, "/.domus/") || record.Path == "/.domus/" {
 			continue
 		}
 		if strings.Contains(strings.ToLower(record.Name), needle) {

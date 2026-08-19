@@ -18,8 +18,7 @@
   `search_text`、`diff`、`ciphertext`、`base64` 等正文或旧协议字段会被拒绝；
 - Domus HTTP 请求体上限为 1 MiB；
 - 这是服务端托管的应用层加密，不是零知识加密：Domus 控制面会接收 DEK，并用用户
-  KEK 包装保存；它不接收上传文件正文，但受信任的 DOFS/工作区可以为预览、转码等
-  服务端功能解密读取文件。
+  KEK 包装保存；它不接收上传文件正文，但受信任的 DOFS backend 具备授权解密能力。
 
 ## 文件浏览与读取
 
@@ -29,7 +28,11 @@
 
 查询参数：
 
-- `path`：应用层目录路径，例如 `/home/alice/`。
+- `path`：当前登录用户 namespace 内的绝对路径；`/` 是文件根目录，例如 `/Documents/`。
+
+用户名不属于路径。服务端从会话中的不可变用户 ID 选择 DOFS namespace，因此两个用户
+可以同时拥有 `/a.txt`，但会解析到彼此隔离的 inode、密钥和对象。`/.domus/` 是保留的
+内部存储路径，公开接口返回 `403`；回收站使用虚拟路径 `/__trash__/`。
 
 响应示例：
 
@@ -38,7 +41,7 @@
   "files": [
     {
       "name": "a.txt",
-      "path": "/home/alice/a.txt",
+      "path": "/a.txt",
       "is_dir": false,
       "size": 123,
       "created_at": "2026-08-18T10:00:00Z",
@@ -70,8 +73,8 @@
 {
   "results": [
     {
-      "path": "/home/alice/a.txt",
-      "parent": "/home/alice/",
+      "path": "/a.txt",
+      "parent": "/",
       "name": "a.txt",
       "is_dir": false,
       "size": 123,
@@ -91,6 +94,9 @@
 
 - `path`：必填；
 - `optional=true`：文件不存在时返回 `204`，否则返回 `404`。
+
+`internal=true` 和 `/.user/...` 仅供同源 Domus 前端读取产品私有加密文件，不是通用
+文件浏览能力；它映射到 `/.domus/user/` 或 `/.domus/thumbnails/`。
 
 响应示例：
 
@@ -115,15 +121,15 @@
 ### `POST /file/mkdir`
 
 ```json
-{"path": "/home/alice/newdir/"}
+{"path": "/newdir/"}
 ```
 
 ### `POST /file/rename`
 
 ```json
 {
-  "old_path": "/home/alice/a.txt",
-  "new_path": "/home/alice/b.txt",
+  "old_path": "/a.txt",
+  "new_path": "/b.txt",
   "is_dir": false
 }
 ```
@@ -132,8 +138,8 @@
 
 ```json
 {
-  "src_path": "/home/alice/a.txt",
-  "dst_path": "/home/alice/b.txt",
+  "src_path": "/a.txt",
+  "dst_path": "/b.txt",
   "is_dir": false
 }
 ```
@@ -145,8 +151,8 @@ SSE 进度流。
 
 ```json
 {
-  "src_path": "/home/alice/a.txt",
-  "dst_path": "/home/alice/archive/a.txt",
+  "src_path": "/a.txt",
+  "dst_path": "/archive/a.txt",
   "is_dir": false
 }
 ```
@@ -162,7 +168,9 @@ SSE 进度流。
 - `permanent=true|1`：跳过回收站并永久删除。
 
 普通请求返回 `{"ok":true}`；部分目录操作可返回 SSE 进度流。删除上传中条目会中止
-multipart 会话和 DOFS 预留。
+multipart 会话和 DOFS 预留。移入回收站仍计入用户用量；永久删除会在 DOFS 元数据
+事务中立即释放逻辑用量，并把源文件、所有 generation 及关联缩略图交给持久化
+reclaimer。OSS 暂时失败或 FUSE 挂载占用不会恢复目录项，后台会继续幂等重试。
 
 ## 浏览器直传 `/file/upload`
 
@@ -175,7 +183,7 @@ multipart 会话和 DOFS 预留。
 
 ```json
 {
-  "path": "/home/alice/",
+  "path": "/",
   "names": ["a.txt", "b.txt"]
 }
 ```
@@ -201,7 +209,7 @@ multipart 会话和 DOFS 预留。
 
 ```json
 {
-  "path": "/home/alice/",
+  "path": "/",
   "file_name": "a.txt",
   "file_size": 123,
   "content_type": "text/plain",
@@ -218,9 +226,9 @@ multipart 会话和 DOFS 预留。
 - `conflict_strategy`：可省略，或为 `replace`、`rename`；冲突且未指定时返回
   `409 file_already_exists`；
 - `expected_generation`：可选的乐观并发条件；不匹配时返回 `409 generation_conflict`；
-- `internal`：仅供 Domus 前端写入 `/.user` 等产品私有路径时，请求按需创建缺失的父目录；
+- `internal`：仅供 Domus 前端写入 `/.user/...` 产品私有虚拟路径时，请求按需创建
+  `/.domus/` 下缺失的父目录；
   它不放宽路径权限、配额、加密直传或正文边界；
-- `share_id`：写权限分享的 ID。共享写入仍复用本直传协议，不存在共享正文接口；
 - `dek`：必填的 32 字节 DEK 十六进制值。
 
 响应：
@@ -237,8 +245,8 @@ multipart 会话和 DOFS 预留。
 }
 ```
 
-覆盖现有文件时，为保持既有分享有效，DOFS 会保留目标文件的 DEK；因此客户端必须
-使用响应中的 `dek` 加密，而不能假定它等于请求中的新 DEK。响应不会暴露 OSS 对象键。
+覆盖现有文件时，DOFS 可以保留目标文件的 DEK；因此客户端必须使用响应中的 `dek`
+加密，而不能假定它等于请求中的新 DEK。响应不会暴露 OSS 对象键。
 
 ### 3. 获取分片 URL
 
@@ -306,8 +314,8 @@ OSS 的权威 ETag 完成 multipart，并原子发布 DOFS generation。客户�
 {"ok": true, "generation": 7}
 ```
 
-完成操作可安全重试。若浏览器未提供缩略图，Domus 可能在完成后异步创建预览任务；
-预览失败不撤销已经发布的原文件。
+完成操作可安全重试。缩略图生成或上传失败不会触发服务端补偿任务，原文件仍可正常
+发布并以通用文件图标显示。
 
 ### 6. 心跳、取消和清理
 
@@ -347,86 +355,14 @@ Content-Type: application/json
 
 响应为 `{"ok":true,"count":N}`。
 
-## 预览与转码
+## 浏览器缩略图
 
-浏览器能生成缩略图时，缩略图也走上述本地加密、直传 OSS 协议。浏览器无法处理的
-PDF、图片或视频可由服务端异步预览任务处理：任务进入该用户复用的受限 Workspace
-容器，只通过精确挂载的 `/workspace` 访问该用户 DOFS FUSE 命名空间。
+上传浏览器为支持的图片、视频和 PDF 生成 WebP 缩略图。缩略图通过同一加密直传协议
+成为独立隐藏 DOFS 文件，并以源 inode/generation 指向缩略图 inode。重命名、移动保留
+绑定；覆盖、永久删除会回收旧缩略图；复制不共享缩略图。
 
-### `POST /file/transcode`
-
-接口只允许固定 profile，不接受任意命令或 FFmpeg 参数：
-
-```json
-{
-  "path": "/home/alice/movie.mov",
-  "profile": "video-720p"
-}
-```
-
-支持：
-
-- `video-720p`：最大宽度 1280 的 H.264/AAC MP4；
-- `audio-mp3`：从音频或视频提取 MP3。
-
-成功接受时返回 `202`：
-
-```json
-{
-  "task_id": "uuid",
-  "output_path": "/home/alice/movie-a1b2c3d4.720p.mp4",
-  "profile": "video-720p"
-}
-```
-
-任务进度和最终状态通过 `/task/` 与 `task.update` 获取，`DELETE /task/:id` 可取消。
-
-## 分享
-
-分享绑定 DOFS inode，而不是逻辑路径。重命名后分享仍指向同一文件；删除或 inode
-消失后分享不会退回按旧路径解析。
-
-### `POST /file/share`
-
-```json
-{
-  "path": "/home/alice/a.txt",
-  "target_username": "bob",
-  "permission": "read",
-  "expires_in": 3600
-}
-```
-
-`permission` 为 `read` 或 `write`，`expires_in` 为 0 表示不过期，最大一年。响应：
-
-```json
-{"share_id": "uuid"}
-```
-
-### `GET /file/shares?path=...`
-
-列出当前用户为指定文件创建的有效分享。
-
-### `GET /file/share/owned`
-
-列出当前用户创建的全部有效分享。
-
-### `GET /file/shared`
-
-以文件视图列出别人分享给当前用户的文件。
-
-### `GET /file/shared/:share_id`
-
-仅目标用户可访问。返回当前 inode/generation 的 presigned OSS 下载 URL、文件元数据、
-权限和用目标用户 KEK 包装后再解开的 DEK。读取仍由浏览器直接从 OSS 取密文并本地
-解密。
-
-### `DELETE /file/share/:id`
-
-撤销分享。`:id` 是列表响应中的数据库整数 `id`，所有者或目标用户都可以撤销。
-
-写权限用户覆盖共享文件时，调用标准上传初始化接口并携带 `share_id` 与当前
-`expected_generation`，之后按同样的 presign、直传、完成流程执行。
+文件界面的“显示缩略图”是设备本地开关，默认关闭。它只控制列表和详情是否请求并
+渲染已有缩略图，不控制上传时生成。服务端不运行 preview worker 或转码任务。
 
 ## 已移除接口
 
@@ -434,4 +370,9 @@ PDF、图片或视频可由服务端异步预览任务处理：任务进入该�
 
 - `PUT /file/content/diff`；
 - `PUT /file/shared/:share_id/content/diff`；
+- `POST /file/transcode`；
+- `/file/share`、`/file/shares`、`/file/shared` 及其子路由；
 - 任何把明文、密文或 base64 文件正文提交给 Domus HTTP 的文件接口。
+
+分享的旧表和内部迁移数据可以继续存在，以保证升级和清理安全，但不再注册任何分享
+路由；上传控制消息中的 `share_id` 也会被拒绝。

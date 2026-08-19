@@ -499,7 +499,7 @@ func (m *Manager) ensure(ctx context.Context, selector MountUserSelector, onlyIf
 		if cancelForget {
 			// A fresh external Ensure supersedes a failed explicit Unmount. Re-publish
 			// the marker before changing memory so a crash cannot lose the restored
-			// desired state (Workspace reconciliation relies on this behavior).
+			// desired state so an operator-requested mount survives reconciliation.
 			if err := m.persistDesiredMarker(identity.UserID); err != nil {
 				return MountStatus{}, err
 			}

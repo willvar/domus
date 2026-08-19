@@ -120,10 +120,10 @@ func TestBackupInstanceWritesManifestDatabaseAndObjects(t *testing.T) {
 	backupDir := t.TempDir()
 	st := &backupTestStore{
 		objects: []store.ObjectInfo{
-			{Key: "root/home/", Size: 0},
-			{Key: "root/home/hello.txt", Size: 5},
+			{Key: "root/archive/", Size: 0},
+			{Key: "root/archive/hello.txt", Size: 5},
 		},
-		contents: map[string][]byte{"root/home/hello.txt": []byte("hello")},
+		contents: map[string][]byte{"root/archive/hello.txt": []byte("hello")},
 	}
 	dumped := false
 	now := time.Date(2026, 4, 19, 12, 30, 0, 0, time.UTC)
@@ -142,7 +142,7 @@ func TestBackupInstanceWritesManifestDatabaseAndObjects(t *testing.T) {
 	if !dumped {
 		t.Fatal("expected database dump to run")
 	}
-	objectPath, err := objectRelativePath("root/home/hello.txt")
+	objectPath, err := objectRelativePath("root/archive/hello.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestBackupInstanceWritesManifestDatabaseAndObjects(t *testing.T) {
 	if manifest.EncryptionSecretFingerprint != encryptionSecretFingerprint(testResetConfig().Server.EncryptionSecret) {
 		t.Fatal("expected encryption fingerprint in manifest")
 	}
-	if len(manifest.Objects) != 2 || manifest.Objects[0].Key != "root/home/" || manifest.Objects[1].Key != "root/home/hello.txt" {
+	if len(manifest.Objects) != 2 || manifest.Objects[0].Key != "root/archive/" || manifest.Objects[1].Key != "root/archive/hello.txt" {
 		t.Fatalf("unexpected manifest objects: %+v", manifest.Objects)
 	}
 	if _, err := os.Stat(filepath.Join(backupDir, "database.sql")); err != nil {
@@ -272,34 +272,6 @@ func TestRequireDOFSStoppedFailsClosed(t *testing.T) {
 	}
 }
 
-func TestRequireWorkspaceStoppedFailsClosed(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "workspace.sock")
-	listener, err := net.Listen("unix", socketPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	unixListener := listener.(*net.UnixListener)
-	unixListener.SetUnlinkOnClose(false)
-	if err := requireWorkspaceStopped(socketPath); err == nil {
-		t.Fatal("live Workspace socket was accepted")
-	}
-	if err := listener.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := requireWorkspaceStopped(socketPath); err != nil {
-		t.Fatalf("stale Workspace socket should be accepted: %v", err)
-	}
-	if err := os.Remove(socketPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(socketPath, []byte("not a socket"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := requireWorkspaceStopped(socketPath); err == nil {
-		t.Fatal("non-socket Workspace control path was accepted")
-	}
-}
-
 func TestObjectRelativePathTreatsObjectKeysAsOpaque(t *testing.T) {
 	first, err := objectRelativePath("a//b")
 	if err != nil {
@@ -366,7 +338,7 @@ func TestRestoreInstanceRejectsFingerprintMismatch(t *testing.T) {
 
 func TestRestoreInstanceRestoresBucketAndDatabase(t *testing.T) {
 	backupDir := t.TempDir()
-	objectPath, err := objectRelativePath("root/home/hello.txt")
+	objectPath, err := objectRelativePath("root/archive/hello.txt")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -386,8 +358,8 @@ func TestRestoreInstanceRestoresBucketAndDatabase(t *testing.T) {
 		ObjectCount:                 2,
 		TotalSize:                   5,
 		Objects: []backupManifestObject{
-			{Key: "root/home/", IsDir: true},
-			{Key: "root/home/hello.txt", Size: 5},
+			{Key: "root/archive/", IsDir: true},
+			{Key: "root/archive/hello.txt", Size: 5},
 		},
 	}
 	if err := writeManifest(filepath.Join(backupDir, "manifest.json"), manifest); err != nil {
@@ -411,8 +383,8 @@ func TestRestoreInstanceRestoresBucketAndDatabase(t *testing.T) {
 			if !st.deleteAllCalled {
 				t.Fatal("expected bucket cleanup before import")
 			}
-			if string(st.putObjects["root/home/hello.txt"]) != "hello" {
-				t.Fatalf("unexpected restored object data: %q", string(st.putObjects["root/home/hello.txt"]))
+			if string(st.putObjects["root/archive/hello.txt"]) != "hello" {
+				t.Fatalf("unexpected restored object data: %q", string(st.putObjects["root/archive/hello.txt"]))
 			}
 			return nil
 		},
@@ -426,14 +398,14 @@ func TestRestoreInstanceRestoresBucketAndDatabase(t *testing.T) {
 	if !st.deleteAllCalled {
 		t.Fatal("expected bucket cleanup")
 	}
-	if len(st.createdDirs) != 1 || st.createdDirs[0] != "root/home/" {
+	if len(st.createdDirs) != 1 || st.createdDirs[0] != "root/archive/" {
 		t.Fatalf("unexpected restored dirs: %+v", st.createdDirs)
 	}
 	if !importCalled {
 		t.Fatal("expected database import")
 	}
-	if string(st.putObjects["root/home/hello.txt"]) != "hello" {
-		t.Fatalf("unexpected restored object data: %q", string(st.putObjects["root/home/hello.txt"]))
+	if string(st.putObjects["root/archive/hello.txt"]) != "hello" {
+		t.Fatalf("unexpected restored object data: %q", string(st.putObjects["root/archive/hello.txt"]))
 	}
 	if _, err := os.Stat(filepath.Join(backupDir, "database.sql")); err != nil {
 		t.Fatalf("expected database dump to remain present: %v", err)

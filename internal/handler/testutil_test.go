@@ -14,13 +14,8 @@ import (
 	"domus/internal/model"
 	"domus/internal/service"
 	"domus/internal/store"
-	"domus/internal/terminal"
 	"domus/internal/ws"
 )
-
-func newTestTerminalManager() *terminal.Manager {
-	return terminal.NewManager(cleanupWorkspaceService{}, 4)
-}
 
 func setupTestApp(t *testing.T) (*fiber.App, *model.Repos, func(username, password string) string) {
 	t.Helper()
@@ -64,8 +59,6 @@ func setupTestApp(t *testing.T) (*fiber.App, *model.Repos, func(username, passwo
 		Challenges: challenges,
 		Mid:        mid,
 		Hub:        hub,
-		Workspace:  cleanupWorkspaceService{},
-		Terminal:   newTestTerminalManager(),
 	}
 
 	app := fiber.New()

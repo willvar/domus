@@ -3,9 +3,6 @@ import { ref, computed } from 'vue'
 import type { Ref, ComputedRef } from 'vue'
 import api from '../composables/useApi'
 import { useWebSocket } from '../composables/useWebSocket'
-import { useWindowManagerStore } from './windowManager'
-import { useWorkspaceSync } from '../composables/useWorkspaceSync'
-import { usePreferences } from '../composables/usePreferences'
 import { loadPublicAvatar, revokeAvatarURL } from '../composables/useAvatar'
 import type { User, VerifyRequest, VerifyResponse, LoginRequest, LoginResponse } from '../types'
 
@@ -43,7 +40,6 @@ export const useAuthStore = defineStore('auth', () => {
     try {
       const res = await api.get<User>('/user')
       replaceUser(await hydrateAvatar(res.data))
-      useWindowManagerStore().setUser(res.data.id)
       // Connect WebSocket after confirming auth
       ws.connect()
     } catch {
@@ -75,7 +71,6 @@ export const useAuthStore = defineStore('auth', () => {
     const res = await api.post<LoginResponse>('/auth', body)
     if (res.data.user) {
       replaceUser(await hydrateAvatar(res.data.user))
-      useWindowManagerStore().setUser(res.data.user.id)
       if (res.data.needs_setup) {
         needsSetup.value = true
       }
@@ -100,28 +95,16 @@ export const useAuthStore = defineStore('auth', () => {
   }
 
   async function logout(): Promise<void> {
-    // Only clear workspace state when session isolation is ON (default mode).
-    // When isolation is OFF (sync mode), other devices may still be active,
-    // so we preserve the workspace for them.
-    try {
-      const { prefs } = usePreferences()
-      if (prefs.sessionIsolation) {
-        const workspace = useWorkspaceSync()
-        await workspace.clear()
-      }
-    } catch { /* silent */ }
     ws.disconnect()
     try {
       await api.delete('/auth')
     } finally {
-      useWindowManagerStore().clearUser()
       replaceUser(null)
     }
   }
 
   function clearSession(): void {
     ws.disconnect()
-    useWindowManagerStore().clearUser()
     replaceUser(null)
     loading.value = false
     initialized.value = true

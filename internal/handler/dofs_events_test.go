@@ -21,8 +21,8 @@ func TestDOFSEventKeepsSharesBoundToStableInode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	oldPath := "owner/home/owner/note.txt"
-	newPath := "owner/home/owner/renamed.txt"
+	oldPath := "/note.txt"
+	newPath := "/renamed.txt"
 	if err := repositories.Files.Upsert(owner.ID, oldPath, "note.txt", false, 12, "text/plain", ""); err != nil {
 		t.Fatal(err)
 	}

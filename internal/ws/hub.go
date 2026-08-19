@@ -2,6 +2,7 @@ package ws
 
 import (
 	"encoding/json"
+	"strings"
 	"sync"
 
 	"github.com/fasthttp/websocket"
@@ -16,7 +17,7 @@ type Hub struct {
 	conns sync.Map
 	// userConns maps userID -> *sync.Map[connID -> *Conn]
 	userConns sync.Map
-	// dirSubs maps resolvedDirPath -> *sync.Map[connID -> *Conn]
+	// dirSubs maps a user-scoped namespace path -> *sync.Map[connID -> *Conn]
 	dirSubs sync.Map
 
 	router *Router
@@ -84,12 +85,12 @@ func (h *Hub) unregister(conn *Conn) {
 }
 
 func (h *Hub) addDirSub(path string, conn *Conn) {
-	actual, _ := h.dirSubs.LoadOrStore(path, &sync.Map{})
+	actual, _ := h.dirSubs.LoadOrStore(directorySubscriptionKey(conn.UserID, path), &sync.Map{})
 	actual.(*sync.Map).Store(conn.ID, conn)
 }
 
 func (h *Hub) removeDirSub(path string, conn *Conn) {
-	if v, ok := h.dirSubs.Load(path); ok {
+	if v, ok := h.dirSubs.Load(directorySubscriptionKey(conn.UserID, path)); ok {
 		v.(*sync.Map).Delete(conn.ID)
 	}
 }
@@ -131,24 +132,6 @@ func (h *Hub) dispatch(conn *Conn, raw []byte) {
 
 // --- Send helpers ---
 
-// SendToUserExcept sends a message to all connections of a user except the one
-// identified by excludeConnID.
-func (h *Hub) SendToUserExcept(userID, excludeConnID string, msg any) {
-	data, err := json.Marshal(msg)
-	if err != nil {
-		return
-	}
-	if v, ok := h.userConns.Load(userID); ok {
-		v.(*sync.Map).Range(func(key, val any) bool {
-			if key.(string) == excludeConnID {
-				return true
-			}
-			val.(*Conn).enqueue(data, false)
-			return true
-		})
-	}
-}
-
 // SendToUser sends a message to all connections of a user.
 func (h *Hub) SendToUser(userID string, msg any) {
 	data, err := json.Marshal(msg)
@@ -174,13 +157,18 @@ func (h *Hub) SendToConn(connID string, msg any) {
 	}
 }
 
-// NotifyDirectory sends a push event to all connections subscribed to a directory.
-func (h *Hub) NotifyDirectory(resolvedPath string, msg any) {
+func directorySubscriptionKey(userID, namespacePath string) string {
+	return strings.TrimSpace(userID) + "\x00" + namespacePath
+}
+
+// NotifyDirectory sends a push event only to this user's connections that are
+// subscribed to the namespace-relative directory path.
+func (h *Hub) NotifyDirectory(userID, resolvedPath string, msg any) {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		return
 	}
-	if v, ok := h.dirSubs.Load(resolvedPath); ok {
+	if v, ok := h.dirSubs.Load(directorySubscriptionKey(userID, resolvedPath)); ok {
 		v.(*sync.Map).Range(func(_, val any) bool {
 			val.(*Conn).enqueue(data, false)
 			return true

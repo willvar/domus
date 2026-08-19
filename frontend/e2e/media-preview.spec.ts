@@ -3,7 +3,7 @@ import {
   apiBaseURL,
   e2eCredentials,
   login,
-  openHomeDirectory,
+  openFilesRoot,
   permanentlyDelete,
   uploadFromToolbar,
   waitForServiceWorker,
@@ -19,8 +19,6 @@ interface FileInfo {
 
 interface TaskInfo {
   type: string
-  name: string
-  status: string
 }
 
 function createSinglePagePDF(marker: string): Buffer {
@@ -57,51 +55,37 @@ async function listFiles(page: Page, path: string): Promise<FileInfo[]> {
   return Array.isArray(body.files) ? body.files : []
 }
 
-test('PDF 上传后由 workspace 生成缩略图并可解密预览原件', async ({ page }) => {
+test('浏览器上传 PDF 时生成加密缩略图，显示开关默认关闭且不影响原件预览', async ({ page }) => {
   const credentials = e2eCredentials()
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   const marker = `Domus PDF preview E2E ${suffix}`
   const fileName = `domus-e2e-preview-${suffix}.pdf`
   const pdf = createSinglePagePDF(marker)
-  const homePath = `/home/${credentials.username}/`
-  const filePath = `${homePath}${fileName}`
-  const derivedPath = `${homePath}.user/derived/`
+  const rootPath = '/'
+  const filePath = `${rootPath}${fileName}`
   let authenticated = false
   let deleted = false
-  let generatedPreviewPath = ''
+  let currentThumbnailURL = ''
 
   try {
     await login(page, credentials)
     authenticated = true
-    await openHomeDirectory(page, credentials.username)
+    await openFilesRoot(page)
     await waitForServiceWorker(page)
 
-    const derivedBefore = new Set((await listFiles(page, derivedPath)).map(file => file.path))
+    expect(await page.evaluate(() => localStorage.getItem('domus_show_thumbnails'))).toBeNull()
     await uploadFromToolbar(page, {
       name: fileName,
       mimeType: 'application/pdf',
       buffer: pdf,
     })
 
-    const fileItem = page.locator('.file-item').filter({ hasText: fileName })
+    const fileItem = page.locator('.file-item').filter({ has: page.locator('.file-name').getByText(fileName, { exact: true }) })
     await expect(fileItem).toBeVisible({ timeout: 30_000 })
-    await expect(fileItem.locator('.file-status-badge')).toHaveCount(0)
 
     await expect
       .poll(async () => {
-        const response = await page.request.get(`${apiBaseURL}/task/`)
-        if (!response.ok()) return `HTTP ${response.status()}`
-        const tasks = await response.json() as TaskInfo[]
-        return tasks.find(task => task.type === 'preview' && task.name === fileName)?.status || 'missing'
-      }, {
-        timeout: 120_000,
-        message: `server preview task for ${fileName} did not complete`,
-      })
-      .toBe('completed')
-
-    await expect
-      .poll(async () => {
-        const source = (await listFiles(page, homePath)).find(file => file.name === fileName)
+        const source = (await listFiles(page, rootPath)).find(file => file.name === fileName)
         return Boolean(source?.status === 'ready' && source.thumbnail_url && source.thumbnail_dek)
       }, {
         timeout: 30_000,
@@ -109,19 +93,31 @@ test('PDF 上传后由 workspace 生成缩略图并可解密预览原件', async
       })
       .toBe(true)
 
-    const derivedAfter = await listFiles(page, derivedPath)
-    const generatedPreviews = derivedAfter.filter(file =>
-      !derivedBefore.has(file.path) && file.name.endsWith('.preview.jpg'),
-    )
-    expect(generatedPreviews, 'expected exactly one new server-derived preview').toHaveLength(1)
-    generatedPreviewPath = generatedPreviews[0].path
+    const firstSource = (await listFiles(page, rootPath)).find(file => file.name === fileName)
+    currentThumbnailURL = firstSource?.thumbnail_url || ''
+    expect(currentThumbnailURL, 'source did not expose its browser-generated thumbnail descriptor').not.toBe('')
+
+    const taskResponse = await page.request.get(`${apiBaseURL}/task/`)
+    expect(taskResponse.ok()).toBeTruthy()
+    const taskList = await taskResponse.json() as TaskInfo[]
+    expect(taskList.some(task => task.type === 'preview')).toBe(false)
+
+    // Metadata exists, but the device-local display preference is OFF. This
+    // keeps the thumbnail decrypt URL out of the DOM and avoids its OSS GET.
+    await expect(fileItem.locator('img.file-thumbnail')).toHaveCount(0)
+    await page.locator('.sidebar-account').click()
+    const thumbnailSwitch = page.getByRole('switch', { name: /显示缩略图|Show thumbnails/ })
+    await expect(thumbnailSwitch).toHaveAttribute('aria-checked', 'false')
+    await thumbnailSwitch.click()
+    await expect(thumbnailSwitch).toHaveAttribute('aria-checked', 'true')
+    expect(await page.evaluate(() => localStorage.getItem('domus_show_thumbnails'))).toBe('1')
 
     const thumbnail = fileItem.locator('img.file-thumbnail')
     await expect(thumbnail).toBeVisible({ timeout: 30_000 })
     await expect
       .poll(() => thumbnail.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0 && image.naturalHeight > 0), {
         timeout: 30_000,
-        message: 'decrypted server-generated thumbnail did not render',
+        message: 'decrypted browser-generated thumbnail did not render',
       })
       .toBe(true)
 
@@ -131,19 +127,18 @@ test('PDF 上传后由 workspace 生成缩略图并可解密预览原件', async
       .poll(() => page.evaluate(async (url) => {
         const response = await fetch(url)
         const bytes = new Uint8Array(await response.arrayBuffer())
-        return response.ok && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+        return response.ok &&
+          new TextDecoder('latin1').decode(bytes.slice(0, 4)) === 'RIFF' &&
+          new TextDecoder('latin1').decode(bytes.slice(8, 12)) === 'WEBP'
       }, thumbnailURL!), {
         timeout: 20_000,
-        message: 'thumbnail decrypt endpoint did not return JPEG bytes',
+        message: 'thumbnail decrypt endpoint did not return WebP bytes',
       })
       .toBe(true)
 
     await fileItem.dblclick()
-    const viewer = page.locator('.plasma-window').filter({
-      has: page.locator('.plasma-titlebar-title', { hasText: fileName }),
-    })
-    await expect(viewer).toBeVisible()
-    const pdfFrame = viewer.locator('iframe.viewer-pdf')
+    await expect(page).toHaveURL(/\/preview\?/)
+    const pdfFrame = page.locator('iframe.preview-pdf')
     await expect(pdfFrame).toBeVisible()
     const decryptURL = await pdfFrame.getAttribute('src')
     expect(decryptURL).toMatch(/^\/__decrypt__\//)
@@ -211,14 +206,39 @@ test('PDF 上传后由 workspace 生成缩略图并可解密预览原件', async
       }
     }
 
+    // Replacing content keeps the source inode/path but must produce a fresh
+    // generation-scoped thumbnail and reclaim the previous thumbnail inode.
+    await openFilesRoot(page)
+    await uploadFromToolbar(page, {
+      name: fileName,
+      mimeType: 'application/pdf',
+      buffer: createSinglePagePDF(`Domus replacement PDF ${suffix}`),
+      conflictAction: 'replace',
+    })
+    const previousThumbnailURL = currentThumbnailURL
+    await expect
+      .poll(async () => {
+        const source = (await listFiles(page, rootPath)).find(file => file.name === fileName)
+        return source?.thumbnail_url || ''
+      }, {
+        timeout: 30_000,
+        message: 'replacement did not rotate the generation-scoped thumbnail',
+      })
+      .not.toBe(previousThumbnailURL)
+    currentThumbnailURL = (await listFiles(page, rootPath)).find(file => file.name === fileName)?.thumbnail_url || ''
+    expect(currentThumbnailURL).not.toBe('')
+    await expect.poll(async () => (await fetch(previousThumbnailURL)).ok, {
+      timeout: 30_000,
+      message: 'replaced thumbnail ciphertext remained in object storage',
+    }).toBe(false)
+    await expect(fileItem.locator('img.file-thumbnail')).toBeVisible()
+
     await permanentlyDelete(page, filePath)
     deleted = true
-    await expect
-      .poll(async () => (await listFiles(page, derivedPath)).some(file => file.path === generatedPreviewPath), {
-        timeout: 30_000,
-        message: 'derived preview remained after permanently deleting its source',
-      })
-      .toBe(false)
+    await expect.poll(async () => (await fetch(currentThumbnailURL)).ok, {
+      timeout: 30_000,
+      message: 'thumbnail ciphertext remained after permanently deleting its source',
+    }).toBe(false)
   } finally {
     if (authenticated && !deleted) await permanentlyDelete(page, filePath)
   }

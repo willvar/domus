@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
+	"log"
 	"strings"
 
 	"domus/internal/model"
@@ -11,6 +12,7 @@ import (
 )
 
 const trashRootPath = "/__trash__/"
+const trashStorageRootPath = "/.domus/trash/"
 
 func normalizeAppPath(path string) string {
 	if path == "" {
@@ -30,6 +32,11 @@ func isTrashAppPath(path string) bool {
 	return path == trashRootPath || strings.HasPrefix(path, trashRootPath)
 }
 
+func isProtectedMutationRoot(path string) bool {
+	path = normalizeAppPath(path)
+	return path == "/" || path == strings.TrimSuffix(trashRootPath, "/") || path == trashRootPath
+}
+
 func trashAppPath(path string) string {
 	path = normalizeAppPath(path)
 	if path == "/" {
@@ -38,11 +45,38 @@ func trashAppPath(path string) string {
 	return trashRootPath + strings.TrimPrefix(path, "/")
 }
 
+// pruneEmptyTrashParents removes the path-shaped directory scaffolding left
+// behind after restoring or permanently deleting an item from the trash. The
+// private trash root itself is permanent and is never removed.
+func (h *Handler) pruneEmptyTrashParents(userID, storagePath string) error {
+	current := parentDirOf(storagePath)
+	for current != trashStorageRootPath && strings.HasPrefix(current, trashStorageRootPath) {
+		children, err := h.Repos.Files.ListDirectChildren(userID, current)
+		if err != nil {
+			return err
+		}
+		if len(children) != 0 {
+			return nil
+		}
+		if err := h.Repos.Files.Delete(userID, current); err != nil {
+			return err
+		}
+		current = parentDirOf(current)
+	}
+	return nil
+}
+
+func (h *Handler) pruneEmptyTrashParentsBestEffort(userID, storagePath string) {
+	if err := h.pruneEmptyTrashParents(userID, storagePath); err != nil {
+		log.Printf("[trash] prune empty parents for %s: %v", storagePath, err)
+	}
+}
+
 // ensureParentDirRecords creates any missing ancestor directory records for a destination path.
 // Trash root itself is implicit and intentionally not materialized as a normal file record.
-func (h *Handler) ensureParentDirRecords(userID, username, appPath string, isDir bool) error {
-	path := normalizeAppPath(appPath)
-	trimmed := strings.Trim(path, "/")
+func (h *Handler) ensureParentDirRecords(userID, storagePath string, isDir bool) error {
+	storagePath = normalizeAppPath(storagePath)
+	trimmed := strings.Trim(storagePath, "/")
 	if trimmed == "" {
 		return nil
 	}
@@ -56,14 +90,7 @@ func (h *Handler) ensureParentDirRecords(userID, username, appPath string, isDir
 	current := "/"
 	for i := 0; i < end; i++ {
 		current += parts[i] + "/"
-		if i == 0 && parts[i] == "__trash__" {
-			continue
-		}
-		resolved, err := resolvePath(username, current)
-		if err != nil {
-			return err
-		}
-		if err := h.Repos.Files.Upsert(userID, resolved, parts[i], true, 0, "", ""); err != nil {
+		if err := h.Repos.Files.Upsert(userID, current, parts[i], true, 0, "", ""); err != nil {
 			return err
 		}
 	}
@@ -123,7 +150,10 @@ func (h *Handler) revokeFileShares(userID string, inode int64) {
 func (h *Handler) permanentlyDeletePathWithProgress(userID, resolvedPath string, isDir bool, progress func(done, total int, current string)) error {
 	if isDir {
 		records, err := h.Repos.Files.ListByPrefix(userID, resolvedPath)
-		if err != nil || len(records) == 0 {
+		if err != nil {
+			return err
+		}
+		if len(records) == 0 {
 			return nil
 		}
 		for i := range records {
@@ -138,13 +168,19 @@ func (h *Handler) permanentlyDeletePathWithProgress(userID, resolvedPath string,
 			}
 			h.revokeFileShares(userID, records[i].ID)
 		}
-		_ = h.Repos.Files.DeleteByPrefix(userID, resolvedPath)
+		if err := h.Repos.Files.DeleteByPrefix(userID, resolvedPath); err != nil {
+			return err
+		}
+		h.reclaimNamespaceBestEffort(userID)
 		return nil
 	}
 
 	rec, err := h.Repos.Files.Get(userID, resolvedPath)
-	if err != nil {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
+	}
+	if err != nil {
+		return err
 	}
 	if rec.Status != "ready" && rec.OSSUploadID != "" {
 		_ = h.Store.AbortMultipartUpload(rec.StorageKey(), rec.OSSUploadID)
@@ -156,7 +192,10 @@ func (h *Handler) permanentlyDeletePathWithProgress(userID, resolvedPath string,
 	if err := h.deleteFileStorage(userID, rec); err != nil {
 		return err
 	}
-	_ = h.Repos.Files.Delete(userID, resolvedPath)
+	if err := h.Repos.Files.Delete(userID, resolvedPath); err != nil {
+		return err
+	}
+	h.reclaimNamespaceBestEffort(userID)
 	h.revokeFileShares(userID, rec.ID)
 	return nil
 }
@@ -169,10 +208,15 @@ func shouldDeleteSharesOnMove(srcAppPath, dstAppPath string) bool {
 	return !isTrashAppPath(srcAppPath) && isTrashAppPath(dstAppPath)
 }
 
-func syncMovedFileRecords(h *Handler, userID, srcResolved, dstResolved, srcAppPath, dstAppPath string, isDir bool) {
+func syncMovedFileRecords(h *Handler, userID, srcResolved, dstResolved, srcAppPath, dstAppPath string, isDir bool) error {
 	if isDir {
-		records, _ := h.Repos.Files.ListByPrefix(userID, srcResolved)
-		_ = h.Repos.Files.MoveByPrefix(userID, srcResolved, dstResolved)
+		records, err := h.Repos.Files.ListByPrefix(userID, srcResolved)
+		if err != nil {
+			return err
+		}
+		if err := h.Repos.Files.MoveByPrefix(userID, srcResolved, dstResolved); err != nil {
+			return err
+		}
 		if shouldMoveShares(srcAppPath, dstAppPath) {
 			for index := range records {
 				if records[index].IsDir {
@@ -191,28 +235,36 @@ func syncMovedFileRecords(h *Handler, userID, srcResolved, dstResolved, srcAppPa
 				}
 			}
 		}
-		return
+		if isTrashAppPath(srcAppPath) && !isTrashAppPath(dstAppPath) {
+			h.pruneEmptyTrashParentsBestEffort(userID, srcResolved)
+		}
+		return nil
 	}
 
-	record, _ := h.Repos.Files.Get(userID, srcResolved)
+	record, err := h.Repos.Files.Get(userID, srcResolved)
+	if err != nil {
+		return err
+	}
 	newName := strings.TrimSuffix(dstAppPath, "/")
 	if idx := strings.LastIndex(newName, "/"); idx >= 0 {
 		newName = newName[idx+1:]
 	}
-	_ = h.Repos.Files.Move(userID, srcResolved, dstResolved, newName)
+	if err := h.Repos.Files.Move(userID, srcResolved, dstResolved, newName); err != nil {
+		return err
+	}
 	if shouldMoveShares(srcAppPath, dstAppPath) {
-		if record != nil {
-			if current, err := h.Repos.Files.GetByID(userID, record.ID); err == nil {
-				_ = h.Repos.Shares.SyncByInode(
-					userID, current.ID, current.Path, current.Name, current.Size, current.ContentType,
-				)
-			}
+		if current, err := h.Repos.Files.GetByID(userID, record.ID); err == nil {
+			_ = h.Repos.Shares.SyncByInode(
+				userID, current.ID, current.Path, current.Name, current.Size, current.ContentType,
+			)
 		}
 	} else if shouldDeleteSharesOnMove(srcAppPath, dstAppPath) {
-		if record != nil {
-			h.revokeFileShares(userID, record.ID)
-		}
+		h.revokeFileShares(userID, record.ID)
 	}
+	if isTrashAppPath(srcAppPath) && !isTrashAppPath(dstAppPath) {
+		h.pruneEmptyTrashParentsBestEffort(userID, srcResolved)
+	}
+	return nil
 }
 
 func movePathViaStore(h *Handler, userID, srcResolved, dstResolved string, isDir bool, progress func(done, total int, current string)) error {

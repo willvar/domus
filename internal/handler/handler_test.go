@@ -167,8 +167,9 @@ func TestHandleList(t *testing.T) {
 	cookie := loginAs("root", "pass")
 
 	adminUser, _ := repos.Users.GetByUsername("root")
-	_ = repos.Files.Upsert(adminUser.ID, "root/test.txt", "test.txt", false, 100, "", "")
-	_ = repos.Files.Upsert(adminUser.ID, "root/docs/", "docs", true, 0, "", "")
+	_ = repos.Files.Upsert(adminUser.ID, "/test.txt", "test.txt", false, 100, "", "")
+	_ = repos.Files.Upsert(adminUser.ID, "/docs/", "docs", true, 0, "", "")
+	_ = repos.Files.Upsert(adminUser.ID, "/.domus/", ".domus", true, 0, "", "")
 
 	req := httptest.NewRequest("GET", "/file/?path=", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
@@ -187,6 +188,16 @@ func TestHandleList(t *testing.T) {
 	if len(files) != 2 {
 		t.Fatalf("expected 2 files, got %d", len(files))
 	}
+
+	reserved := httptest.NewRequest("GET", "/file/?path=/.domus/", nil)
+	reserved.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
+	reservedResponse, err := app.Test(reserved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reservedResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("reserved namespace path status = %d, want 403", reservedResponse.StatusCode)
+	}
 }
 
 func TestHandleDownload(t *testing.T) {
@@ -200,7 +211,7 @@ func TestHandleDownload(t *testing.T) {
 	dek, _ := auth.GenerateDEK()
 	wrappedDEK, _ := auth.WrapDEK(kek, dek)
 
-	ossPath := user.Username + "/test.txt"
+	ossPath := "/test.txt"
 	_ = repos.Files.Upsert(user.ID, ossPath, "test.txt", false, 100, "text/plain", "abc123",
 		model.UpsertFileOpts{WrappedDEK: hex.EncodeToString(wrappedDEK)})
 
@@ -251,7 +262,7 @@ func TestPublicAvatarReturnsDirectEncryptedAccessDescriptor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	avatarPath := user.Username + "/.user/avatar.webp"
+	avatarPath := "/.domus/user/avatar.webp"
 	if err := repos.Files.Upsert(
 		user.ID, avatarPath, "avatar.webp", false, 321, "image/webp", "",
 		model.UpsertFileOpts{WrappedDEK: hex.EncodeToString(wrappedDEK), ObjectKey: "encrypted/avatar/object"},
@@ -310,7 +321,6 @@ func TestRegisterRoutes_WithNilHub(t *testing.T) {
 		Config: cfg, Repos: repos, Store: &MockFileStore{},
 		Email: &service.MockEmailSender{},
 		Audit: auditWorker, Challenges: challenges, Mid: mid,
-		Workspace: cleanupWorkspaceService{}, Terminal: newTestTerminalManager(),
 	}
 
 	app := fiber.New()
@@ -366,11 +376,11 @@ func TestHandleFileAccessReturnsDEK(t *testing.T) {
 	dek, _ := auth.GenerateDEK()
 	wrappedDEK, _ := auth.WrapDEK(kek, dek)
 
-	ossPath := user.Username + "/home/root/test.txt"
+	ossPath := "/test.txt"
 	_ = repos.Files.Upsert(user.ID, ossPath, "test.txt", false, 100, "text/plain", "abc123",
 		model.UpsertFileOpts{WrappedDEK: hex.EncodeToString(wrappedDEK)})
 
-	req := httptest.NewRequest("GET", "/file/access?path=/home/root/test.txt", nil)
+	req := httptest.NewRequest("GET", "/file/access?path=/test.txt", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
 
 	resp, err := app.Test(req)

@@ -511,8 +511,7 @@ func (r *memFileRepo) SearchFiles(userID, query string, limit int) ([]SearchFile
 	lowerQ := strings.ToLower(query)
 	for _, rec := range r.data {
 		if rec.UserID == userID && rec.Status == "ready" &&
-			!strings.HasPrefix(rec.Name, ".") &&
-			!strings.Contains(rec.Path, "/__trash__/") &&
+			!strings.HasPrefix(rec.Path, "/.domus/") &&
 			strings.Contains(strings.ToLower(rec.Name), lowerQ) {
 			c := *rec
 			out = append(out, SearchFileResult{FileRecord: c, Rank: 1.0})

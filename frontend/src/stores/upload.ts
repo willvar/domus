@@ -454,7 +454,7 @@ export const useUploadStore = defineStore('upload', () => {
 
       // Init a mini upload for the thumbnail
       const initRes = await api.post<InitResponse>('/file/upload', {
-        path: targetPath.replace(/\/?$/, '/') + '.user/thumbnails',
+        path: '/.user/thumbnails/',
         file_name: `thumb_${parentUpload.uploadId}.webp`,
         file_size: thumb.blob.size,
         content_type: 'image/webp',
