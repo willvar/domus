@@ -2,24 +2,21 @@
 import { computed } from 'vue'
 import { IconHomeOutline as IconHome, IconDeleteOutline as IconTrash, IconAccountArrowLeftOutline as IconShare } from '../../barrels/icons'
 import { useFileSystemStore } from '../../stores/fileSystem'
-import { useAuthStore } from '../../stores/auth'
 import { useI18n } from '../../composables/useI18n'
 
 const fs = useFileSystemStore()
-const auth = useAuthStore()
 const { t } = useI18n()
 
 const activeKey = computed(() => {
   if (fs.isTrash) return 'trash'
   if (fs.isShared) return 'shared'
-  const homePath = `/home/${auth.username}/`
-  if (fs.currentPath === homePath || fs.currentPath === `home/${auth.username}/`) return 'home'
+  if (fs.currentPath === '/') return 'home'
   return null
 })
 
 function handleSelect(key: string) {
   if (key === 'home') {
-    fs.navigate(`/home/${auth.username}/`)
+    fs.navigate('/')
   } else if (key === 'trash') {
     fs.navigate('/__trash__/')
   } else if (key === 'shared') {

@@ -137,9 +137,9 @@ func TestDeleteUserAndRelatedApplicationData(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, share := range []Share{
-		{ShareID: "owned", OwnerID: owner.ID, FileInode: 1, FilePath: "owner/home/owner/a", FileName: "a", TargetUserID: target.ID, WrappedDEK: "aa", Permission: "read"},
-		{ShareID: "incoming", OwnerID: other.ID, FileInode: 2, FilePath: "other/home/other/b", FileName: "b", TargetUserID: owner.ID, WrappedDEK: "bb", Permission: "read"},
-		{ShareID: "keep", OwnerID: other.ID, FileInode: 3, FilePath: "other/home/other/c", FileName: "c", TargetUserID: target.ID, WrappedDEK: "cc", Permission: "read"},
+		{ShareID: "owned", OwnerID: owner.ID, FileInode: 1, FilePath: "/a", FileName: "a", TargetUserID: target.ID, WrappedDEK: "aa", Permission: "read"},
+		{ShareID: "incoming", OwnerID: other.ID, FileInode: 2, FilePath: "/b", FileName: "b", TargetUserID: owner.ID, WrappedDEK: "bb", Permission: "read"},
+		{ShareID: "keep", OwnerID: other.ID, FileInode: 3, FilePath: "/c", FileName: "c", TargetUserID: target.ID, WrappedDEK: "cc", Permission: "read"},
 	} {
 		copy := share
 		if err := repos.Shares.Create(&copy); err != nil {

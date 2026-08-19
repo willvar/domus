@@ -15,7 +15,7 @@ import (
 
 func (r *Repo) PrepareDirectUpload(
 	ctx context.Context,
-	userID, uploadID, physical string,
+	userID, uploadID, namespacePath string,
 	size int64,
 	fileKey []byte,
 	replace bool,
@@ -25,7 +25,7 @@ func (r *Repo) PrepareDirectUpload(
 	if err != nil {
 		return dofs.ExternalUpload{}, err
 	}
-	parent, name, err := r.resolveParent(ctx, user, physical)
+	parent, name, err := r.resolveParent(ctx, user, namespacePath)
 	if err != nil {
 		return dofs.ExternalUpload{}, err
 	}
@@ -101,6 +101,11 @@ func (r *Repo) copyMetadata(userID string, source, destination dofs.Node) error 
 	now := time.Now().UTC()
 	sourceMetadata.Inode = destination.Inode
 	sourceMetadata.Generation = destination.Generation
+	// A thumbnail has its own encrypted inode and lifecycle. Sharing that inode
+	// between two source files would let deleting either copy reclaim the
+	// other's thumbnail, so a copy starts without a thumbnail. The browser can
+	// attach a fresh one on a later upload/update.
+	sourceMetadata.Thumbnail = 0
 	sourceMetadata.CreatedAt = now
 	sourceMetadata.UpdatedAt = now
 	return r.db.Clauses(clause.OnConflict{

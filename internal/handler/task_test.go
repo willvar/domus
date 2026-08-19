@@ -21,7 +21,7 @@ func TestRootCancelUploadCleansTaskOwnerNamespace(t *testing.T) {
 		taskID      = "alice-upload-task"
 		uploadID    = "alice-upload"
 		ossUploadID = "alice-multipart"
-		objectPath  = "alice/home/alice/video.mp4"
+		objectPath  = "/video.mp4"
 	)
 	if err := repositories.Tasks.Create(owner.ID, taskID, "upload", "video.mp4"); err != nil {
 		t.Fatal(err)

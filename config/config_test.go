@@ -28,11 +28,6 @@ func validConfig() *Config {
 			Driver: "sqlite",
 			SQLite: DOFSSQLiteMetadataConfig{BusyTimeoutSeconds: 5, MaxOpenConnections: 8},
 		}},
-		Workspace: WorkspaceConfig{
-			ControlSocket:      "/run/domus-workspace/control.sock",
-			MaxSessionsPerUser: 4, OperationTimeoutSeconds: 120,
-			ExecTimeoutSeconds: 900, ShutdownTimeoutSeconds: 30,
-		},
 	}
 }
 
@@ -171,141 +166,26 @@ func TestLoadAppliesProductionDOFSDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadAppliesProductionWorkspaceDefaults(t *testing.T) {
+func TestLoadIgnoresRetiredWorkspaceSection(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "domus.yaml")
-	if err := os.WriteFile(configPath, []byte("server:\n  port: 8080\n"), 0600); err != nil {
+	data := "server:\n  port: 8080\nworkspace:\n  enabled: false\n  docker_host: unix:///var/run/docker.sock\n"
+	if err := os.WriteFile(configPath, []byte(data), 0600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Load(configPath)
 	if err != nil {
+		t.Fatalf("retired workspace section must not block startup: %v", err)
+	}
+	savedPath := filepath.Join(t.TempDir(), "saved.yaml")
+	if err := Save(savedPath, cfg); err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Workspace.ControlSocket != "/run/domus-workspace/control.sock" ||
-		cfg.Workspace.DOFSMountRoot != "/var/lib/domus/dofs/mounts" ||
-		cfg.Workspace.DockerHost != "unix:///var/run/docker.sock" {
-		t.Fatalf("unexpected workspace paths: %+v", cfg.Workspace)
-	}
-	if cfg.Workspace.UID != 1000 || cfg.Workspace.GID != 1000 || !cfg.Workspace.ReadOnlyRootFS ||
-		cfg.Workspace.MemoryBytes <= 0 || cfg.Workspace.PIDsLimit <= 0 || cfg.Workspace.MaxRunning != 32 {
-		t.Fatalf("unexpected workspace security defaults: %+v", cfg.Workspace)
-	}
-}
-
-func TestLoadRejectsRemovedWorkspaceEnabledSwitch(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "domus.yaml")
-	if err := os.WriteFile(configPath, []byte("workspace:\n  enabled: false\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "workspace.enabled has been removed") {
-		t.Fatalf("Load() error = %v", err)
-	}
-}
-
-func TestValidateWorkspaceRejectsUnsafeRuntimeSettings(t *testing.T) {
-	configPath := filepath.Join(t.TempDir(), "domus.yaml")
-	if err := os.WriteFile(configPath, []byte("server:\n  port: 8080\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := Load(configPath)
+	saved, err := os.ReadFile(savedPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := cfg.ValidateWorkspace(); err != nil {
-		t.Fatalf("ValidateWorkspace() unexpected error = %v", err)
-	}
-	tests := []struct {
-		name    string
-		mutate  func(*Config)
-		wantErr string
-	}{
-		{
-			name: "tcp Docker endpoint",
-			mutate: func(copy *Config) {
-				copy.Workspace.DockerHost = "tcp://127.0.0.1:2375"
-			},
-			wantErr: "config: workspace.docker_host must be an absolute unix:// socket",
-		},
-		{
-			name: "host network",
-			mutate: func(copy *Config) {
-				copy.Workspace.NetworkMode = "host"
-			},
-			wantErr: "config: workspace.network_mode must be none, bridge, or a named non-host network",
-		},
-		{
-			name: "writable container root",
-			mutate: func(copy *Config) {
-				copy.Workspace.ReadOnlyRootFS = false
-			},
-			wantErr: "config: workspace.read_only_rootfs must be true",
-		},
-		{
-			name: "root identity",
-			mutate: func(copy *Config) {
-				copy.Workspace.UID = 0
-			},
-			wantErr: "config: workspace.uid and workspace.gid must be non-root container identities",
-		},
-		{
-			name: "unlimited memory",
-			mutate: func(copy *Config) {
-				copy.Workspace.MemoryBytes = 0
-			},
-			wantErr: "config: workspace memory limits must be positive and memory_swap_bytes must be at least memory_bytes",
-		},
-		{
-			name: "overlapping plaintext state",
-			mutate: func(copy *Config) {
-				copy.Workspace.StateRoot = "/var/lib/domus/dofs/mounts/state"
-			},
-			wantErr: "config: workspace.state_root and workspace.dofs_mount_root must not overlap",
-		},
-		{
-			name: "oversized exec output",
-			mutate: func(copy *Config) {
-				copy.Workspace.ExecOutputLimitBytes = 16*1024*1024 + 1
-			},
-			wantErr: "config: workspace.exec_output_limit_bytes must be between 1 and 16777216",
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			copy := *cfg
-			test.mutate(&copy)
-			if err := copy.ValidateWorkspace(); err == nil || err.Error() != test.wantErr {
-				t.Fatalf("ValidateWorkspace() error = %v, want %q", err, test.wantErr)
-			}
-		})
-	}
-}
-
-func TestValidateRequiresWorkspaceSocket(t *testing.T) {
-	cfg := validConfig()
-	cfg.Workspace.ControlSocket = ""
-	if err := cfg.Validate(); err == nil || err.Error() != "config: workspace.control_socket is required" {
-		t.Fatalf("Validate() error = %v", err)
-	}
-}
-
-func TestValidateChecksWorkspaceClientSettings(t *testing.T) {
-	cfg := validConfig()
-	cfg.Workspace = WorkspaceConfig{
-		ControlSocket:      "/run/domus-workspace/control.sock",
-		MaxSessionsPerUser: 4, OperationTimeoutSeconds: 120,
-		ExecTimeoutSeconds: 900, ShutdownTimeoutSeconds: 30,
-	}
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("Validate() unexpected error = %v", err)
-	}
-
-	cfg.Workspace.MaxSessionsPerUser = 0
-	if err := cfg.Validate(); err == nil || err.Error() != "config: workspace.max_sessions_per_user must be greater than zero" {
-		t.Fatalf("Validate() session error = %v", err)
-	}
-	cfg.Workspace.MaxSessionsPerUser = 4
-	cfg.Workspace.ExecTimeoutSeconds = 0
-	if err := cfg.Validate(); err == nil || err.Error() != "config: workspace client timeout settings must be greater than zero" {
-		t.Fatalf("Validate() timeout error = %v", err)
+	if strings.Contains(string(saved), "workspace:") || strings.Contains(string(saved), "docker_host") {
+		t.Fatalf("retired workspace configuration was persisted:\n%s", saved)
 	}
 }
 
@@ -358,7 +238,7 @@ func TestValidateDOFSRejectsUnsafeProductionLayout(t *testing.T) {
 			mutate: func(cfg *Config) {
 				cfg.DOFS.UID = 0
 			},
-			wantErr: "config: dofs.uid and dofs.gid must be non-root container identities",
+			wantErr: "config: dofs.uid and dofs.gid must be non-root FUSE identities",
 		},
 		{
 			name: "zero mount capacity",

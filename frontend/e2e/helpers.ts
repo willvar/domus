@@ -34,6 +34,17 @@ export interface UploadObservation {
   objectUploadOrigins: string[]
 }
 
+export interface StorageUsage {
+  size: number
+  count: number
+}
+
+export async function getStorageUsage(page: Page): Promise<StorageUsage> {
+  const response = await page.request.get(`${apiBaseURL}/user/storage`)
+  expect(response.ok(), `storage usage failed with HTTP ${response.status()}`).toBeTruthy()
+  return await response.json() as StorageUsage
+}
+
 export async function restartBackend(page: Page): Promise<void> {
   const supervisorPIDFile = runtimeControlFile('e2e-backend-supervisor.pid')
   const generationFile = runtimeControlFile('e2e-backend-generation')
@@ -69,21 +80,9 @@ export async function restartBackend(page: Page): Promise<void> {
     .toBe(200)
 }
 
-async function isolateWorkspaceState(page: Page): Promise<void> {
+async function observeWebSocketActions(page: Page): Promise<void> {
   if (isolatedPages.has(page)) return
   isolatedPages.add(page)
-
-  // E2E may run against the same account as an interactive browser. Do not let
-  // window/tab actions from the test overwrite or broadcast that user's live
-  // desktop state.
-  await page.route(`${apiBaseURL}/workspace/**`, async (route) => {
-    const request = route.request()
-    if (request.method() === 'GET') {
-      await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
-      return
-    }
-    await route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
-  })
 
   await page.addInitScript(() => {
     const send = WebSocket.prototype.send
@@ -99,17 +98,8 @@ async function isolateWorkspaceState(page: Page): Promise<void> {
           if (typeof message.action === 'string') {
             actionCounts[message.action] = (actionCounts[message.action] || 0) + 1
           }
-          if (message.action === 'workspace.event') {
-            if (typeof message.id === 'string') {
-              const socket = this
-              queueMicrotask(() => socket.dispatchEvent(new MessageEvent('message', {
-                data: JSON.stringify({ id: message.id, ok: true, data: {} }),
-              })))
-            }
-            return
-          }
         } catch {
-          // Non-JSON websocket payloads are unrelated to workspace sync.
+          // Ignore non-JSON websocket payloads.
         }
       }
       send.call(this, data)
@@ -146,7 +136,7 @@ export function e2eCredentials(): E2ECredentials {
 }
 
 export async function login(page: Page, credentials = e2eCredentials()): Promise<void> {
-  await isolateWorkspaceState(page)
+  await observeWebSocketActions(page)
 
   await expect
     .poll(
@@ -186,23 +176,16 @@ export async function login(page: Page, credentials = e2eCredentials()): Promise
   await page.locator('.login-card button[type="submit"]:visible').click()
   const loginResponse = await loginResponsePromise
   expect(loginResponse.ok(), `login failed with HTTP ${loginResponse.status()}`).toBeTruthy()
-  await expect(page).toHaveURL(/\/desktop$/)
+  await expect(page).toHaveURL(/\/files(?:\?.*)?$/)
 }
 
-export async function openHomeDirectory(page: Page, username: string): Promise<void> {
-  if (!(await page.locator('.file-view').isVisible())) {
-    const filesIcon = page.locator('.desktop-icon').filter({ hasText: /文件|Files/ })
-    await expect(filesIcon).toBeVisible()
-    await filesIcon.dblclick()
-  }
-  await expect(page.locator('.file-view')).toBeVisible()
-
-  await page.locator('.breadcrumb-bar').click()
-  const pathInput = page.locator('.path-input')
-  await expect(pathInput).toBeVisible()
-  await pathInput.fill(`/home/${username}/`)
-  await pathInput.press('Enter')
-  await expect(page.locator('.breadcrumb-bar')).toContainText(username)
+export async function openFilesRoot(page: Page): Promise<void> {
+  await page.goto('/files', { waitUntil: 'domcontentloaded' })
+  await expect(page.locator('.file-shell')).toBeVisible()
+  await expect(page.locator('.breadcrumbs')).toContainText(/我的文件|My Files/)
+  await expect(page.locator('.file-surface')).toBeVisible()
+  const response = await page.request.get(`${apiBaseURL}/file/`, { params: { path: '/' } })
+  expect(response.ok(), `root listing failed with HTTP ${response.status()}`).toBeTruthy()
 }
 
 export async function waitForServiceWorker(page: Page): Promise<void> {
@@ -216,7 +199,7 @@ export async function waitForServiceWorker(page: Page): Promise<void> {
 
 export async function uploadFromToolbar(
   page: Page,
-  file: { name: string; mimeType: string; buffer: Buffer },
+  file: { name: string; mimeType: string; buffer: Buffer; conflictAction?: 'replace' | 'rename' },
 ): Promise<UploadObservation> {
   const apiControlBodies: string[] = []
   const apiControlBodyBuffers: Buffer[] = []
@@ -256,9 +239,16 @@ export async function uploadFromToolbar(
 
   try {
     const fileChooserPromise = page.waitForEvent('filechooser')
-    await page.locator('.toolbar').getByRole('button', { name: /上传文件|Upload Files/ }).click()
+    await page.locator('.primary-actions').getByRole('button', { name: /上传文件|Upload Files/ }).click()
     const fileChooser = await fileChooserPromise
     await fileChooser.setFiles(file)
+
+    if (file.conflictAction) {
+      const duplicateSummary = page.locator('.duplicate-summary').filter({ hasText: file.name })
+      await expect(duplicateSummary).toBeVisible()
+      const action = file.conflictAction === 'replace' ? /替换|Replace/ : /重命名|Rename/
+      await page.getByRole('button', { name: action }).click()
+    }
 
     if (file.buffer.length === 0) {
       const zeroByteDialog = page.locator('.breeze-modal-dialog').filter({ hasText: /0B|0.?byte|zero.?byte/i })

@@ -34,7 +34,7 @@ function resolveIcon(id: string, type: string): FunctionalComponent<SVGAttribute
   if (id === 'profile') return IconAccountCircle
   if (id === 'konsole') return IconConsole
   if (type === 'viewer') {
-    // Extract filename from id like "app-/home/user/photo.jpg"
+    // Extract filename from an app id such as "app-/documents/photo.jpg".
     const filePath: string = id.startsWith('app-') ? id.slice(4) : id
     const fileName: string = filePath.split('/').pop() || ''
     return getFileIcon(fileName, false)

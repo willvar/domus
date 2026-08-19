@@ -43,28 +43,34 @@ func TestReliableQueueAppliesBackpressureWithoutDropping(t *testing.T) {
 	}
 }
 
-func TestPushSessionOutputBytesUsesLosslessEncoding(t *testing.T) {
+func TestDirectorySubscriptionsAreIsolatedByUser(t *testing.T) {
 	hub := NewHub()
-	connection := &Conn{
-		ID: "connection-1", hub: hub, send: make(chan []byte, 1), done: make(chan struct{}),
-		subs: make(map[string]struct{}),
+	userA := &Conn{
+		ID: "connection-a", UserID: "user-a", hub: hub, send: make(chan []byte, 1),
+		done: make(chan struct{}), subs: make(map[string]struct{}),
 	}
-	hub.register(connection)
-	hub.PushSessionOutputBytes(connection.ID, "session-1", []byte{0xff, 0x00, 'A'})
-	var event struct {
-		Event string `json:"event"`
-		Data  struct {
-			SessionID  string `json:"session_id"`
-			DataBase64 string `json:"data_base64"`
-		} `json:"data"`
+	userB := &Conn{
+		ID: "connection-b", UserID: "user-b", hub: hub, send: make(chan []byte, 1),
+		done: make(chan struct{}), subs: make(map[string]struct{}),
 	}
-	if err := json.Unmarshal(<-connection.send, &event); err != nil {
-		t.Fatal(err)
+	userA.Subscribe("/")
+	userB.Subscribe("/")
+
+	hub.PushDirChanged("user-a", "/", "/", "refresh")
+	select {
+	case payload := <-userA.send:
+		var event map[string]any
+		if err := json.Unmarshal(payload, &event); err != nil || event["event"] != "dir.changed" {
+			t.Fatalf("user A event = %s, %v", payload, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("user A did not receive its root notification")
 	}
-	if event.Event != "session.output" || event.Data.SessionID != "session-1" || event.Data.DataBase64 != "/wBB" {
-		t.Fatalf("byte output event = %+v", event)
+	select {
+	case payload := <-userB.send:
+		t.Fatalf("user B received user A's root notification: %s", payload)
+	default:
 	}
-	connection.Close()
 }
 
 func TestBestEffortQueueDoesNotBlockWhenFull(t *testing.T) {

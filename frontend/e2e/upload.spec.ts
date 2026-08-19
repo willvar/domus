@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test'
 import {
   e2eCredentials,
   login,
-  openHomeDirectory,
+  openFilesRoot,
   permanentlyDelete,
   uploadFromToolbar,
   waitForServiceWorker,
@@ -12,14 +12,14 @@ test('上传文件后可从列表打开并解密读回原文', async ({ page }) 
   const credentials = e2eCredentials()
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   const fileName = `domus-e2e-upload-${suffix}.txt`
-  const filePath = `/home/${credentials.username}/${fileName}`
+  const filePath = `/${fileName}`
   const content = `Domus browser upload E2E ${suffix}\n客户端加密、OSS 上传、解密读回。\n`
   let authenticated = false
 
   try {
     await login(page, credentials)
     authenticated = true
-    await openHomeDirectory(page, credentials.username)
+    await openFilesRoot(page)
 
     await uploadFromToolbar(page, {
       name: fileName,
@@ -27,19 +27,22 @@ test('上传文件后可从列表打开并解密读回原文', async ({ page }) 
       buffer: Buffer.from(content),
     })
 
-    const fileItem = page.locator('.file-item').filter({ hasText: fileName })
+    const fileItem = page.locator('.file-item').filter({ has: page.locator('.file-name').getByText(fileName, { exact: true }) })
     await expect(fileItem).toBeVisible({ timeout: 30_000 })
-    await expect(fileItem.locator('.file-status-badge')).toHaveCount(0)
 
     await waitForServiceWorker(page)
 
     await fileItem.dblclick()
-    const viewer = page.locator('.plasma-window').filter({
-      has: page.locator('.plasma-titlebar-title', { hasText: fileName }),
-    })
-    await expect(viewer).toBeVisible()
-    await expect(viewer.locator('.cm-content')).toContainText(`Domus browser upload E2E ${suffix}`)
-    await expect(viewer.locator('.cm-content')).toContainText('客户端加密、OSS 上传、解密读回。')
+    await expect(page).toHaveURL(/\/preview\?/)
+    await expect(page.locator('.preview-title')).toContainText(fileName)
+    await expect(page.locator('.text-preview')).toContainText(`Domus browser upload E2E ${suffix}`)
+    await expect(page.locator('.text-preview')).toContainText('客户端加密、OSS 上传、解密读回。')
+
+    await page.locator('.back-button').click()
+    await expect(page.locator('.file-shell')).toBeVisible()
+    await page.locator('.global-search input').fill(`upload-${suffix}`)
+    await expect(page.locator('.content-heading')).toContainText(/搜索结果|Search Results/)
+    await expect(page.locator('.file-item').filter({ has: page.locator('.file-name').getByText(fileName, { exact: true }) })).toBeVisible()
   } finally {
     if (authenticated) await permanentlyDelete(page, filePath)
   }

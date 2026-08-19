@@ -5,14 +5,12 @@ import { IconChevronLeft } from '../../barrels/icons'
 import MobileTopBar from '../../components/mobile/MobileTopBar.vue'
 import { useI18n } from '../../composables/useI18n'
 import { useFileSystemStore } from '../../stores/fileSystem'
-import { useAuthStore } from '../../stores/auth'
 
 const route = useRoute()
 const router = useRouter()
 const fs = useFileSystemStore()
-const auth = useAuthStore()
 const { t } = useI18n()
-const entries = computed(() => [{ name: t('mobile.path.home'), path: `/home/${auth.username}/` }, ...fs.pathSegments])
+const entries = computed(() => [{ name: t('mobile.path.home'), path: '/' }, ...fs.pathSegments])
 
 function jump(path: string): void {
   router.push({ path: '/m/files', query: { path } })

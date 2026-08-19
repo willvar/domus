@@ -122,42 +122,102 @@ func (m *Middleware) WebSocketUpgrade() fiber.Handler {
 	}
 }
 
-// ResolvePath converts an application-layer path (e.g. "/home/tom/file.txt")
-// to the full OSS key (e.g. "tom/home/tom/file.txt").
-// All users (including root) share the same logic.
-func ResolvePath(c *fiber.Ctx, p string) (string, error) {
-	session := c.Locals("session").(*model.Session)
+const (
+	internalRootPath       = "/.domus/"
+	internalTrashPath      = "/.domus/trash/"
+	internalUserPath       = "/.domus/user/"
+	virtualTrashPath       = "/__trash__/"
+	virtualPrivateUserPath = "/.user/"
+)
 
-	// Normalize: ensure leading /
+// normalizePath converts an API path into the canonical namespace-relative
+// absolute form used by the DOFS-backed file repository. A user's identity is
+// deliberately absent from this path: the authenticated user ID selects the
+// DOFS namespace, and "/" is that namespace's root inode.
+func normalizePath(p string) (string, error) {
+	if strings.ContainsRune(p, '\x00') {
+		return "", fiber.NewError(fiber.StatusForbidden, "invalid path")
+	}
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
 	}
-
-	// Preserve trailing slash (directory marker) since path.Clean strips it
 	trailingSlash := strings.HasSuffix(p, "/") && p != "/"
-
-	// Clean the path (resolves /../, /./ , double slashes)
 	cleaned := path.Clean(p)
-
-	// After cleaning, reject if still contains ..
-	if strings.Contains(cleaned, "..") {
-		return "", fiber.NewError(403, "invalid path")
-	}
-
 	if !strings.HasPrefix(cleaned, "/") {
-		return "", fiber.NewError(403, "invalid path")
+		return "", fiber.NewError(fiber.StatusForbidden, "invalid path")
 	}
-
-	if trailingSlash {
+	if trailingSlash && cleaned != "/" {
 		cleaned += "/"
 	}
-
-	// Prepend OSS namespace prefix
-	return session.Username + cleaned, nil
+	return cleaned, nil
 }
 
-// ToAppPath converts an OSS key back to an application-layer path.
-// e.g. "tom/home/tom/file.txt" → "/home/tom/file.txt"
-func ToAppPath(ossPath, username string) string {
-	return "/" + strings.TrimPrefix(ossPath, username+"/")
+// ResolvePath maps a public application path to a path inside the current
+// user's DOFS namespace. The recycle bin is a virtual UI location backed by a
+// reserved hidden directory; callers cannot address other reserved internals.
+func ResolveApplicationPath(p string) (string, error) {
+	cleaned, err := normalizePath(p)
+	if err != nil {
+		return "", err
+	}
+	if cleaned == strings.TrimSuffix(internalRootPath, "/") || strings.HasPrefix(cleaned, internalRootPath) ||
+		cleaned == strings.TrimSuffix(virtualPrivateUserPath, "/") || strings.HasPrefix(cleaned, virtualPrivateUserPath) {
+		return "", fiber.NewError(fiber.StatusForbidden, "reserved path")
+	}
+	if cleaned == strings.TrimSuffix(virtualTrashPath, "/") {
+		return internalTrashPath, nil
+	}
+	if strings.HasPrefix(cleaned, virtualTrashPath) {
+		return internalTrashPath + strings.TrimPrefix(cleaned, virtualTrashPath), nil
+	}
+	return cleaned, nil
+}
+
+func ResolvePath(_ *fiber.Ctx, p string) (string, error) {
+	return ResolveApplicationPath(p)
+}
+
+// ResolveInternalPath maps Domus-owned virtual paths into the reserved area of
+// the namespace. It is used only by explicitly internal upload/read requests.
+func ResolveInternalApplicationPath(p string) (string, error) {
+	cleaned, err := normalizePath(p)
+	if err != nil {
+		return "", err
+	}
+	if cleaned == strings.TrimSuffix(virtualPrivateUserPath, "/") {
+		return internalUserPath, nil
+	}
+	if strings.HasPrefix(cleaned, virtualPrivateUserPath) {
+		relative := strings.TrimPrefix(cleaned, virtualPrivateUserPath)
+		if relative == "thumbnails" || strings.HasPrefix(relative, "thumbnails/") {
+			return "/.domus/" + relative, nil
+		}
+		return internalUserPath + relative, nil
+	}
+	return "", fiber.NewError(fiber.StatusForbidden, "invalid internal path")
+}
+
+func ResolveInternalPath(_ *fiber.Ctx, p string) (string, error) {
+	return ResolveInternalApplicationPath(p)
+}
+
+// ToAppPath converts a stored namespace path back into its public application
+// representation. Paths outside the recycle bin are already canonical.
+func ToAppPath(storagePath, _ string) string {
+	if storagePath == strings.TrimSuffix(internalTrashPath, "/") || storagePath == internalTrashPath {
+		return virtualTrashPath
+	}
+	if strings.HasPrefix(storagePath, internalTrashPath) {
+		return virtualTrashPath + strings.TrimPrefix(storagePath, internalTrashPath)
+	}
+	if !strings.HasPrefix(storagePath, "/") {
+		return "/" + storagePath
+	}
+	return storagePath
+}
+
+// IsInternalStoragePath reports whether a canonical repository path belongs to
+// Domus rather than to the user's visible file tree.
+func IsInternalStoragePath(storagePath string) bool {
+	return storagePath == strings.TrimSuffix(internalRootPath, "/") || strings.HasPrefix(storagePath, internalRootPath)
 }

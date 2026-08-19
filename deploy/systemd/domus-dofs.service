@@ -3,7 +3,6 @@ Description=Domus Object File System data plane
 Documentation=file:///usr/share/doc/domus/dofs-production.md
 Wants=network-online.target
 After=network-online.target
-Before=domus.service
 ConditionPathExists=/dev/fuse
 RequiresMountsFor=/var/lib/domus/dofs/state
 
@@ -29,10 +28,8 @@ LimitNOFILE=1048576
 LimitCORE=0
 OOMScoreAdjust=-250
 
-# DOFS mounts must be created in the host mount namespace so dockerd can bind
-# them into user containers. Do not add PrivateTmp, ProtectSystem,
-# ProtectHome, RootDirectory, BindPaths, InaccessiblePaths, or other systemd
-# filesystem namespacing directives to this unit.
+# External consumers must see DOFS mounts in the host mount namespace. Do not
+# add filesystem namespacing directives to this optional unit.
 PrivateMounts=no
 
 [Install]

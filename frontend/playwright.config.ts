@@ -5,7 +5,6 @@ const frontendURL = new URL(process.env.DOMUS_E2E_BASE_URL || 'http://127.0.0.1:
 const apiBaseURL = new URL(process.env.DOMUS_E2E_API_BASE || 'http://127.0.0.1:8088')
 const configPath = process.env.DOMUS_E2E_CONFIG || 'config.yaml'
 const runtimeRoot = process.env.DOMUS_E2E_RUNTIME_ROOT || 'tmp/dev'
-const workspaceImage = process.env.DOMUS_E2E_WORKSPACE_IMAGE || 'domus-workspace:0.1.0'
 const browserExecutable = process.env.DOMUS_E2E_BROWSER_EXECUTABLE?.trim()
 const headed = process.env.DOMUS_E2E_HEADED === '1'
 const enableZeroCopy = process.env.DOMUS_E2E_ENABLE_ZERO_COPY === '1'
@@ -46,7 +45,6 @@ export default defineConfig({
       env: {
         DOMUS_E2E_CONFIG: configPath,
         DOMUS_E2E_RUNTIME_ROOT: runtimeRoot,
-        DOMUS_E2E_WORKSPACE_IMAGE: workspaceImage,
         DOMUS_E2E_API_BASE: apiBaseURL.origin,
       },
     },

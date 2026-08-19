@@ -60,24 +60,16 @@ func (r *Repo) user(userID string) (*model.User, error) {
 	return user, nil
 }
 
-func splitPhysicalPath(user *model.User, physical string) ([]string, bool, error) {
-	if user == nil || physical == "" || strings.HasPrefix(physical, "/") || strings.Contains(physical, "\x00") {
+func splitNamespacePath(user *model.User, namespacePath string) ([]string, bool, error) {
+	if user == nil || namespacePath == "" || !strings.HasPrefix(namespacePath, "/") || strings.Contains(namespacePath, "\x00") {
 		return nil, false, gorm.ErrRecordNotFound
 	}
-	directory := strings.HasSuffix(physical, "/")
-	trimmed := strings.TrimSuffix(physical, "/")
-	if trimmed == user.Username {
+	directory := namespacePath == "/" || strings.HasSuffix(namespacePath, "/")
+	trimmed := strings.Trim(namespacePath, "/")
+	if trimmed == "" {
 		return nil, true, nil
 	}
-	prefix := user.Username + "/"
-	if !strings.HasPrefix(trimmed, prefix) {
-		return nil, false, gorm.ErrRecordNotFound
-	}
-	relative := strings.TrimPrefix(trimmed, prefix)
-	if relative == "" {
-		return nil, true, nil
-	}
-	segments := strings.Split(relative, "/")
+	segments := strings.Split(trimmed, "/")
 	for _, segment := range segments {
 		if err := dofs.ValidateName(segment); err != nil {
 			return nil, false, gorm.ErrRecordNotFound
@@ -86,8 +78,8 @@ func splitPhysicalPath(user *model.User, physical string) ([]string, bool, error
 	return segments, directory, nil
 }
 
-func (r *Repo) resolve(ctx context.Context, user *model.User, physical string) (dofs.Node, error) {
-	segments, wantsDirectory, err := splitPhysicalPath(user, physical)
+func (r *Repo) resolve(ctx context.Context, user *model.User, namespacePath string) (dofs.Node, error) {
+	segments, wantsDirectory, err := splitNamespacePath(user, namespacePath)
 	if err != nil {
 		return dofs.Node{}, err
 	}
@@ -107,15 +99,15 @@ func (r *Repo) resolve(ctx context.Context, user *model.User, physical string) (
 	return node, nil
 }
 
-func (r *Repo) resolveParent(ctx context.Context, user *model.User, physical string) (dofs.Node, string, error) {
-	segments, _, err := splitPhysicalPath(user, physical)
+func (r *Repo) resolveParent(ctx context.Context, user *model.User, namespacePath string) (dofs.Node, string, error) {
+	segments, _, err := splitNamespacePath(user, namespacePath)
 	if err != nil || len(segments) == 0 {
 		return dofs.Node{}, "", gorm.ErrRecordNotFound
 	}
 	name := segments[len(segments)-1]
 	parent := dofs.Node{Inode: dofs.RootInode, NamespaceID: user.ID, Kind: dofs.NodeKindDirectory, State: dofs.NodeStateReady}
 	if len(segments) > 1 {
-		parentPath := user.Username + "/" + strings.Join(segments[:len(segments)-1], "/") + "/"
+		parentPath := "/" + strings.Join(segments[:len(segments)-1], "/") + "/"
 		parent, err = r.resolve(ctx, user, parentPath)
 		if err != nil {
 			return dofs.Node{}, "", err
@@ -132,7 +124,7 @@ func (r *Repo) pathForNode(ctx context.Context, user *model.User, node dofs.Node
 		return "", gorm.ErrRecordNotFound
 	}
 	if node.Inode == dofs.RootInode {
-		return user.Username + "/", nil
+		return "/", nil
 	}
 	segments := make([]string, 0, 8)
 	current := node
@@ -150,15 +142,15 @@ func (r *Repo) pathForNode(ctx context.Context, user *model.User, node dofs.Node
 	for left, right := 0, len(segments)-1; left < right; left, right = left+1, right-1 {
 		segments[left], segments[right] = segments[right], segments[left]
 	}
-	physical := user.Username + "/" + strings.Join(segments, "/")
+	namespacePath := "/" + strings.Join(segments, "/")
 	if node.IsDir() {
-		physical += "/"
+		namespacePath += "/"
 	}
-	return physical, nil
+	return namespacePath, nil
 }
 
-func physicalParent(physical string) string {
-	trimmed := strings.TrimSuffix(physical, "/")
+func namespaceParent(namespacePath string) string {
+	trimmed := strings.TrimSuffix(namespacePath, "/")
 	index := strings.LastIndex(trimmed, "/")
 	if index < 0 {
 		return ""
@@ -166,25 +158,25 @@ func physicalParent(physical string) string {
 	return trimmed[:index+1]
 }
 
-func (r *Repo) recordFromNode(ctx context.Context, user *model.User, node dofs.Node, physical string) (model.FileRecord, error) {
+func (r *Repo) recordFromNode(ctx context.Context, user *model.User, node dofs.Node, namespacePath string) (model.FileRecord, error) {
 	if node.Inode > math.MaxInt64 || node.State != dofs.NodeStateReady {
 		return model.FileRecord{}, gorm.ErrRecordNotFound
 	}
-	if physical == "" {
+	if namespacePath == "" {
 		var err error
-		physical, err = r.pathForNode(ctx, user, node)
+		namespacePath, err = r.pathForNode(ctx, user, node)
 		if err != nil {
 			return model.FileRecord{}, err
 		}
 	}
 	record := model.FileRecord{
-		ID: int64(node.Inode), UserID: user.ID, Path: physical, Parent: physicalParent(physical),
+		ID: int64(node.Inode), UserID: user.ID, Path: namespacePath, Parent: namespaceParent(namespacePath),
 		Name: node.Name, IsDir: node.IsDir(), Size: node.Size,
 		ObjectKey: node.ObjectKey, Generation: node.Generation,
 		Status: "ready", CreatedAt: node.CreatedAt, UpdatedAt: node.ModifiedAt,
 	}
 	if node.Inode == dofs.RootInode {
-		record.Name = user.Username
+		record.Name = "/"
 		record.Parent = ""
 	}
 	if len(node.WrappedDEK) > 0 {
@@ -241,23 +233,29 @@ func (r *Repo) recordFromUpload(ctx context.Context, user *model.User, upload up
 	return record, nil
 }
 
-func (r *Repo) Get(userID, physical string) (*model.FileRecord, error) {
+func (r *Repo) Get(userID, namespacePath string) (*model.FileRecord, error) {
 	ctx, cancel := operationContext()
 	defer cancel()
 	user, err := r.user(userID)
 	if err != nil {
 		return nil, err
 	}
-	node, err := r.resolve(ctx, user, physical)
+	node, err := r.resolve(ctx, user, namespacePath)
 	if err == nil {
-		record, err := r.recordFromNode(ctx, user, node, physical)
+		record, err := r.recordFromNode(ctx, user, node, namespacePath)
 		return &record, err
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, err
 	}
 	var upload uploadRecord
-	if uploadErr := r.db.Where("user_id = ? AND path = ? AND status <> ?", userID, physical, "cancelled").
+	// Only an unpublished upload may stand in for a missing DOFS node. Ready
+	// rows are retained briefly so a lost completion response can be retried by
+	// upload ID, but they must never resurrect a renamed or deleted pathname.
+	if uploadErr := r.db.Where(
+		"user_id = ? AND path = ? AND status IN ?",
+		userID, namespacePath, []string{"uploading", "processing"},
+	).
 		Order("created_at DESC").First(&upload).Error; uploadErr != nil {
 		return nil, uploadErr
 	}
@@ -321,7 +319,7 @@ func (r *Repo) ListDirectChildren(userID, parentPath string) ([]model.FileRecord
 	if errors.Is(err, gorm.ErrRecordNotFound) {
 		// Directory listing has historically been an empty-set query. Preserve
 		// that contract for optional product directories (for example the
-		// derived-preview directory before its first artifact exists).
+		// thumbnail directory before its first artifact exists).
 		return []model.FileRecord{}, nil
 	}
 	if err != nil {
@@ -349,11 +347,11 @@ func (r *Repo) ListDirectChildren(userID, parentPath string) ([]model.FileRecord
 		if _, replacing := activeInodes[node.Inode]; replacing {
 			continue
 		}
-		physical := parentPath + node.Name
+		namespacePath := parentPath + node.Name
 		if node.IsDir() {
-			physical += "/"
+			namespacePath += "/"
 		}
-		record, err := r.recordFromNode(ctx, user, node, physical)
+		record, err := r.recordFromNode(ctx, user, node, namespacePath)
 		if err != nil {
 			return nil, err
 		}

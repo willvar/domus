@@ -16,7 +16,7 @@ const (
 )
 
 // StartDOFSEventRelay bridges namespace changes made through FUSE (including
-// terminal and OpenCode writes) into the browser's directory invalidation
+// external DOFS mount writes) into the browser's directory invalidation
 // channel. API-originated changes may produce a duplicate refresh, which is
 // intentionally harmless and keeps DOFS as the sole event source of truth.
 func (h *Handler) StartDOFSEventRelay(ctx context.Context) error {
@@ -120,7 +120,7 @@ func (h *Handler) publishDOFSEvent(user *model.User, event dofs.Event) {
 		if err != nil || !parent.IsDir {
 			continue
 		}
-		h.Hub.PushDirChanged(parent.Path, toAppPath(parent.Path, user.Username), "refresh")
+		h.Hub.PushDirChanged(user.ID, parent.Path, toAppPath(parent.Path, user.Username), "refresh")
 	}
 
 	// A stable inode keeps a share valid across rename. Notify recipients so

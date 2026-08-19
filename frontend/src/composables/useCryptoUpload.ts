@@ -13,6 +13,7 @@
  */
 
 import { createSHA256 } from 'hash-wasm'
+import pdfWorkerURL from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 
 const CRYPTO_VERSION = 0x01
 const CHUNK_SIZE = 65536 // 64 KB — must match auth.DefaultChunkSize
@@ -108,7 +109,8 @@ export interface ThumbnailResult {
   duration?: number
 }
 
-const THUMB_MAX_WIDTH = 480
+const THUMB_MAX_DIMENSION = 480
+const PDF_THUMB_MAX_BYTES = 64 * 1024 * 1024
 const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v'])
 
 function isVideoFile(file: File): boolean {
@@ -118,12 +120,32 @@ function isVideoFile(file: File): boolean {
   return VIDEO_EXTENSIONS.has(file.name.substring(dot + 1).toLowerCase())
 }
 
-export async function generateThumbnail(file: File): Promise<ThumbnailResult | null> {
-  if (file.type.startsWith('image/')) {
-    return generateImageThumbnail(file)
+function isPDFFile(file: File): boolean {
+  return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
+}
+
+function thumbnailScale(width: number, height: number): number {
+  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+    throw new Error('Invalid media dimensions')
   }
-  if (isVideoFile(file)) {
-    return generateVideoThumbnail(file)
+  return Math.min(1, THUMB_MAX_DIMENSION / width, THUMB_MAX_DIMENSION / height)
+}
+
+export async function generateThumbnail(file: File): Promise<ThumbnailResult | null> {
+  try {
+    if (file.type.startsWith('image/')) {
+      return await generateImageThumbnail(file)
+    }
+    if (isVideoFile(file)) {
+      return await generateVideoThumbnail(file)
+    }
+    if (isPDFFile(file) && file.size <= PDF_THUMB_MAX_BYTES) {
+      return await generatePDFThumbnail(file)
+    }
+  } catch (error) {
+    // A malformed or browser-unsupported media file must never prevent the
+    // original encrypted upload. The file list falls back to its type icon.
+    console.warn('Browser thumbnail generation failed:', error)
   }
   return null
 }
@@ -134,7 +156,7 @@ async function generateImageThumbnail(file: File): Promise<ThumbnailResult> {
   try {
     img.src = url
     await img.decode()
-    const scale = Math.min(1, THUMB_MAX_WIDTH / img.naturalWidth)
+    const scale = thumbnailScale(img.naturalWidth, img.naturalHeight)
     const w = Math.round(img.naturalWidth * scale)
     const h = Math.round(img.naturalHeight * scale)
     const canvas = document.createElement('canvas')
@@ -167,7 +189,7 @@ async function generateVideoThumbnail(file: File): Promise<ThumbnailResult> {
       video.onseeked = () => resolve()
     })
 
-    const scale = Math.min(1, THUMB_MAX_WIDTH / video.videoWidth)
+    const scale = thumbnailScale(video.videoWidth, video.videoHeight)
     const w = Math.round(video.videoWidth * scale)
     const h = Math.round(video.videoHeight * scale)
     const canvas = document.createElement('canvas')
@@ -180,6 +202,37 @@ async function generateVideoThumbnail(file: File): Promise<ThumbnailResult> {
     return { blob, width: video.videoWidth, height: video.videoHeight, duration: video.duration }
   } finally {
     URL.revokeObjectURL(url)
+  }
+}
+
+async function generatePDFThumbnail(file: File): Promise<ThumbnailResult> {
+  const pdfjs = await import('pdfjs-dist')
+  pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerURL
+  const loadingTask = pdfjs.getDocument({
+    data: new Uint8Array(await file.arrayBuffer()),
+  })
+  try {
+    const pdfDocument = await loadingTask.promise
+    const page = await pdfDocument.getPage(1)
+    const naturalViewport = page.getViewport({ scale: 1 })
+    const scale = thumbnailScale(naturalViewport.width, naturalViewport.height)
+    const viewport = page.getViewport({ scale })
+    const canvas = window.document.createElement('canvas')
+    canvas.width = Math.max(1, Math.round(viewport.width))
+    canvas.height = Math.max(1, Math.round(viewport.height))
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('Canvas 2D context unavailable')
+    await page.render({ canvas, canvasContext: context, viewport }).promise
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((value) => (value ? resolve(value) : reject(new Error('toBlob failed'))), 'image/webp', 0.8)
+    })
+    return {
+      blob,
+      width: Math.round(naturalViewport.width),
+      height: Math.round(naturalViewport.height),
+    }
+  } finally {
+    await loadingTask.destroy()
   }
 }
 
@@ -263,7 +316,7 @@ interface PresignResp {
  */
 export async function readEncryptedFile(path: string, optional = false): Promise<ArrayBuffer> {
   const res: AxiosResponse<FileAccessResponse> = await api.get('/file/access', {
-    params: { path, ...(optional && { optional: 'true' }) },
+    params: { path, ...(path.startsWith('/.user/') && { internal: 'true' }), ...(optional && { optional: 'true' }) },
   })
   if (res.status === 204) throw new Error('not found')
   const { url, dek } = res.data

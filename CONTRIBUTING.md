@@ -1,487 +1,146 @@
 # 贡献指南
 
-感谢你对 Domus 项目的关注！本文档将帮助你快速了解项目结构、搭建开发环境并参与贡献。
+Domus 是对象存储原生、应用层加密、多租户隔离的浏览器文件管理器。桌面端与移动端
+使用同一套响应式文件界面、路由和状态模型。
 
-## 目录
+## 产品边界
 
-- [项目概述](#项目概述)
-- [技术栈](#技术栈)
-- [项目结构](#项目结构)
-- [开发环境搭建](#开发环境搭建)
-- [开发工作流](#开发工作流)
-- [接口文档](#接口文档)
-- [代码规范](#代码规范)
-- [提交规范](#提交规范)
-- [架构指南](#架构指南)
+当前能力包括目录浏览、文件名搜索、排序与多选，文件/目录的新建、复制、移动、
+重命名、回收和恢复，浏览器加密直传、解密读取、文件预览、账户安全、管理与审计。
 
----
-
-## 项目概述
-
-Domus 是一个全栈云文件管理平台，提供 Plasma 桌面风格的 Web UI。核心功能包括：
-
-- 用户认证（密码 + TOTP 两步验证 + 邮箱验证）
-- 文件管理（上传、下载、搜索、回收站）
-- 浏览器本地加密、密文直传对象存储
-- 媒体转码与媒体缩略图
-- HTTP API + WebSocket 实时同步
-- 基于 DOFS inode/generation 的文件名搜索与分享
-- 管理员面板与审计日志
+分享、媒体转码、浏览器终端、SSH、任意命令执行、Linux 桌面模拟和桌面窗口状态均不
+属于当前产品。旧数据库表可能为升级清理而保留，但对应 HTTP/WS 路由不得重新暴露。
 
 ## 技术栈
 
 | 层级 | 技术 |
-|------|------|
-| 后端语言 | Go 1.26+ |
-| Web 框架 | Fiber v2 |
-| 产品数据库 | PostgreSQL + GORM |
-| 文件元数据 | 独立 DOFS（SQLite 默认，PostgreSQL 可选） |
-| 文件对象 | S3 兼容对象存储（阿里云 OSS 等） |
-| 实时通信 | WebSocket (fasthttp/websocket) |
-| 前端框架 | Vue 3 + Vue Router + Pinia |
-| 构建工具 | Vite 8 |
-| UI 组件 | Breeze（项目自建组件库） |
-| 代码编辑器 | CodeMirror 6 |
-| 图标 | Material Design Icons (unplugin-icons) |
-| Lint | golangci-lint (Go) + ESLint (JS/Vue) |
+| --- | --- |
+| 后端 | Go 1.26、Fiber、GORM |
+| 产品数据库 | PostgreSQL |
+| 文件命名空间 | DOFS；单机默认 SQLite，多主机可选 PostgreSQL |
+| 文件对象 | S3-compatible 对象存储（包括阿里云 OSS） |
+| 前端 | Vue 3、Vue Router、Pinia、Vite、Breeze |
+| 实时通信 | WebSocket（目录通知与上传任务进度） |
+| 浏览器测试 | Playwright |
 
-## 项目结构
+主要实现入口：
 
-```
-domus/
-├── cmd/                        # CLI 入口
-│   └── domus/main.go          # 程序主入口
-│   └── root.go                 # CLI 命令定义 (start/stop/restart/status)
-├── config/                     # 配置解析
-│   └── config.go               # YAML 配置加载与默认值
-├── internal/                   # 核心业务代码（不对外暴露）
-│   ├── auth/                   # 认证模块
-│   │   ├── cookie.go           #   会话 Cookie 管理
-│   │   ├── crypto.go           #   加密/解密工具
-│   │   ├── challenge.go        #   多因素认证挑战
-│   │   └── totp.go             #   TOTP 两步验证
-│   ├── handler/                # HTTP 路由与 WebSocket 实时入口
-│   │   ├── handler.go          #   路由注册与依赖注入
-│   │   ├── auth.go             #   登录/登出/验证
-│   │   ├── account.go          #   用户资料与安全设置
-│   │   ├── files.go            #   文件列表 / 搜索 / 文件命令
-│   │   ├── upload.go           #   浏览器加密直传控制面
-│   │   ├── file_payload.go     #   文件 HTTP 正文边界
-│   │   ├── share.go            #   分享关系与共享访问
-│   │   ├── media.go            #   固定预览与转码任务
-│   │   ├── task.go             #   用户任务查询与控制
-│   │   ├── workspace.go        #   工作区快照保存 / 读取
-│   │   ├── dofs_events.go      #   DOFS generation 事件投影
-│   │   ├── terminal.go         #   浏览器原始 TTY 会话
-│   │   ├── admin.go            #   管理员用户管理
-│   │   └── ws_handlers.go      #   仅实时订阅 / 会话类 WS 动作
-│   ├── middleware/             # 中间件
-│   │   └── middleware.go       #   认证校验、权限检查、WebSocket 升级
-│   ├── model/                  # 数据模型与数据库
-│   │   ├── db.go               #   数据库初始化与表结构管理
-│   │   ├── user.go             #   用户模型（bcrypt 密码哈希）
-│   │   ├── file.go             #   DOFS 文件视图 DTO
-│   │   ├── session.go          #   会话管理
-│   │   ├── task.go             #   用户任务追踪
-│   │   ├── workspace.go        #   工作区快照
-│   │   ├── share.go            #   分享关系
-│   │   └── audit.go            #   审计日志
-│   ├── service/                # 业务逻辑服务
-│   │   └── email.go            #   邮件服务 (SMTP)
-│   ├── store/                  # 外部存储抽象
-│   │   └── oss.go              #   S3 控制面与离线维护能力
-│   ├── dofs/                   # DOFS 进程控制与私有路径校验
-│   ├── dofsbridge/             # 独立 DOFS Go 模块集成
-│   ├── fileview/               # DOFS 命名空间的产品元数据投影
-│   ├── terminal/               # 浏览器 TTY 会话管理
-│   ├── workspace/              # Docker 工作区控制面与运行时
-│   └── ws/                     # WebSocket 基础设施
-│       ├── hub.go              #   连接中心、目录订阅
-│       ├── conn.go             #   单连接处理
-│       ├── router.go           #   消息路由
-│       └── push.go             #   推送通知
-├── shared/                     # 可复用的通用工具包
-│   ├── bootstrap/              #   PID 文件与进程管理
-│   ├── daemon/                 #   Unix 守护进程操作
-│   ├── logger/                 #   结构化日志
-│   ├── stats/                  #   服务器性能统计
-│   └── version/                #   版本管理
-├── frontend/                   # Vue 3 前端
-│   ├── src/
-│   │   ├── main.ts             #   前端入口
-│   │   ├── router.ts           #   路由定义 (/ → PlasmaShell, /admin → AdminView)
-│   │   ├── App.vue             #   根组件
-│   │   ├── i18n/               #   中英文翻译字典
-│   │   ├── components/
-│   │   │   ├── breeze/         #   Breeze 自建 UI 组件库
-│   │   │   ├── plasma/         #   Plasma 桌面环境组件 (Desktop, Window, Panel...)
-│   │   │   ├── dolphin/        #   文件管理器
-│   │   │   ├── kate/           #   文本/代码编辑器
-│   │   │   ├── elisa/          #   音频播放器
-│   │   │   ├── ark/            #   压缩包管理器
-│   │   │   ├── kfontview/      #   字体预览器
-│   │   │   ├── konsole/        #   终端模拟器
-│   │   │   ├── notebook/       #   笔记应用
-│   │   │   ├── LoginPage.vue   #   登录页
-│   │   │   ├── ViewerApp.vue   #   文件内容查看器
-│   │   │   ├── GlobalDialog.vue      # 全局对话框
-│   │   │   └── TranscodeDialog.vue   # 转码对话框
-│   │   ├── composables/        #   Vue 组合式函数
-│   │   │   ├── useApi.ts       #     Axios 实例与拦截器
-│   │   │   ├── useWebSocket.ts #     WebSocket 连接管理
-│   │   │   ├── useI18n.ts      #     国际化 (中/英)
-│   │   │   ├── useKeyboard.ts  #     键盘快捷键
-│   │   │   ├── useCodeMirror.ts#     代码编辑器集成
-│   │   │   ├── useFileIcon.ts  #     文件类型图标映射
-│   │   │   └── ...             #     其他 composables
-│   │   ├── stores/             #   Pinia 状态管理
-│   │   │   ├── auth.ts         #     用户认证状态
-│   │   │   ├── fileSystem.ts   #     目录状态与文件命令
-│   │   │   ├── upload.ts       #     上传会话与进度
-│   │   │   ├── tasks.ts        #     任务面板聚合视图
-│   │   │   ├── pendingOps.ts   #     离线重试队列
-│   │   │   └── windowManager.ts#     窗口管理器
-│   │   └── views/
-│   │       ├── PlasmaShell.vue #   主桌面视图
-│   │       └── AdminView.vue   #   管理员面板
-│   ├── eslint.config.js
-│   ├── vite.config.js
-│   └── package.json
-├── config.example.yaml         # 配置文件模板
-├── Makefile                    # 构建脚本
-├── VERSION                     # 版本号 (当前 0.1.0)
-├── .golangci.yml               # Go lint 配置
-└── .gitignore
+```text
+cmd/                         CLI、开发进程和备份恢复
+config/                      YAML 配置
+internal/dofsbridge/         Domus 到独立 DOFS 模块的适配
+internal/fileview/           inode/generation 的产品投影
+internal/handler/            HTTP/WS 控制面
+internal/model/              用户、任务、审计等产品数据
+frontend/src/views/          FileShell、FilePreview、AdminView
+frontend/src/stores/         认证、文件、上传和任务状态
+frontend/e2e/                真实浏览器 E2E
+deploy/systemd/              Web 与可选 DOFS FUSE unit
 ```
 
-## 开发环境搭建
+## 开发环境
 
-### 前置依赖
-
-| 依赖 | 最低版本 | 说明 |
-|------|---------|------|
-| Go | 1.26+ | 后端编译 |
-| Node.js | 20+ | 前端构建与 Playwright E2E |
-| PostgreSQL | 14+ | 数据库 |
-| FUSE 3 | - | DOFS 挂载，需 `/dev/fuse` 与 `fusermount3` |
-| Docker Engine | - | 每用户可复用 Linux 工作区 |
-| 阿里云 OSS | - | 文件存储（需配置 Access Key） |
-| golangci-lint | - | Go 代码检查（可选） |
-
-### 步骤
-
-1. **克隆仓库**
-
-```bash
-git clone <repo-url> && cd domus
-```
-
-2. **配置数据库**
-
-确保 PostgreSQL 运行中，Domus 会在首次启动时自动创建数据库。
-
-3. **创建配置文件**
+需要 Go 1.26+、Node.js 22.13+、PostgreSQL 和一个专用 S3-compatible bucket。运行 Domus
+文件管理产品不需要 Docker、FUSE 或 `user_allow_other`；只有测试/使用可选 Linux FUSE
+挂载时才需要 FUSE 3。
 
 ```bash
 cp config.example.yaml config.yaml
-```
-
-编辑 `config.yaml`，填写必要的配置项：
-- `oss.*` — 阿里云 OSS 凭证与 Bucket
-- `database.*` — PostgreSQL 连接信息
-- `smtp.*` — 邮箱验证（可选）
-
-可选：开发环境可额外创建 `config.dev.yaml`，只填写需要覆盖的字段（例如本机数据库名、端口等）。默认启动时会先读取 `config.yaml`，再用 `config.dev.yaml` 覆盖；如果使用 `-c xxx.yaml` 显式指定配置文件，则不会自动读取 `config.dev.yaml`。
-
-> `session_secret` 和 `encryption_secret` 会在首次启动时自动生成，无需手动填写。
-
-4. **安装前端依赖**
-
-```bash
 cd frontend && npm install && cd ..
-```
-
-5. **启动开发环境**
-
-先确认 `/etc/fuse.conf` 有未注释的 `user_allow_other`，当前用户可访问 Docker
-Unix socket。然后用一条命令启动完整开发栈：
-
-```bash
-# DOFS + Workspace Manager + Web + Vite
 make dev
 ```
 
-`make dev` 会构建 Workspace 镜像，并在 `tmp/dev` 下生成权限为 `0600` 的合并
-配置和本地运行状态；Ctrl+C 会按 Frontend、Web、Workspace、DOFS 的顺序关闭。
-后端默认端口由 `config.yaml` 决定，前端开发服务器默认使用 `8089`，并自动注入
-正确的后端 API 地址。只调试 Web 且外部两项服务已经运行时可使用 `make dev-web`，
-它不会回退到旧执行架构。本地四个子进程使用当前开发者
-账号；生产环境仍必须使用 systemd 单元中相互隔离的 `domus` 与
-`domus-workspace` 服务账号。
+在 `config.yaml` 中填写 `oss.*` 与 `database.*`。SMTP 只用于邮箱验证码。
+`session_secret`、`encryption_secret` 首次启动可自动生成，生产环境必须持久备份。
+root 初始密码优先通过 `server.root_bootstrap_password_file` 提供。
 
-> 首次启动时，如果库里还没有用户，系统会自动创建 root 用户；初始密码必须由部署者提供（推荐 `server.root_bootstrap_password_file` 指向 0600 secret 文件，也可使用环境变量 `DOMUS_ROOT_BOOTSTRAP_PASSWORD`）。
+`make dev` 同时启动 Domus Web 和 Vite，默认入口为 `http://127.0.0.1:8089`，API 默认
+为 `http://127.0.0.1:8088`。后端状态隔离在 `tmp/dev`，不构建镜像或启动容器。
 
-真实浏览器 E2E 使用 Playwright，并复用同一套本地配置、PostgreSQL 与 OSS：
+## 验证
 
 ```bash
+go test ./... -count=1 -timeout 120s
+go vet ./...
+cd frontend && npm run check && npm run build
 make test-e2e
 ```
 
-当前用例覆盖登录、浏览器加密上传、OSS 分片写入、文本解密读回，以及 PDF 经
-DOFS + 用户 Workspace 生成服务端缩略图、缩略图解密显示、PDF 原件解密预览和
-缓存 Range 响应、派生文件级联清理；终端用例还会验证真实容器会话及 resize
-消息不会形成反馈环。默认登录 `root` 并读取 `tmp/dev/root-bootstrap-password`；
-密码已变更时可设置 `DOMUS_E2E_PASSWORD`，已有 `make dev` 实例可通过
-`E2E_REUSE_SERVERS=1 make test-e2e` 复用。
-
-Playwright 始终使用隔离的临时浏览器 profile，并屏蔽测试窗口/标签状态向同账号
-交互式桌面的保存和广播；上传、OSS、任务、DOFS 和 Workspace 容器仍是真实链路。
-需要针对本机系统 Chrome 做 headed 稳定性回归时可运行：
+E2E 使用真实 PostgreSQL、OSS 和浏览器，覆盖加密直传/读回、文件生命周期、浏览器
+生成 PDF 缩略图、默认关闭的缩略图显示开关、多租户隔离、响应式界面和重启持久化；
+浏览器套件结束后还会创建并永久删除一个隔离密文 fixture，以 OSS Stat 验证物理回收。
+默认读取 `tmp/dev/root-bootstrap-password`；也可设置 `DOMUS_E2E_PASSWORD`。
 
 ```bash
-DOMUS_E2E_BROWSER_EXECUTABLE=/opt/google/chrome/chrome \
-DOMUS_E2E_HEADED=1 \
-DOMUS_E2E_ENABLE_ZERO_COPY=1 \
-DOMUS_E2E_PREVIEW_STABILITY_MS=30000 \
-make test-e2e
+E2E_REUSE_SERVERS=1 make test-e2e
+DOMUS_E2E_BROWSER_EXECUTABLE=/opt/google/chrome/chrome DOMUS_E2E_HEADED=1 make test-e2e
 ```
 
-E2E 使用真实外部资源，因此不并入普通 `make test`。
-
-### 构建
+独立 DOFS 的真实 Linux FUSE 测试由 sibling `dofs` 仓库提供：
 
 ```bash
-make build          # Linux 二进制
-make build-win      # Windows 二进制
-make build-prod     # 压缩二进制 (需要 UPX)
+make test-dofs
 ```
 
-前端生产构建：
+## 数据路径与安全边界
 
-```bash
-cd frontend && npm run build    # 输出到 frontend/dist/
+文件正文不经过 Domus HTTP：
+
+```text
+File/Blob
+  -> 浏览器 Web Worker 分块 AES-256-GCM
+  -> presigned URL 直传 OSS 密文
+  -> Domus 校验 OSS 权威状态
+  -> DOFS generation CAS 发布
 ```
 
-### 实例维护命令
+浏览器读取短期 OSS URL 中的密文并在本地解密。Domus 托管包装密钥，因此这是应用层
+加密而非零知识加密；应用服务器具备授权解密能力，但正常上传/下载数据路径不代理
+正文。
 
-以下命令都会直接操作 `config.yaml` 指定的 PostgreSQL 数据库和 OSS bucket；其中 `restore` 与 `reset` 属于危险操作。
+图片、视频和 PDF 的缩略图在上传浏览器中生成。缩略图有独立 DEK、独立 DOFS inode
+和独立密文对象，源文件元数据以 `source inode + generation -> thumbnail inode` 关联：
 
-#### 备份实例
+- 重命名/移动保留关系；
+- 覆盖内容会解绑并回收旧缩略图；
+- 复制不共享源缩略图；
+- 永久删除源文件会回收缩略图。
 
-```bash
-domus backup -c config.yaml -o backup-20260419.tar.gz
-```
+“显示缩略图”是设备本地偏好，默认关闭。关闭只禁止列表/详情加载和渲染缩略图，
+不禁止上传时生成；这样已有缩略图可随时开启显示，同时默认不产生额外 OSS GET 流量。
 
-- 执行前必须先停止 Domus Web、DOFS 和 Workspace Manager；PID 或任一本地 control socket 仍存活时命令会拒绝运行
-- 备份内容包含 `database.sql`、`manifest.json` 和 `objects/`
-- `-o` 可以指向目录，也可以指向 `.tar.gz` / `.tgz` 归档文件
-- 若未显式传入 `-o`，会默认生成 `domus-backup-YYYYMMDD-HHMMSS.tar.gz`
-- 备份数据库依赖本机可用的 `pg_dump`
-- SQLite 模式下备份还包含 DOFS 元数据库；对象内容始终保持应用层密文
+HTTP 负责 query/command，WebSocket 只负责目录订阅、`task.update` 与 `task.report`。
+不得恢复 `session.*` 或 `workspace.event`。
 
-#### 恢复实例
-
-```bash
-domus restore -c config.yaml -i backup-20260419.tar.gz --yes
-```
-
-- 执行前必须先停止 Domus Web、DOFS 和 Workspace Manager；命令会同时检查三者
-- `restore` 会先清空目标数据库和整个 bucket，再导入备份内容，因此必须带 `--yes`
-- 恢复数据库依赖本机可用的 `psql`
-- 恢复前会校验备份中的 `server.encryption_secret` 指纹；若与当前配置不一致，命令会拒绝执行，避免恢复后文件无法解密
-- 恢复会清掉 DOFS 与 Workspace 的用户瞬态状态，但保留 Workspace `manager-id`，重启后仍可识别精确归属的遗留容器
-- 恢复完成后，重新执行 `domus start -c config.yaml` 即可拉起实例
-
-#### 重置实例
-
-```bash
-domus reset -c config.yaml --yes
-```
-
-- 执行前必须先停止 Domus Web、DOFS 和 Workspace Manager；命令会同时检查三者
-- `reset` 会清空 `config.yaml` 指定的 PostgreSQL 数据库、DOFS 元数据库、DOFS/Workspace 用户瞬态状态，并清空配置中的整个 OSS bucket
-- `reset` 保留 Workspace `manager-id` 和配置引用的 root 初始密码文件；后者仍由运维负责保管或轮换
-- `reset` 不会立即创建 `root`；下一次 `domus start` 时会走首次启动逻辑自动初始化
-- 首次启动所需的 root 初始密码仍需通过 `server.root_bootstrap_password_file` 或 `DOMUS_ROOT_BOOTSTRAP_PASSWORD` 提供
-
-## 开发工作流
-
-### 分支
-
-- `master` — 主开发分支
-- 功能分支从 `master` 切出，完成后合并回 `master`
-
-### 运行 Lint
-
-```bash
-make lint
-```
-
-等价于：
-
-```bash
-golangci-lint run                # Go: errcheck, govet, staticcheck, unused 等
-cd frontend && npx eslint .      # JS/Vue: ESLint + eslint-plugin-vue
-```
-
-### 运行测试
-
-```bash
-go test ./...
-```
-
-### 依赖管理
-
-```bash
-make tidy                        # go mod tidy
-cd frontend && npm install       # 前端依赖
-```
-
-## 接口文档
-
-- `docs/api/README.md` — 项目的主接口文档入口，统一组织 HTTP 接口与 WebSocket 协议
-- `API.md` — 根目录兼容入口，便于从仓库首页快速跳转
-- `docs/dofs.md` / `docs/workspace.md` — 用户文件数据面与隔离执行面的架构
-- `docs/dofs-production.md` / `docs/workspace-production.md` — Linux 生产部署与运维边界
-
-若后端路由或 WebSocket 动作发生变化，请同步更新 `docs/api/` 下对应文档。
+文件路径始终是当前认证用户的 namespace 相对绝对路径：`/` 对应 DOFS 根 inode，用户
+名不得拼进路径，也不得重新创建 `/home/<username>`。`/.domus/` 是保留的应用内部目录，
+公开 API 和文件列表必须隐藏；回收站公开路径固定为 `/__trash__/`。
 
 ## 代码规范
 
-### Go 后端
+- Go 使用 `gofmt`；Handler 负责鉴权与封闭请求解析，文件语义由 DOFS/fileview 提供。
+- 用户文件操作不得绕过 DOFS 直接读写对象正文。
+- 上传控制字段使用 allowlist，不得加入正文、base64 或客户端自报 ETag 路径。
+- Vue 使用 Composition API、Pinia 和现有 Breeze 组件。
+- 桌面/移动端复用 `FileShell`；预览使用 `/preview` 路由。
+- 文案同时更新英文和中文；交互变化同步更新 Playwright。
 
-- 遵循 `.golangci.yml` 中定义的 lint 规则（errcheck, govet, ineffassign, staticcheck, unused）
-- 使用 `gofmt` 格式化代码
-- 业务代码放在 `internal/` 下，不对外暴露
-- 通用工具放在 `shared/` 下
-- Handler 层只做请求解析与响应，业务逻辑放在 `service/` 层
-- 数据库操作封装在 `model/` 层
-- 权限使用位掩码：`PermRead(1)`, `PermUpload(2)`, `PermEdit(4)`, `PermDelete(8)`
-- **不造新轮子**：新增功能时必须复用已有的代码路径。如果发现现有流程不满足需求，应先改进现有流程而非另起炉灶
-- **用户文件区操作规范**：普通后端逻辑不得绕过文件模型直接操作存储池。服务端预览、转码和容器命令只能通过用户对应的 DOFS 挂载读写；DOFS 负责加密、generation CAS、数据库记录和恢复语义
+## 构建与部署
 
-### Vue 前端
+```bash
+make build
+make build-win
+cd frontend && npm run build
+```
 
-- 使用 Vue 3 Composition API (`<script setup>`)
-- 状态管理使用 Pinia stores（`stores/` 目录）
-- 可复用逻辑提取为 composables（`composables/` 目录，`use` 前缀）
-- UI 组件使用项目自建的 Breeze 组件库（`components/breeze/`），不使用外部 UI 库
-- 图标使用 Material Design Icons，通过 `unplugin-icons` 按需加载，格式：`~icons/mdi/icon-name`
-- 国际化支持中英文，翻译定义在 `frontend/src/i18n/` 中，由 `useI18n.ts` 读取
-- ESLint 规则见 `frontend/eslint.config.js`，关闭了部分 Vue 风格规则以保持灵活性
+Web/控制面可以跨平台构建。`domus dofs serve` 的 FUSE 挂载仍只支持 Linux，并且是
+供外部普通 I/O 消费者使用的可选服务，不是 Domus Web 的启动依赖。生产说明见
+`docs/dofs-production.md`。
 
-### 前端组件命名
-
-前端应用组件以 KDE Plasma 桌面应用命名：
-
-| 目录 | 对应功能 | KDE 原型 |
-|------|---------|---------|
-| `plasma/` | 桌面环境（窗口、面板、托盘） | Plasma Desktop |
-| `dolphin/` | 文件管理器 | Dolphin |
-| `kate/` | 文本/代码编辑器 | Kate |
-| `elisa/` | 音频播放器 | Elisa |
-| `ark/` | 压缩包管理 | Ark |
-| `kfontview/` | 字体预览 | KFontView |
-| `konsole/` | 终端模拟器 | Konsole |
-| `notebook/` | 笔记应用 | - |
-| `breeze/` | UI 组件库 | Breeze 主题 |
+`backup`、`restore --yes` 和 `reset --yes` 以整个配置 bucket 为边界；执行前必须停止
+Web 以及任何共享该 DOFS 元数据的可选挂载服务。
 
 ## 提交规范
 
-提交信息使用以下前缀格式：
-
-```
-<类型>: <描述>
-```
-
-| 前缀 | 用途 | 示例 |
-|------|------|------|
-| `ADD:` | 新功能 | `ADD: 增加浏览器加密直传` |
-| `OPT:` | 优化/重构 | `OPT: 收紧 HTTP / WS 职责边界` |
-| `FIX:` | Bug 修复 | `FIX: 修复绕过数据库直接访问OSS的安全问题` |
-
-- 描述部分使用中文
-- 简明扼要地说明变更的内容与目的
-- 一次提交聚焦于一个逻辑变更
-
-## 架构指南
-
-### 后端请求处理流程
-
-```
-浏览器文件上传
-  → Domus HTTP（认证、DEK 包装、DOFS generation 预留、presign）
-  → 浏览器本地 AES-256-GCM 分块加密
-  → 浏览器直接 PUT 密文到 OSS
-  → Domus 从 OSS 读取权威分片状态并发布 DOFS generation
-
-普通控制请求
-  → Fiber 路由
-    → middleware（认证 + 权限检查）
-      → handler（封闭 JSON 控制消息）
-        → DOFS / product model / OSS presign control
-```
-
-终端和服务端媒体任务统一走 Linux 受限执行面：
-
-```text
-authenticated handler / terminal manager
-  → permission-protected workspace Unix socket
-    → per-user Docker container
-      → exact /workspace bind
-        → host DOFS FUSE mount
-          → encrypted OSS objects
-```
-
-### HTTP / WebSocket 边界
-
-- **HTTP 负责普通 query / command**：文件列表、文件名搜索、创建目录、重命名、复制、移动、删除、上传预留/签名/完成、用户资料、安全设置、分享、任务列表、工作区持久化、管理员操作等，都走普通 HTTP API。文件正文不得进入 Domus HTTP。
-- **WebSocket 负责实时性**：目录订阅推送、`task.update` 进度广播、终端会话输入输出、工作区事件转发、客户端上传任务上报。
-- **设计原则**：不要为同一业务同时维护一套 HTTP 和一套 WS 命令接口；如果一个动作不依赖长连接实时语义，就应该归入 HTTP。
-
-### WebSocket 通信
-
-```
-客户端
-  → ws/conn.go（连接管理）
-    → ws/router.go（动作路由）
-      → handler/ws_handlers.go（仅 session / subscribe / relay / report）
-        → ws/push.go（dir.changed / task.update / session.* 推送）
-          → ws/hub.go（广播 / 目录订阅）
-```
-
-### 认证流程
-
-1. 用户提交用户名 + 密码
-2. 后端验证密码（bcrypt）
-3. 如启用 TOTP，返回挑战要求二次验证
-4. 验证通过后创建 Session，设置 Cookie
-5. 后续请求通过 middleware 校验 Session
-
-### 数据库表
-
-| 表名 | 用途 |
-|------|------|
-| `users` | 用户账户（密码哈希、邮箱、TOTP） |
-| `sessions` | 用户会话（带过期时间） |
-| `tasks` | 用户任务进度 |
-| `workspace_states` | 工作区布局快照 |
-| `shares` | 绑定 DOFS inode 的文件分享关系 |
-| `audit_logs` | 操作审计日志 |
-| `domus_file_metadata` | MIME、摘要、缩略图等产品投影，不保存层级或对象键 |
-| `domus_file_uploads` | 浏览器直传的任务与恢复状态，不复制 DOFS 密钥或对象键 |
-
-DOFS 的 inode、目录层级、generation、对象键、wrapped DEK、租约和事件位于独立
-DOFS 元数据库；单机默认是私有 SQLite 文件，多主机部署可显式选择 PostgreSQL。
-旧 `files` 表不会被静默迁移或删除，启动时会失败并要求显式备份/重置。
-
-### 安全要点
-
-- 密码使用 bcrypt 哈希存储
-- 每个用户拥有随机 KEK，由 `encryption_secret` 派生的服务端主密钥包装；每个文件使用随机 DEK，并由用户 KEK 包装
-- 上传正文在浏览器本地加密后直传 OSS；Domus HTTP 只接收受限 JSON 控制消息
-- 预览、转码和终端容器只通过精确绑定的用户 DOFS FUSE 挂载访问文件，不获得 OSS 凭证、主密钥、Docker socket 或 `/dev/fuse`
-- 权限控制使用位掩码组合（Read=1, Upload=2, Edit=4, Delete=8）
-- `session_secret` 和 `encryption_secret` 首次启动自动生成，务必妥善保管 `config.yaml`
-- 首次启动若需要自动初始化 `root`，请通过 `server.root_bootstrap_password_file` 或 `DOMUS_ROOT_BOOTSTRAP_PASSWORD` 提供初始密码，避免从日志泄露凭据
-- CORS 来源需在配置中显式指定
+提交信息使用单行 `<类型>: <中文描述>`：`ADD:` 新能力、`OPT:` 优化/重构、`FIX:`
+缺陷修复。一次提交只聚焦一个逻辑变更。

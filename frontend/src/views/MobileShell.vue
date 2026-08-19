@@ -56,7 +56,7 @@ watch(() => route.fullPath, () => {
 onMounted(async () => {
   if (fs.tabs.length === 0) {
     fs.init()
-    fs.createTab(`/home/${auth.username}/`)
+    fs.createTab('/')
   }
   await pendingOps.init(auth.username)
   await tasks.fetchTasks()

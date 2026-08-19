@@ -368,7 +368,7 @@ func (h *Handler) handleMe(c *fiber.Ctx) error {
 }
 
 func (h *Handler) publicAvatarEndpoint(user *model.User) string {
-	avatarPath := user.Username + "/.user/avatar.webp"
+	avatarPath := "/.domus/user/avatar.webp"
 	record, err := h.Repos.Files.Get(user.ID, avatarPath)
 	if err != nil || record.Status != "ready" || record.WrappedDEK == "" ||
 		record.Size <= 0 || record.Size > maxPublicAvatarBytes {
@@ -388,12 +388,11 @@ func (h *Handler) handlePublicAvatar(c *fiber.Ctx) error {
 	}
 
 	// Look up avatar file record
-	avatarKey := username + "/.user/avatar.webp"
 	user, err := h.Repos.Users.GetByUsername(username)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "no_avatar"})
 	}
-	fileRecord, err := h.Repos.Files.Get(user.ID, avatarKey)
+	fileRecord, err := h.Repos.Files.Get(user.ID, "/.domus/user/avatar.webp")
 	if err != nil || fileRecord.Status != "ready" || fileRecord.WrappedDEK == "" ||
 		fileRecord.Size <= 0 || fileRecord.Size > maxPublicAvatarBytes {
 		return c.Status(404).JSON(fiber.Map{"error": "no_avatar"})

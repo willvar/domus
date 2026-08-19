@@ -1,10 +1,8 @@
 package handler
 
 import (
-	"context"
 	"encoding/hex"
 	"fmt"
-	"sync"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/websocket/v2"
@@ -18,8 +16,6 @@ import (
 	"domus/internal/model"
 	"domus/internal/service"
 	"domus/internal/store"
-	"domus/internal/terminal"
-	workspaceRuntime "domus/internal/workspace"
 	"domus/internal/ws"
 )
 
@@ -33,29 +29,12 @@ type Handler struct {
 	Challenges *auth.ChallengeManager
 	Mid        *middleware.Middleware
 	Hub        *ws.Hub
-	Terminal   *terminal.Manager
-	Workspace  workspaceRuntime.Service
 	DOFS       *dofsbridge.Runtime
 	FileSystem *fileview.Repo
-
-	mediaMu         sync.Mutex
-	mediaJobs       map[string]context.CancelFunc
-	mediaJobUsers   map[string]string
-	mediaJobsByUser map[string]int
-	mediaIdleByUser map[string]chan struct{}
-	mediaBlocked    map[string]bool
-	mediaWG         sync.WaitGroup
-	mediaClosing    bool
 }
 
 // RegisterRoutes registers all API routes on the Fiber app.
 func (h *Handler) RegisterRoutes(app *fiber.App) {
-	if h.Workspace == nil {
-		panic("handler: workspace service is required")
-	}
-	if h.Terminal == nil {
-		panic("handler: terminal manager is required")
-	}
 	if h.Hub == nil {
 		h.Hub = ws.NewHub()
 	}
@@ -105,7 +84,6 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	file.Get("/", h.handleList)
 	file.Get("/search", h.handleSearch)
 	file.Get("/access", h.handleFileAccess)
-	file.Post("/transcode", h.handleTranscode)
 	file.Post("/mkdir", h.handleMkdir)
 	file.Post("/rename", h.handleRename)
 	file.Post("/copy", h.handleCopy)
@@ -120,25 +98,11 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	fileUpload.Post("/cancel", h.handleUploadCancel)
 	fileUpload.Post("/cleanup", h.handleUploadCleanup)
 
-	// /file/share (authenticated)
-	file.Post("/share", h.handleCreateShare)
-	file.Get("/share/owned", h.handleListOwnedShares)
-	file.Get("/shares", h.handleListShares)
-	file.Delete("/share/:id", h.handleDeleteShare)
-	file.Get("/shared", h.handleListSharedWithMe)
-	file.Get("/shared/:share_id", h.handleShareInfo)
-
 	// /task
 	task := authed.Group("/task")
 	task.Get("/", h.handleListTasks)
 	task.Delete("/done", h.handleClearDoneTasks)
 	task.Delete("/:id", h.handleCancelTask)
-
-	// /workspace
-	workspace := authed.Group("/workspace")
-	workspace.Get("/", h.handleWorkspaceLoad)
-	workspace.Put("/", h.handleWorkspaceSave)
-	workspace.Delete("/", h.handleWorkspaceClear)
 
 	// WebSocket — auth via cookie on HTTP upgrade
 	app.Use("/ws", h.Mid.WebSocketUpgrade())

@@ -8,12 +8,10 @@ import (
 )
 
 var fileControlFields = map[string]map[string]struct{}{
-	"/file/transcode":        fieldSet("path", "profile"),
 	"/file/mkdir":            fieldSet("path"),
 	"/file/rename":           fieldSet("old_path", "new_path", "is_dir"),
 	"/file/copy":             fieldSet("src_path", "dst_path", "is_dir"),
 	"/file/move":             fieldSet("src_path", "dst_path", "is_dir"),
-	"/file/share":            fieldSet("path", "permission", "target_username", "expires_in"),
 	"/file/upload/heartbeat": fieldSet("upload_id"),
 	"/file/upload/cancel":    fieldSet("upload_id", "task_id", "reason", "status"),
 	"/file/upload/cleanup":   fieldSet("client_instance_id"),

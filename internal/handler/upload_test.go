@@ -26,14 +26,15 @@ func TestUploadControlPlaneRejectsPayloadFieldsAndNonJSONBodies(t *testing.T) {
 	}{
 		{name: "raw payload", contentType: "application/octet-stream", body: []byte("plaintext"), status: http.StatusUnsupportedMediaType},
 		{name: "multipart payload", contentType: "multipart/form-data; boundary=x", body: []byte("--x\r\nContent-Disposition: form-data; name=\"file\"; filename=\"note.txt\"\r\nContent-Type: text/plain\r\n\r\nplaintext\r\n--x--\r\n"), status: http.StatusUnsupportedMediaType},
-		{name: "JSON content field", contentType: "application/json", body: map[string]any{"path": "/home/root/", "file_name": "note.txt", "file_size": 4, "dek": string(bytes.Repeat([]byte("0"), 64)), "content": "body"}, status: http.StatusBadRequest},
+		{name: "JSON content field", contentType: "application/json", body: map[string]any{"path": "/", "file_name": "note.txt", "file_size": 4, "dek": string(bytes.Repeat([]byte("0"), 64)), "content": "body"}, status: http.StatusBadRequest},
 		{name: "legacy search text field", contentType: "application/json", body: map[string]any{"upload_id": "upload", "encrypted_size": 5, "search_text": "plaintext"}, status: http.StatusBadRequest},
 		{name: "legacy client parts field", contentType: "application/json", body: map[string]any{"upload_id": "upload", "encrypted_size": 5, "parts": []any{}}, status: http.StatusBadRequest},
 		{name: "completion cannot carry init metadata", contentType: "application/json", body: map[string]any{"upload_id": "d8f05517-f097-44e9-b196-f6a6af4dbf37", "encrypted_size": 5, "path": "plaintext"}, status: http.StatusBadRequest},
-		{name: "init cannot carry completion metadata", contentType: "application/json", body: map[string]any{"path": "/home/root/", "file_name": "note.txt", "file_size": 4, "dek": string(bytes.Repeat([]byte("0"), 64)), "content_hash": string(bytes.Repeat([]byte("a"), 64))}, status: http.StatusBadRequest},
-		{name: "conflict check cannot carry encryption key", contentType: "application/json", body: map[string]any{"path": "/home/root/", "names": []string{"note.txt"}, "dek": string(bytes.Repeat([]byte("0"), 64))}, status: http.StatusBadRequest},
+		{name: "init cannot carry completion metadata", contentType: "application/json", body: map[string]any{"path": "/", "file_name": "note.txt", "file_size": 4, "dek": string(bytes.Repeat([]byte("0"), 64)), "content_hash": string(bytes.Repeat([]byte("a"), 64))}, status: http.StatusBadRequest},
+		{name: "conflict check cannot carry encryption key", contentType: "application/json", body: map[string]any{"path": "/", "names": []string{"note.txt"}, "dek": string(bytes.Repeat([]byte("0"), 64))}, status: http.StatusBadRequest},
+		{name: "retired share capability cannot authorize upload", contentType: "application/json", body: map[string]any{"path": "/", "file_name": "note.txt", "file_size": 4, "dek": string(bytes.Repeat([]byte("0"), 64)), "share_id": "retired-capability"}, status: http.StatusBadRequest},
 		{name: "content hash must be SHA-256", contentType: "application/json", body: map[string]any{"upload_id": "d8f05517-f097-44e9-b196-f6a6af4dbf37", "encrypted_size": 5, "content_hash": "plaintext"}, status: http.StatusBadRequest},
-		{name: "file name cannot be a path", contentType: "application/json", body: map[string]any{"path": "/home/root/", "file_name": "nested/note.txt", "file_size": 4, "dek": string(bytes.Repeat([]byte("0"), 64))}, status: http.StatusBadRequest},
+		{name: "file name cannot be a path", contentType: "application/json", body: map[string]any{"path": "/", "file_name": "nested/note.txt", "file_size": 4, "dek": string(bytes.Repeat([]byte("0"), 64))}, status: http.StatusBadRequest},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var payload []byte
@@ -74,6 +75,37 @@ func TestPlaintextDiffUploadRoutesAreGone(t *testing.T) {
 	}
 }
 
+func TestRetiredProductCapabilitiesAreNotRouted(t *testing.T) {
+	app, _, loginAs := setupTestApp(t)
+	cookie := loginAs("root", "pass")
+	for _, test := range []struct {
+		method string
+		route  string
+		body   string
+	}{
+		{method: http.MethodPost, route: "/file/transcode", body: `{}`},
+		{method: http.MethodPost, route: "/file/share", body: `{}`},
+		{method: http.MethodGet, route: "/file/shared"},
+		{method: http.MethodGet, route: "/file/shares"},
+		{method: http.MethodGet, route: "/workspace/"},
+		{method: http.MethodPut, route: "/workspace/", body: `{}`},
+		{method: http.MethodDelete, route: "/workspace/"},
+	} {
+		req := httptest.NewRequest(test.method, test.route, bytes.NewBufferString(test.body))
+		if test.body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
+		response, err := app.Test(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if response.StatusCode != http.StatusNotFound {
+			t.Fatalf("%s %s status = %d, want 404", test.method, test.route, response.StatusCode)
+		}
+	}
+}
+
 func TestFileMutationBoundaryRejectsBodyFieldsOutsideUploadRoute(t *testing.T) {
 	app, _, loginAs := setupTestApp(t)
 	cookie := loginAs("root", "pass")
@@ -81,10 +113,10 @@ func TestFileMutationBoundaryRejectsBodyFieldsOutsideUploadRoute(t *testing.T) {
 		route string
 		body  string
 	}{
-		{route: "/file/mkdir", body: `{"path":"/home/root/docs/","content":"plaintext"}`},
-		{route: "/file/mkdir", body: `{"path":"/home/root/docs/","arbitrary_payload":"plaintext"}`},
-		{route: "/file/transcode", body: `{"path":"/home/root/video.mp4","profile":"video-720p","data":"plaintext"}`},
-		{route: "/file/share", body: `{"path":"/home/root/note.txt","target_username":"alice","blob":"plaintext"}`},
+		{route: "/file/mkdir", body: `{"path":"/docs/","content":"plaintext"}`},
+		{route: "/file/mkdir", body: `{"path":"/docs/","arbitrary_payload":"plaintext"}`},
+		{route: "/file/transcode", body: `{"path":"/video.mp4","profile":"video-720p","data":"plaintext"}`},
+		{route: "/file/share", body: `{"path":"/note.txt","target_username":"alice","blob":"plaintext"}`},
 	} {
 		req := httptest.NewRequest(http.MethodPost, test.route, bytes.NewBufferString(test.body))
 		req.Header.Set("Content-Type", "application/json")

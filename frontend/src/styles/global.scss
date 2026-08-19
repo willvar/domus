@@ -1,3 +1,27 @@
 // Global styles — imported once in main.ts
 @use 'theme';
 @use 'plasma-menu';
+
+/* The file product uses a light surface. Breeze primitives still power the
+   global dialogs and toasts, so give teleported components the same palette. */
+body:has(.file-shell),
+body:has(.preview-shell) {
+  --breeze-bg: #f6f7fb;
+  --breeze-bg-alt: #f1f3f7;
+  --breeze-surface: #ffffff;
+  --breeze-surface-raised: #f8f9fc;
+  --breeze-border: #dfe3ec;
+  --breeze-border-light: #e8ebf2;
+  --breeze-text: #18243b;
+  --breeze-text-secondary: #778197;
+  --breeze-text-disabled: #a8afbd;
+  --breeze-accent: #5568e8;
+  --breeze-accent-hover: #6578f4;
+  --breeze-danger: #c74652;
+}
+
+body:has(.file-shell) .breeze-modal-dialog,
+body:has(.preview-shell) .breeze-modal-dialog {
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(29, 38, 61, 0.2);
+}

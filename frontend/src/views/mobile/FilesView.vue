@@ -26,7 +26,7 @@ const title = computed(() => {
   return trimmed.split('/').pop() || t('mobile.nav.files')
 })
 
-const subtitle = computed(() => fs.currentPath || '/home')
+const subtitle = computed(() => fs.currentPath || '/')
 const selectSummary = computed(() => fs.selectMode ? t('mobile.selection.selected', { n: fs.selectedFiles.length }) : '')
 const viewOptions = [
   { key: 'list', label: t('mobile.files.list') },

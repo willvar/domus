@@ -70,9 +70,6 @@ func testResetConfig() *config.Config {
 		DOFS: config.DOFSConfig{Metadata: config.DOFSMetadataConfig{
 			Driver: "postgres",
 		}, StateRoot: filepath.Join(runtimeRoot, "dofs"), ControlSocket: filepath.Join(runtimeRoot, "run", "dofs.sock")},
-		Workspace: config.WorkspaceConfig{
-			StateRoot: filepath.Join(runtimeRoot, "workspace"), ControlSocket: filepath.Join(runtimeRoot, "run", "workspace.sock"),
-		},
 	}
 }
 
@@ -275,77 +272,6 @@ func TestClearDOFSRuntimeStateRejectsSymlinkBeforeRemovingAnything(t *testing.T)
 	cfg.DOFS.StateRoot = stateRoot
 	if err := clearDOFSRuntimeState(cfg); err == nil {
 		t.Fatal("expected symlinked runtime state to be rejected")
-	}
-	for _, preserved := range []string{marker, externalFile} {
-		if _, err := os.Stat(preserved); err != nil {
-			t.Fatalf("preflight failure changed %s: %v", preserved, err)
-		}
-	}
-}
-
-func TestClearWorkspaceRuntimeStateRemovesOnlyTransientTrees(t *testing.T) {
-	stateRoot := filepath.Join(t.TempDir(), "workspace")
-	for _, directory := range []string{
-		filepath.Join(stateRoot, "desired"),
-		filepath.Join(stateRoot, "identities", "user-id"),
-	} {
-		if err := os.MkdirAll(directory, 0700); err != nil {
-			t.Fatal(err)
-		}
-	}
-	for _, path := range []string{
-		filepath.Join(stateRoot, "desired", "user-id.json"),
-		filepath.Join(stateRoot, "identities", "user-id", "passwd"),
-		filepath.Join(stateRoot, "manager-id"),
-		filepath.Join(stateRoot, "operator.keep"),
-	} {
-		if err := os.WriteFile(path, []byte("fixture"), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-	cfg := testResetConfig()
-	cfg.Workspace.StateRoot = stateRoot
-	if err := clearWorkspaceRuntimeState(cfg); err != nil {
-		t.Fatal(err)
-	}
-	for _, removed := range []string{filepath.Join(stateRoot, "desired"), filepath.Join(stateRoot, "identities")} {
-		if _, err := os.Stat(removed); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("transient Workspace path remained: %s (%v)", removed, err)
-		}
-	}
-	for _, preserved := range []string{filepath.Join(stateRoot, "manager-id"), filepath.Join(stateRoot, "operator.keep")} {
-		if _, err := os.Stat(preserved); err != nil {
-			t.Fatalf("persistent Workspace state was removed: %s (%v)", preserved, err)
-		}
-	}
-}
-
-func TestClearWorkspaceRuntimeStateRejectsSymlinkBeforeRemovingAnything(t *testing.T) {
-	root := t.TempDir()
-	stateRoot := filepath.Join(root, "workspace")
-	desired := filepath.Join(stateRoot, "desired")
-	if err := os.MkdirAll(desired, 0700); err != nil {
-		t.Fatal(err)
-	}
-	marker := filepath.Join(desired, "user-id.json")
-	if err := os.WriteFile(marker, []byte("fixture"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	external := filepath.Join(root, "external")
-	if err := os.Mkdir(external, 0700); err != nil {
-		t.Fatal(err)
-	}
-	externalFile := filepath.Join(external, "keep")
-	if err := os.WriteFile(externalFile, []byte("keep"), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(external, filepath.Join(stateRoot, "identities")); err != nil {
-		t.Fatal(err)
-	}
-	cfg := testResetConfig()
-	cfg.Workspace.StateRoot = stateRoot
-	if err := clearWorkspaceRuntimeState(cfg); err == nil {
-		t.Fatal("expected symlinked Workspace state to be rejected")
 	}
 	for _, preserved := range []string{marker, externalFile} {
 		if _, err := os.Stat(preserved); err != nil {

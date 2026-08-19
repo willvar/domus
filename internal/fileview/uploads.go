@@ -10,7 +10,7 @@ import (
 	"domus/internal/model"
 )
 
-func (r *Repo) CreateUpload(userID, uploadID, taskID, ossUploadID, physical, name string, fileSize int64, contentType, clientInstanceID string) error {
+func (r *Repo) CreateUpload(userID, uploadID, taskID, ossUploadID, namespacePath, name string, fileSize int64, contentType, clientInstanceID string) error {
 	ctx, cancel := operationContext()
 	defer cancel()
 	user, err := r.user(userID)
@@ -24,7 +24,7 @@ func (r *Repo) CreateUpload(userID, uploadID, taskID, ossUploadID, physical, nam
 	if direct.State != dofs.ExternalUploadActive || direct.Size != fileSize {
 		return dofs.ErrConflict
 	}
-	parent, resolvedName, err := r.resolveParent(ctx, user, physical)
+	parent, resolvedName, err := r.resolveParent(ctx, user, namespacePath)
 	if err != nil || parent.Inode == 0 || resolvedName != name {
 		return dofs.ErrConflict
 	}
@@ -35,49 +35,10 @@ func (r *Repo) CreateUpload(userID, uploadID, taskID, ossUploadID, physical, nam
 	now := time.Now().UTC()
 	return r.db.Create(&uploadRecord{
 		ID: uploadID, UserID: userID, Inode: direct.Inode,
-		ActorUserID: userID,
-		Path:        physical, Parent: physicalParent(physical), Name: name, Size: fileSize, ContentType: contentType,
+		Path: namespacePath, Parent: namespaceParent(namespacePath), Name: name, Size: fileSize, ContentType: contentType,
 		TaskID: taskID, OSSUploadID: ossUploadID, Status: "uploading",
 		ClientInstanceID: clientInstanceID, LastSeenAt: now, CreatedAt: now, UpdatedAt: now,
 	}).Error
-}
-
-func (r *Repo) BindUploadActor(ownerID, uploadID, actorUserID, shareID string) error {
-	if ownerID == "" || uploadID == "" || actorUserID == "" || shareID == "" {
-		return errors.New("invalid shared upload binding")
-	}
-	result := r.db.Model(&uploadRecord{}).
-		Where("id = ? AND user_id = ? AND status = ?", uploadID, ownerID, "uploading").
-		Updates(map[string]any{
-			"actor_user_id": actorUserID,
-			"share_id":      shareID,
-			"updated_at":    time.Now().UTC(),
-		})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected != 1 {
-		return gorm.ErrRecordNotFound
-	}
-	return nil
-}
-
-// GetAuthorizedUpload resolves an upload by its initiating user. The returned
-// FileRecord remains owned by UserID; shareID is non-empty only for a
-// capability granted by a writable share.
-func (r *Repo) GetAuthorizedUpload(actorUserID, uploadID string) (*model.FileRecord, string, error) {
-	var upload uploadRecord
-	if err := r.db.Where("id = ? AND actor_user_id = ?", uploadID, actorUserID).First(&upload).Error; err != nil {
-		return nil, "", err
-	}
-	ctx, cancel := operationContext()
-	defer cancel()
-	owner, err := r.user(upload.UserID)
-	if err != nil {
-		return nil, "", err
-	}
-	record, err := r.recordFromUpload(ctx, owner, upload)
-	return &record, upload.ShareID, err
 }
 
 func (r *Repo) GetUpload(userID, uploadID string) (*model.FileRecord, error) {

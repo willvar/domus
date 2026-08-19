@@ -18,13 +18,12 @@ import (
 	"domus/internal/middleware"
 	"domus/internal/model"
 	"domus/internal/store"
-	workspaceRuntime "domus/internal/workspace"
 )
 
 var uploadControlFields = map[string]struct{}{
 	"path": {}, "file_name": {}, "file_size": {}, "content_type": {},
 	"conflict_strategy": {}, "client_instance_id": {}, "internal": {},
-	"dek": {}, "share_id": {}, "expected_generation": {}, "names": {},
+	"dek": {}, "expected_generation": {}, "names": {},
 	"upload_id": {}, "content_hash": {}, "encrypted_size": {},
 	"media_width": {}, "media_height": {}, "media_duration": {},
 	"thumbnail_upload_id": {},
@@ -33,7 +32,7 @@ var uploadControlFields = map[string]struct{}{
 var (
 	uploadInitFields = fieldSet(
 		"path", "file_name", "file_size", "content_type", "conflict_strategy",
-		"client_instance_id", "internal", "dek", "share_id", "expected_generation",
+		"client_instance_id", "internal", "dek", "expected_generation",
 	)
 	uploadConflictFields = fieldSet("path", "names")
 	uploadCompleteFields = fieldSet(
@@ -47,8 +46,8 @@ const (
 	maxUploadNameBytes       = 255
 	maxUploadContentType     = 255
 	maxClientInstanceIDBytes = 128
-	maxShareIDBytes          = 128
 	maxConflictNames         = 1000
+	maxBrowserThumbnailSize  = 4 * 1024 * 1024
 )
 
 func decodeUploadControlFields(body []byte) (map[string]json.RawMessage, error) {
@@ -302,7 +301,6 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 		ClientInstanceID   string `json:"client_instance_id"`
 		Internal           bool   `json:"internal"`
 		DEK                string `json:"dek"`
-		ShareID            string `json:"share_id"`
 		ExpectedGeneration int64  `json:"expected_generation"`
 	}
 	if err := c.BodyParser(&body); err != nil {
@@ -311,7 +309,7 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 	if !validUploadPath(body.Path) || !validUploadName(body.FileName) ||
 		len(body.ContentType) > maxUploadContentType ||
 		len(body.ClientInstanceID) > maxClientInstanceIDBytes ||
-		len(body.ShareID) > maxShareIDBytes || body.ExpectedGeneration < 0 {
+		body.ExpectedGeneration < 0 {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
 	}
 	if body.ConflictStrategy != "" && body.ConflictStrategy != "replace" && body.ConflictStrategy != "rename" {
@@ -335,81 +333,64 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "file_too_large"})
 	}
 
-	ownerID, ownerUsername := session.UserID, session.Username
+	ownerID := session.UserID
 	dirPath := body.Path
 	fileName := body.FileName
 	filePath := ""
 	resolvedPath := ""
 	replace := false
 	var existing *model.FileRecord
-	sharedUpload := strings.TrimSpace(body.ShareID) != ""
+	if dirPath != "" && !strings.HasSuffix(dirPath, "/") {
+		dirPath += "/"
+	}
+	filePath = dirPath + fileName
+	if !body.Internal && isProtectedMutationRoot(filePath) {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
+	}
+	resolveUploadPath := middleware.ResolvePath
+	if body.Internal {
+		resolveUploadPath = middleware.ResolveInternalPath
+	}
+	resolvedPath, err = resolveUploadPath(c, filePath)
+	if err != nil {
+		return err
+	}
 
-	if sharedUpload {
-		share, shareErr := h.Repos.Shares.GetByID(strings.TrimSpace(body.ShareID))
-		if shareErr != nil || share.TargetUserID != session.UserID || share.Permission != "write" ||
-			(share.ExpiresAt != nil && time.Now().After(*share.ExpiresAt)) {
-			return c.Status(403).JSON(fiber.Map{"error": "share_not_writable"})
-		}
-		owner, ownerErr := h.Repos.Users.GetByID(share.OwnerID)
-		if ownerErr != nil {
-			return c.Status(404).JSON(fiber.Map{"error": "share_owner_not_found"})
-		}
-		if share.FileInode <= 0 {
-			return c.Status(404).JSON(fiber.Map{"error": "shared_file_not_found"})
-		}
-		existing, err = h.Repos.Files.GetByID(share.OwnerID, share.FileInode)
-		if err != nil || existing.IsDir || existing.Status != "ready" {
-			return c.Status(404).JSON(fiber.Map{"error": "shared_file_not_found"})
-		}
-		ownerID, ownerUsername = owner.ID, owner.Username
-		resolvedPath, filePath, fileName = existing.Path, existing.Path, existing.Name
-		replace = true
-	} else {
-		if dirPath != "" && !strings.HasSuffix(dirPath, "/") {
-			dirPath += "/"
-		}
-		filePath = dirPath + fileName
-		resolvedPath, err = middleware.ResolvePath(c, filePath)
-		if err != nil {
-			return err
-		}
-
-		existing, err = h.Repos.Files.Get(ownerID, resolvedPath)
-		if err == nil && existing != nil {
-			switch body.ConflictStrategy {
-			case "replace":
-				if existing.IsDir || existing.Status != "ready" {
-					return c.Status(409).JSON(fiber.Map{"error": "replace_target_busy"})
-				}
-				replace = true
-			case "rename":
-				resolvedDir, dirErr := middleware.ResolvePath(c, dirPath)
-				if dirErr != nil {
-					return dirErr
-				}
-				allFiles, _ := h.Repos.Files.ListAllChildren(ownerID, resolvedDir)
-				usedNames := make(map[string]struct{})
-				for _, f := range allFiles {
-					usedNames[f.Name] = struct{}{}
-				}
-				fileName = nextAvailableName(fileName, usedNames)
-				filePath = dirPath + fileName
-				resolvedPath, err = middleware.ResolvePath(c, filePath)
-				if err != nil {
-					return err
-				}
-				existing = nil
-			default:
-				return c.Status(409).JSON(fiber.Map{
-					"error": "file_already_exists",
-					"existing": fiber.Map{
-						"name":          existing.Name,
-						"size":          existing.Size,
-						"is_dir":        existing.IsDir,
-						"last_modified": existing.UpdatedAt,
-					},
-				})
+	existing, err = h.Repos.Files.Get(ownerID, resolvedPath)
+	if err == nil && existing != nil {
+		switch body.ConflictStrategy {
+		case "replace":
+			if existing.IsDir || existing.Status != "ready" {
+				return c.Status(409).JSON(fiber.Map{"error": "replace_target_busy"})
 			}
+			replace = true
+		case "rename":
+			resolvedDir, dirErr := resolveUploadPath(c, dirPath)
+			if dirErr != nil {
+				return dirErr
+			}
+			allFiles, _ := h.Repos.Files.ListAllChildren(ownerID, resolvedDir)
+			usedNames := make(map[string]struct{})
+			for _, f := range allFiles {
+				usedNames[f.Name] = struct{}{}
+			}
+			fileName = nextAvailableName(fileName, usedNames)
+			filePath = dirPath + fileName
+			resolvedPath, err = resolveUploadPath(c, filePath)
+			if err != nil {
+				return err
+			}
+			existing = nil
+		default:
+			return c.Status(409).JSON(fiber.Map{
+				"error": "file_already_exists",
+				"existing": fiber.Map{
+					"name":          existing.Name,
+					"size":          existing.Size,
+					"is_dir":        existing.IsDir,
+					"last_modified": existing.UpdatedAt,
+				},
+			})
 		}
 	}
 	if body.ExpectedGeneration > 0 && (existing == nil || existing.Generation != body.ExpectedGeneration) {
@@ -421,15 +402,14 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 			"error": "generation_conflict", "current_generation": currentGeneration,
 		})
 	}
-	if body.Internal && !sharedUpload {
-		if err := h.ensureParentDirRecords(ownerID, ownerUsername, filePath, false); err != nil {
+	if body.Internal {
+		if err := h.ensureParentDirRecords(ownerID, resolvedPath, false); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "create_parent_failed"})
 		}
 	}
 
-	// Replacements retain the current file key. This keeps every existing
-	// share capability valid and avoids a key-update transaction spanning all
-	// recipients. New files use the browser-generated key.
+	// Replacements retain the current file key so an atomic generation change
+	// does not also require a key-identity migration.
 	effectiveKey := fileKey
 	var retainedKey []byte
 	if replace {
@@ -496,7 +476,7 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 	// Task + application upload projection. Ciphertext target and wrapped key
 	// remain owned by the durable DOFS reservation.
 	taskID := ""
-	if !body.Internal && !sharedUpload {
+	if !body.Internal {
 		taskID = uuid.New().String()
 		if err := h.Repos.Tasks.Create(ownerID, taskID, "upload", fileName); err != nil {
 			_ = h.Store.AbortMultipartUpload(direct.ObjectKey, ossUploadID)
@@ -513,16 +493,8 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 		_ = h.FileSystem.AbortDirectUpload(c.UserContext(), ownerID, uploadID)
 		return c.Status(500).JSON(fiber.Map{"error": "record_upload_failed"})
 	}
-	if sharedUpload {
-		if err := h.FileSystem.BindUploadActor(ownerID, uploadID, session.UserID, strings.TrimSpace(body.ShareID)); err != nil {
-			_ = h.Store.AbortMultipartUpload(direct.ObjectKey, ossUploadID)
-			_ = h.FileSystem.AbortDirectUpload(c.UserContext(), ownerID, uploadID)
-			return c.Status(500).JSON(fiber.Map{"error": "bind_share_upload_failed"})
-		}
-	}
-
 	if h.Hub != nil {
-		h.notifyParentDir(ownerUsername, resolvedPath)
+		h.notifyParentDir(ownerID, resolvedPath)
 	}
 
 	return c.JSON(fiber.Map{
@@ -538,26 +510,11 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 
 // ── presign (batch) ──────────────────────────────────────────────────────────
 
-func (h *Handler) authorizedUpload(actorUserID, uploadID string) (*model.FileRecord, string, error) {
+func (h *Handler) authorizedUpload(userID, uploadID string) (*model.FileRecord, error) {
 	if h.FileSystem == nil {
-		return nil, "", errors.New("DOFS unavailable")
+		return nil, errors.New("DOFS unavailable")
 	}
-	record, shareID, err := h.FileSystem.GetAuthorizedUpload(actorUserID, uploadID)
-	if err != nil {
-		return nil, "", err
-	}
-	if shareID == "" {
-		return record, "", nil
-	}
-	share, err := h.Repos.Shares.GetByID(shareID)
-	if err != nil || share.TargetUserID != actorUserID || share.OwnerID != record.UserID ||
-		share.Permission != "write" || (share.ExpiresAt != nil && time.Now().After(*share.ExpiresAt)) {
-		return nil, "", errors.New("shared upload is no longer authorized")
-	}
-	if share.FileInode <= 0 || share.FileInode != record.ID {
-		return nil, "", errors.New("shared upload inode changed")
-	}
-	return record, shareID, nil
+	return h.FileSystem.GetUpload(userID, uploadID)
 }
 
 func (h *Handler) handleUploadPresign(c *fiber.Ctx) error {
@@ -579,7 +536,7 @@ func (h *Handler) handleUploadPresign(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	record, _, err := h.authorizedUpload(session.UserID, uploadID)
+	record, err := h.authorizedUpload(session.UserID, uploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}
@@ -658,15 +615,11 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	record, shareID, err := h.authorizedUpload(session.UserID, body.UploadID)
+	record, err := h.authorizedUpload(session.UserID, body.UploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}
 	ownerID := record.UserID
-	owner, err := h.Repos.Users.GetByID(ownerID)
-	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "upload_owner_not_found"})
-	}
 	if record.Status == "ready" {
 		current, currentErr := h.Repos.Files.GetByID(ownerID, record.ID)
 		if currentErr != nil {
@@ -736,6 +689,26 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		})
 	}
 
+	// Resolve both sides before publishing the new generation. The source
+	// record still exposes the previous generation's thumbnail at this point;
+	// the internal thumbnail upload, when present, is already committed.
+	var previousSource *model.FileRecord
+	if candidate, previousErr := h.Repos.Files.Get(ownerID, record.Path); previousErr == nil && candidate.Status == "ready" {
+		previousSource = candidate
+	}
+	var thumbnailRecord *model.FileRecord
+	if body.ThumbnailUploadID != "" {
+		candidate, thumbnailErr := h.Repos.Files.GetUpload(ownerID, body.ThumbnailUploadID)
+		expectedName := "thumb_" + body.UploadID + ".webp"
+		expectedPath := "/.domus/thumbnails/" + expectedName
+		if thumbnailErr != nil || candidate.Status != "ready" || candidate.ID == record.ID ||
+			candidate.Path != expectedPath || candidate.Name != expectedName ||
+			candidate.ContentType != "image/webp" || candidate.Size <= 0 || candidate.Size > maxBrowserThumbnailSize {
+			return c.Status(409).JSON(fiber.Map{"error": "thumbnail_upload_not_ready"})
+		}
+		thumbnailRecord = candidate
+	}
+
 	published, err := h.FileSystem.CommitDirectUpload(c.UserContext(), ownerID, body.UploadID)
 	if err != nil {
 		if errors.Is(err, dofs.ErrConflict) {
@@ -756,18 +729,23 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 	); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "record_finalize_failed"})
 	}
-	if err := h.Repos.Files.UpdateStatus(body.UploadID, "ready"); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "record_status_failed"})
+
+	if previousSource != nil && previousSource.ThumbnailKey != "" &&
+		(thumbnailRecord == nil || previousSource.ThumbnailKey != thumbnailRecord.StorageKey()) {
+		// Thumbnail reclamation is best-effort: a transient cleanup failure may
+		// leave encrypted garbage, but must not make the source upload unusable.
+		if h.cleanupThumbnailStorage(ownerID, previousSource) == nil {
+			h.reclaimNamespaceBestEffort(ownerID)
+		}
 	}
 
-	if body.ThumbnailUploadID != "" && shareID == "" {
-		thumbRecord, err := h.Repos.Files.GetUpload(ownerID, body.ThumbnailUploadID)
-		if err == nil && thumbRecord.Status == "ready" {
-			_ = h.Repos.Files.UpdateThumbnail(
-				ownerID, record.Path,
-				thumbRecord.StorageKey(), thumbRecord.WrappedDEK,
-				body.MediaWidth, body.MediaHeight, body.MediaDuration,
-			)
+	if thumbnailRecord != nil {
+		if err := h.Repos.Files.UpdateThumbnail(
+			ownerID, record.Path,
+			thumbnailRecord.StorageKey(), thumbnailRecord.WrappedDEK,
+			body.MediaWidth, body.MediaHeight, body.MediaDuration,
+		); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "thumbnail_attach_failed"})
 		}
 	} else if body.MediaWidth > 0 || body.MediaHeight > 0 {
 		_ = h.Repos.Files.UpdateThumbnail(
@@ -776,27 +754,12 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 			body.MediaWidth, body.MediaHeight, body.MediaDuration,
 		)
 	}
+	if err := h.Repos.Files.UpdateStatus(body.UploadID, "ready"); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "record_status_failed"})
+	}
 
 	if record.TaskID != "" {
 		_ = h.Repos.Tasks.UpdateStatus(record.TaskID, "completed")
-	}
-
-	// Browser-generated encrypted thumbnails remain the fast path. When the
-	// browser could not produce one (PDFs, unsupported codecs, constrained
-	// clients), the reusable user workspace generates it asynchronously through
-	// the same DOFS namespace. Failure is non-fatal: direct client-side preview
-	// of the original file remains available.
-	if body.ThumbnailUploadID == "" {
-		if finalized, getErr := h.Repos.Files.Get(ownerID, record.Path); getErr == nil {
-			h.enqueueServerPreview(
-				workspaceRuntime.Identity{UserID: ownerID, Username: owner.Username},
-				*finalized,
-			)
-		}
-	}
-
-	if shareID != "" {
-		_ = h.Repos.Shares.UpdateFileSize(shareID, published.Size)
 	}
 
 	if err := h.FileSystem.AcknowledgeDirectUpload(c.UserContext(), ownerID, body.UploadID); err != nil {
@@ -806,8 +769,8 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 	if h.Hub != nil {
 		parent := parentDirOf(record.Path)
 		if parent != "" {
-			appPath := toAppPath(parent, owner.Username)
-			h.Hub.PushDirChanged(parent, appPath, "refresh")
+			appPath := toAppPath(parent, "")
+			h.Hub.PushDirChanged(ownerID, parent, appPath, "refresh")
 		}
 	}
 
@@ -824,7 +787,7 @@ func (h *Handler) handleUploadHeartbeat(c *fiber.Ctx) error {
 	}
 	session := c.Locals("session").(*model.Session)
 	uploadID := strings.TrimSpace(body.UploadID)
-	record, _, err := h.authorizedUpload(session.UserID, uploadID)
+	record, err := h.authorizedUpload(session.UserID, uploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}
@@ -867,7 +830,7 @@ func (h *Handler) handleUploadCancel(c *fiber.Ctx) error {
 	if h.FileSystem == nil {
 		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
 	}
-	record, _, err := h.FileSystem.GetAuthorizedUpload(session.UserID, uploadID)
+	record, err := h.FileSystem.GetUpload(session.UserID, uploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}
@@ -882,9 +845,7 @@ func (h *Handler) handleUploadCancel(c *fiber.Ctx) error {
 		_ = h.Repos.Tasks.UpdateStatus(taskID, status)
 	}
 	if h.Hub != nil {
-		if owner, ownerErr := h.Repos.Users.GetByID(record.UserID); ownerErr == nil {
-			h.notifyParentDir(owner.Username, record.Path)
-		}
+		h.notifyParentDir(record.UserID, record.Path)
 	}
 	if reason != "" {
 		h.Audit.LogFromCtx(c, "file_upload_abort", record.Path, reason, status, 0)
@@ -915,7 +876,7 @@ func (h *Handler) handleUploadCleanup(c *fiber.Ctx) error {
 			_ = h.Repos.Tasks.UpdateStatus(record.TaskID, "cancelled")
 		}
 		if h.Hub != nil {
-			h.notifyParentDir(session.Username, record.Path)
+			h.notifyParentDir(session.UserID, record.Path)
 		}
 	}
 	return c.JSON(fiber.Map{"ok": true, "count": len(records)})
@@ -930,7 +891,7 @@ func (h *Handler) handleUploadStatus(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	record, _, err := h.authorizedUpload(session.UserID, uploadID)
+	record, err := h.authorizedUpload(session.UserID, uploadID)
 	if err != nil {
 		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
 	}

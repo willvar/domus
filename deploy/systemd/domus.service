@@ -1,9 +1,8 @@
 [Unit]
 Description=Domus web control plane
-Documentation=file:///usr/share/doc/domus/workspace-production.md
+Documentation=file:///usr/share/doc/domus/dofs-production.md
 Wants=network-online.target
-Requires=domus-workspace.service
-After=network-online.target domus-workspace.service
+After=network-online.target
 ConditionPathExists=/etc/domus/config.yaml
 
 [Service]
@@ -18,16 +17,14 @@ ExecStart=/usr/local/bin/domus start -c /etc/domus/config.yaml
 Restart=on-failure
 RestartSec=5s
 TimeoutStartSec=90s
-# Web shutdown first drains HTTP/TTY and then gives media jobs their own
-# bounded cleanup window. Keep this larger than both application stages.
-TimeoutStopSec=90s
+TimeoutStopSec=30s
 KillSignal=SIGTERM
 KillMode=mixed
 LimitNOFILE=1048576
 LimitCORE=0
 
-# This process needs PostgreSQL/OSS networking and the two local control
-# sockets, but never the Docker socket, /dev/fuse, or host mount namespace.
+# This process needs PostgreSQL/OSS networking. It does not need /dev/fuse or
+# the host mount namespace; the optional DOFS FUSE service is independent.
 NoNewPrivileges=yes
 CapabilityBoundingSet=
 AmbientCapabilities=

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -72,6 +73,9 @@ func openMetadata(ctx context.Context, database *gorm.DB, cfg *config.Config) (d
 		path := cfg.DOFS.Metadata.SQLite.Path
 		if path == "" {
 			path = filepath.Join(cfg.DOFS.StateRoot, "metadata.sqlite")
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+			return nil, nil, fmt.Errorf("create DOFS SQLite directory: %w", err)
 		}
 		metadata, err := dofssqlite.Open(ctx, dofssqlite.Config{
 			Path:               path,
@@ -148,6 +152,17 @@ func (r *Runtime) Usage(ctx context.Context, userID string) (int64, int, error) 
 	return namespace.UsedBytes, files, nil
 }
 
+// ReclaimNamespace performs one idempotent physical-cleanup pass. Deleted
+// inode tombstones remain durable retry work when object storage is
+// unavailable, an upload URL is still live, or a FUSE mount holds the
+// namespace open.
+func (r *Runtime) ReclaimNamespace(ctx context.Context, userID string) (dofs.ReclaimResult, error) {
+	if r == nil || r.Metadata == nil || r.Objects == nil {
+		return dofs.ReclaimResult{NamespaceID: userID}, errors.New("Domus DOFS runtime is incomplete")
+	}
+	return dofs.ReclaimDeleted(ctx, r.Metadata, r.Objects, userID)
+}
+
 // DeleteNamespace removes the authoritative metadata first, making every
 // ciphertext generation unreachable, then reclaims the namespace's exact
 // object prefix. A failed object cleanup leaves only encrypted garbage and is
@@ -211,12 +226,14 @@ func (r *Runtime) EnsureUser(ctx context.Context, user *model.User) error {
 		return err
 	}
 	defer controller.Close()
-	home, err := ensureDirectory(ctx, controller, dofs.RootInode, "home", 0700)
+	internal, err := ensureDirectory(ctx, controller, dofs.RootInode, ".domus", 0700)
 	if err != nil {
-		return fmt.Errorf("ensure DOFS home root for %s: %w", user.ID, err)
+		return fmt.Errorf("ensure Domus private root for %s: %w", user.ID, err)
 	}
-	if _, err := ensureDirectory(ctx, controller, home.Inode, user.Username, 0700); err != nil {
-		return fmt.Errorf("ensure DOFS user home for %s: %w", user.ID, err)
+	for _, name := range []string{"trash", "thumbnails", "user"} {
+		if _, err := ensureDirectory(ctx, controller, internal.Inode, name, 0700); err != nil {
+			return fmt.Errorf("ensure Domus private directory %s for %s: %w", name, user.ID, err)
+		}
 	}
 	return nil
 }

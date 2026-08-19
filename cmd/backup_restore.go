@@ -151,9 +151,6 @@ func backupInstance(cfg *config.Config, configPath, backupDir string, deps backu
 	if err := requireDOFSStopped(cfg.DOFS.ControlSocket); err != nil {
 		return err
 	}
-	if err := requireWorkspaceStopped(cfg.Workspace.ControlSocket); err != nil {
-		return err
-	}
 
 	logger.Info("Backing up Domus instance")
 	logger.Info("  Config file: %s", configPath)
@@ -258,9 +255,6 @@ func restoreInstance(cfg *config.Config, configPath, backupDir string, confirmed
 	if err := requireDOFSStopped(cfg.DOFS.ControlSocket); err != nil {
 		return err
 	}
-	if err := requireWorkspaceStopped(cfg.Workspace.ControlSocket); err != nil {
-		return err
-	}
 	if !confirmed {
 		return fmt.Errorf("restore is destructive. Re-run with --yes to replace database %q and bucket %q", cfg.Database.DBName, cfg.OSS.Bucket)
 	}
@@ -286,9 +280,6 @@ func restoreInstance(cfg *config.Config, configPath, backupDir string, confirmed
 	}
 	if err := validateDOFSRuntimeStateReset(cfg); err != nil {
 		return fmt.Errorf("validate DOFS runtime state before destructive restore: %w", err)
-	}
-	if err := validateWorkspaceRuntimeStateReset(cfg); err != nil {
-		return fmt.Errorf("validate Workspace runtime state before destructive restore: %w", err)
 	}
 
 	logger.Info("Restoring Domus instance")
@@ -319,11 +310,6 @@ func restoreInstance(cfg *config.Config, configPath, backupDir string, confirmed
 		return fmt.Errorf("database reset completed, but failed to clear DOFS runtime state: %w", err)
 	}
 	logger.Info("DOFS runtime state reset complete")
-	if err := clearWorkspaceRuntimeState(cfg); err != nil {
-		return fmt.Errorf("database and DOFS state reset completed, but failed to clear Workspace runtime state: %w", err)
-	}
-	logger.Info("Workspace runtime state reset complete")
-
 	if err := fileStore.DeleteAllObjects(nil); err != nil {
 		return fmt.Errorf("clear bucket %q: %w", cfg.OSS.Bucket, err)
 	}
@@ -577,10 +563,6 @@ func writeStreamToFile(path string, reader io.Reader, expectedSize int64) error 
 
 func requireDOFSStopped(socketPath string) error {
 	return requireLocalManagerStopped("DOFS", socketPath)
-}
-
-func requireWorkspaceStopped(socketPath string) error {
-	return requireLocalManagerStopped("Workspace", socketPath)
 }
 
 func requireLocalManagerStopped(service, socketPath string) error {

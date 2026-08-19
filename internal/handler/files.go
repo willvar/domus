@@ -90,6 +90,9 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 
 	files := make([]store.FileInfo, 0, len(records))
 	for _, r := range records {
+		if r.Path == "/.domus/" {
+			continue
+		}
 		fi := store.FileInfo{
 			Name:          r.Name,
 			Path:          middleware.ToAppPath(r.Path, session.Username),
@@ -157,6 +160,9 @@ func (h *Handler) handleMkdir(c *fiber.Ctx) error {
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
 	}
+	if isProtectedMutationRoot(body.Path) {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
+	}
 
 	resolvedPath, err := middleware.ResolvePath(c, body.Path)
 	if err != nil {
@@ -172,7 +178,7 @@ func (h *Handler) handleMkdir(c *fiber.Ctx) error {
 	// Notify WebSocket subscribers of the parent directory
 	if parent := parentDirOf(resolvedPath); parent != "" {
 		appPath := toAppPath(parent, session.Username)
-		h.Hub.PushDirChanged(parent, appPath, "created")
+		h.Hub.PushDirChanged(session.UserID, parent, appPath, "created")
 	}
 
 	return c.JSON(fiber.Map{"ok": true})
@@ -186,6 +192,9 @@ func (h *Handler) handleRename(c *fiber.Ctx) error {
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	}
+	if isProtectedMutationRoot(body.OldPath) || isProtectedMutationRoot(body.NewPath) {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
 	}
 
 	oldResolved, err := middleware.ResolvePath(c, body.OldPath)
@@ -210,18 +219,20 @@ func (h *Handler) handleRename(c *fiber.Ctx) error {
 		return c.Status(500).JSON(fiber.Map{"error": "rename_failed"})
 	}
 
-	syncMovedFileRecords(
+	if err := syncMovedFileRecords(
 		h, session.UserID, oldResolved, newResolved, body.OldPath, body.NewPath, body.IsDir,
-	)
+	); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "rename_failed"})
+	}
 
 	// Notify WebSocket subscribers of both old and new parent directories
 	if parent := parentDirOf(oldResolved); parent != "" {
 		appPath := toAppPath(parent, session.Username)
-		h.Hub.PushDirChanged(parent, appPath, "refresh")
+		h.Hub.PushDirChanged(session.UserID, parent, appPath, "refresh")
 	}
 	if parent := parentDirOf(newResolved); parent != "" {
 		appPath := toAppPath(parent, session.Username)
-		h.Hub.PushDirChanged(parent, appPath, "refresh")
+		h.Hub.PushDirChanged(session.UserID, parent, appPath, "refresh")
 	}
 
 	h.Audit.LogFromCtx(c, "file_rename", body.OldPath, body.NewPath, "success", 0)
@@ -236,6 +247,9 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	}
+	if isProtectedMutationRoot(body.SrcPath) || isProtectedMutationRoot(body.DstPath) {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
 	}
 
 	srcResolved, err := middleware.ResolvePath(c, body.SrcPath)
@@ -285,7 +299,7 @@ func (h *Handler) handleCopy(c *fiber.Ctx) error {
 	// Notify WebSocket subscribers of the destination parent directory
 	if parent := parentDirOf(dstResolved); parent != "" {
 		appPath := toAppPath(parent, session.Username)
-		h.Hub.PushDirChanged(parent, appPath, "refresh")
+		h.Hub.PushDirChanged(session.UserID, parent, appPath, "refresh")
 	}
 
 	h.Audit.LogFromCtx(c, "file_copy", body.SrcPath, body.DstPath, "success", 0)
@@ -300,6 +314,9 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	}
+	if isProtectedMutationRoot(body.SrcPath) || isProtectedMutationRoot(body.DstPath) {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
 	}
 
 	srcResolved, err := middleware.ResolvePath(c, body.SrcPath)
@@ -321,7 +338,7 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 	}
 
 	session := c.Locals("session").(*model.Session)
-	if err := h.ensureParentDirRecords(session.UserID, session.Username, body.DstPath, body.IsDir); err != nil {
+	if err := h.ensureParentDirRecords(session.UserID, dstResolved, body.IsDir); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "move_failed"})
 	}
 	if isTrashAppPath(body.DstPath) {
@@ -347,8 +364,10 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 			if moveErr != nil {
 				data, _ := json.Marshal(fiber.Map{"error": moveErr.Error()})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+			} else if syncErr := syncMovedFileRecords(h, session.UserID, srcResolved, dstResolved, body.SrcPath, body.DstPath, body.IsDir); syncErr != nil {
+				data, _ := json.Marshal(fiber.Map{"error": syncErr.Error()})
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			} else {
-				syncMovedFileRecords(h, session.UserID, srcResolved, dstResolved, body.SrcPath, body.DstPath, body.IsDir)
 				data, _ := json.Marshal(fiber.Map{"done": true})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			}
@@ -360,16 +379,18 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 	if err := movePathViaStore(h, session.UserID, srcResolved, dstResolved, body.IsDir, nil); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "move_failed"})
 	}
-	syncMovedFileRecords(h, session.UserID, srcResolved, dstResolved, body.SrcPath, body.DstPath, body.IsDir)
+	if err := syncMovedFileRecords(h, session.UserID, srcResolved, dstResolved, body.SrcPath, body.DstPath, body.IsDir); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "move_failed"})
+	}
 
 	// Notify WebSocket subscribers of both source and destination parent directories
 	if parent := parentDirOf(srcResolved); parent != "" {
 		appPath := toAppPath(parent, session.Username)
-		h.Hub.PushDirChanged(parent, appPath, "refresh")
+		h.Hub.PushDirChanged(session.UserID, parent, appPath, "refresh")
 	}
 	if parent := parentDirOf(dstResolved); parent != "" {
 		appPath := toAppPath(parent, session.Username)
-		h.Hub.PushDirChanged(parent, appPath, "refresh")
+		h.Hub.PushDirChanged(session.UserID, parent, appPath, "refresh")
 	}
 
 	h.Audit.LogFromCtx(c, "file_move", body.SrcPath, body.DstPath, "success", 0)
@@ -380,6 +401,9 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 	path := c.Query("path", "")
 	if path == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
+	}
+	if normalizeAppPath(path) == "/" {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
 	}
 	permanent := c.Query("permanent") == "1" || strings.EqualFold(c.Query("permanent"), "true")
 
@@ -426,6 +450,9 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 					data, _ := json.Marshal(fiber.Map{"error": err.Error()})
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 				} else {
+					if inTrash {
+						h.pruneEmptyTrashParentsBestEffort(session.UserID, resolvedPath)
+					}
 					data, _ := json.Marshal(fiber.Map{"done": true})
 					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 				}
@@ -437,11 +464,14 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 		if err := h.permanentlyDeletePath(session.UserID, resolvedPath, isDir); err != nil {
 			return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
 		}
+		if inTrash {
+			h.pruneEmptyTrashParentsBestEffort(session.UserID, resolvedPath)
+		}
 		if path == trashRootPath {
-			h.Hub.PushDirChanged(resolvedPath, trashRootPath, "refresh")
+			h.Hub.PushDirChanged(session.UserID, resolvedPath, trashRootPath, "refresh")
 		} else if parent := parentDirOf(resolvedPath); parent != "" {
 			appPath := toAppPath(parent, session.Username)
-			h.Hub.PushDirChanged(parent, appPath, "refresh")
+			h.Hub.PushDirChanged(session.UserID, parent, appPath, "refresh")
 		}
 		h.Audit.LogFromCtx(c, "file_delete", path, "", "success", 0)
 		return c.JSON(fiber.Map{"ok": true})
@@ -452,7 +482,7 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 	if err != nil {
 		return err
 	}
-	if err := h.ensureParentDirRecords(session.UserID, session.Username, dstAppPath, isDir); err != nil {
+	if err := h.ensureParentDirRecords(session.UserID, dstResolved, isDir); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
 	}
 	if err := h.permanentlyDeletePath(session.UserID, dstResolved, isDir); err != nil {
@@ -473,8 +503,10 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 			if moveErr != nil {
 				data, _ := json.Marshal(fiber.Map{"error": moveErr.Error()})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
+			} else if syncErr := syncMovedFileRecords(h, session.UserID, resolvedPath, dstResolved, path, dstAppPath, isDir); syncErr != nil {
+				data, _ := json.Marshal(fiber.Map{"error": syncErr.Error()})
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			} else {
-				syncMovedFileRecords(h, session.UserID, resolvedPath, dstResolved, path, dstAppPath, isDir)
 				data, _ := json.Marshal(fiber.Map{"done": true})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			}
@@ -486,14 +518,16 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 	if err := movePathViaStore(h, session.UserID, resolvedPath, dstResolved, isDir, nil); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
 	}
-	syncMovedFileRecords(h, session.UserID, resolvedPath, dstResolved, path, dstAppPath, isDir)
+	if err := syncMovedFileRecords(h, session.UserID, resolvedPath, dstResolved, path, dstAppPath, isDir); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
+	}
 	if parent := parentDirOf(resolvedPath); parent != "" {
 		appPath := toAppPath(parent, session.Username)
-		h.Hub.PushDirChanged(parent, appPath, "refresh")
+		h.Hub.PushDirChanged(session.UserID, parent, appPath, "refresh")
 	}
 	if parent := parentDirOf(dstResolved); parent != "" {
 		appPath := toAppPath(parent, session.Username)
-		h.Hub.PushDirChanged(parent, appPath, "refresh")
+		h.Hub.PushDirChanged(session.UserID, parent, appPath, "refresh")
 	}
 	h.Audit.LogFromCtx(c, "file_delete", path, "", "success", 0)
 	return c.JSON(fiber.Map{"ok": true})
@@ -507,7 +541,11 @@ func (h *Handler) handleFileAccess(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
 	}
 
-	resolvedPath, err := middleware.ResolvePath(c, path)
+	resolveAccessPath := middleware.ResolvePath
+	if c.Query("internal") == "true" {
+		resolveAccessPath = middleware.ResolveInternalPath
+	}
+	resolvedPath, err := resolveAccessPath(c, path)
 	if err != nil {
 		return err
 	}

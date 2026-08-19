@@ -3,6 +3,7 @@ import { onMounted, watchEffect } from 'vue'
 import { useAuthStore } from './stores/auth'
 import { useI18n } from './composables/useI18n'
 import LoginPage from './components/LoginPage.vue'
+import GlobalDialog from './components/GlobalDialog.vue'
 import { Spin, MessageList, NotificationList } from './barrels/breeze'
 
 const auth = useAuthStore()
@@ -27,6 +28,7 @@ onMounted(async () => {
 
   <router-view v-else />
 
+  <GlobalDialog />
   <MessageList />
   <NotificationList />
 </template>

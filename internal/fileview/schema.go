@@ -26,8 +26,6 @@ func (metadataRecord) TableName() string { return "domus_file_metadata" }
 type uploadRecord struct {
 	ID               string `gorm:"primaryKey;size:128"`
 	UserID           string `gorm:"not null;size:128;index:idx_domus_upload_user_state;index:idx_domus_upload_user_path"`
-	ActorUserID      string `gorm:"not null;default:'';size:128;index:idx_domus_upload_actor_state"`
-	ShareID          string `gorm:"not null;default:'';size:128;index"`
 	Inode            uint64 `gorm:"not null;index"`
 	Path             string `gorm:"not null;index:idx_domus_upload_user_path"`
 	Parent           string `gorm:"not null"`

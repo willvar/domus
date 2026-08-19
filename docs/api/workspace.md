@@ -1,42 +1,9 @@
-# 工作区接口 `/workspace`
+# 已移除的桌面状态接口
 
 返回总入口：[返回接口文档首页](./README.md)
 
-## `GET /workspace/`
-读取工作区状态。
+`GET/PUT/DELETE /workspace/` 曾保存浏览器桌面窗口和标签页状态。Domus 现在只有统一的
+响应式文件管理界面，不再存在桌面窗口系统，因此这些路由不再注册并返回 `404`。
 
-鉴权：已登录
-
-响应：
-```json
-{"state": {...}}
-```
-或：
-```json
-{"state": null}
-```
-
-## `PUT /workspace/`
-保存工作区状态。
-
-鉴权：已登录
-
-请求体：
-```json
-{"state": {"windows": [], "tabs": []}}
-```
-
-响应：
-```json
-{"ok": true}
-```
-
-## `DELETE /workspace/`
-清空工作区状态。
-
-鉴权：已登录
-
-响应：
-```json
-{"ok": true}
-```
+旧 Docker Workspace 执行面也已退役；当前缩略图由上传浏览器生成，不存在同名的内部
+服务或公开 HTTP API。
