@@ -29,19 +29,19 @@ async function chooseAction(page: Page, item: Locator, label: RegExp): Promise<v
   await item.click({ button: 'right' })
   const menu = page.locator('.action-menu')
   await expect(menu).toBeVisible()
-  await menu.getByRole('button', { name: label }).click()
+  await menu.getByRole('menuitem', { name: label }).click()
 }
 
 async function confirmDialog(page: Page): Promise<void> {
-  const dialog = page.locator('.breeze-modal-dialog')
+  const dialog = page.locator('.domus-dialog')
   await expect(dialog).toBeVisible()
-  await dialog.locator('.breeze-modal-dialog__footer button').last().click()
+  await dialog.locator('.n-dialog__action button').last().click()
   await expect(dialog).toBeHidden()
 }
 
 async function createFolder(page: Page, name: string): Promise<void> {
   await page.locator('.primary-actions').getByRole('button', { name: /新建文件夹|New Folder/ }).click()
-  const dialog = page.locator('.breeze-modal-dialog')
+  const dialog = page.locator('.domus-dialog')
   await expect(dialog).toBeVisible()
   await dialog.locator('input').fill(name)
   await dialog.locator('input').press('Enter')
@@ -77,6 +77,100 @@ test('统一文件界面完成新建、上传、重命名、移动、回收与�
     await createFolder(page, destinationName)
     const baselineUsage = await getStorageUsage(page)
 
+    // A regular click remains an exclusive single selection. Batch selection
+    // is an explicit mode and reuses the existing heading controls, so the
+    // file surface must not jump when either state is entered.
+    const surfaceBeforeSelection = await page.locator('.file-surface').boundingBox()
+    const selectModeToggle = page.locator('.select-mode-toggle')
+    const selectModeToggleBefore = await selectModeToggle.boundingBox()
+    expect(surfaceBeforeSelection).not.toBeNull()
+    expect(selectModeToggleBefore).not.toBeNull()
+    await itemNamed(page, sourceName).click()
+    const selectionControls = page.locator('.selection-controls')
+    await expect(selectionControls).toBeVisible()
+    await expect(selectModeToggle).toBeVisible()
+    await expect(selectModeToggle).toHaveAttribute('aria-pressed', 'false')
+    await expect(page.locator('.file-surface')).not.toHaveClass(/selection-mode/)
+    await expect(page.locator('.selection-toolbar')).toHaveCount(0)
+    await itemNamed(page, destinationName).click()
+    await expect(page.locator('.file-item.selected')).toHaveCount(1)
+    await expect(page.locator('.file-surface')).not.toHaveClass(/selection-mode/)
+    await expect(itemNamed(page, destinationName)).toHaveClass(/selected/)
+    await selectModeToggle.click()
+    await expect(selectModeToggle).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.locator('.file-surface')).toHaveClass(/selection-mode/)
+    await expect(page.locator('.selection-check')).toHaveCount(await page.locator('.file-item').count())
+    await itemNamed(page, sourceName).click()
+    await expect(page.locator('.file-item.selected')).toHaveCount(2)
+    await expect(selectionControls).toContainText(/已选择 2 项|2 selected/)
+    const surfaceAfterSelection = await page.locator('.file-surface').boundingBox()
+    expect(surfaceAfterSelection).not.toBeNull()
+    expect(surfaceAfterSelection!.y).toBeCloseTo(surfaceBeforeSelection!.y, 1)
+    expect(surfaceAfterSelection!.height).toBeCloseTo(surfaceBeforeSelection!.height, 1)
+    const selectModeToggleAfter = await selectModeToggle.boundingBox()
+    expect(selectModeToggleAfter).not.toBeNull()
+    expect(selectModeToggleAfter!.x).toBeCloseTo(selectModeToggleBefore!.x, 1)
+    expect(selectModeToggleAfter!.width).toBeCloseTo(selectModeToggleBefore!.width, 1)
+    await selectionControls.getByRole('button', { name: /清除选择|Clear selection/ }).click()
+    await expect(selectionControls).toBeHidden()
+    await expect(selectModeToggle).toBeVisible()
+    await expect(selectModeToggle).toHaveAttribute('aria-pressed', 'false')
+
+    // Desktop users can enter batch selection directly by drawing a classic
+    // file-manager rubber band from an empty part of the surface.
+    const firstItemBox = await page.locator('.file-item').nth(0).boundingBox()
+    const secondItemBox = await page.locator('.file-item').nth(1).boundingBox()
+    expect(firstItemBox).not.toBeNull()
+    expect(secondItemBox).not.toBeNull()
+    await page.mouse.move(firstItemBox!.x - 5, firstItemBox!.y - 5)
+    await page.mouse.down()
+    await page.mouse.move(
+      secondItemBox!.x + secondItemBox!.width + 5,
+      secondItemBox!.y + secondItemBox!.height + 5,
+      { steps: 8 },
+    )
+    await expect(page.locator('.rubber-band')).toBeVisible()
+    await expect(page.locator('.file-item.selected')).toHaveCount(2)
+    await page.mouse.up()
+    await expect(page.locator('.rubber-band')).toBeHidden()
+    await expect(page.locator('.file-surface')).toHaveClass(/selection-mode/)
+    await expect(selectModeToggle).toBeVisible()
+    await expect(selectModeToggle).toHaveAttribute('aria-pressed', 'true')
+    await expect(selectionControls).toContainText(/已选择 2 项|2 selected/)
+    await selectionControls.getByRole('button', { name: /清除选择|Clear selection/ }).click()
+    await expect(selectionControls).toBeHidden()
+
+    await page.setViewportSize({ width: 390, height: 844 })
+    const mobileSelectEntry = page.locator('.mobile-select-entry')
+    await expect(mobileSelectEntry).toBeVisible()
+    await mobileSelectEntry.click()
+    const mobileSelectionNav = page.locator('.mobile-bottom-nav.is-selection')
+    await expect(mobileSelectionNav).toBeVisible()
+    await expect(mobileSelectionNav.getByRole('button')).toHaveCount(5)
+    await expect(page.locator('.selection-check')).toHaveCount(await page.locator('.file-item').count())
+    await mobileSelectionNav.getByRole('button', { name: /完成|Done/ }).click()
+    await expect(mobileSelectionNav).toBeHidden()
+
+    await itemNamed(page, sourceName).click()
+    await waitForDirectory(page)
+    const breadcrumbViewport = page.locator('.breadcrumbs-viewport')
+    const mobileBreadcrumbItems = page.locator('.breadcrumbs .n-breadcrumb-item')
+    await expect(mobileBreadcrumbItems).toHaveCount(2)
+    await expect(mobileBreadcrumbItems.first()).toBeVisible()
+    await expect(mobileBreadcrumbItems.last()).toContainText(sourceName)
+    await expect(breadcrumbViewport).toHaveClass(/is-clipped-left/)
+    const breadcrumbScroll = await breadcrumbViewport.evaluate(element => ({
+      left: element.scrollLeft,
+      viewport: element.clientWidth,
+      content: element.scrollWidth,
+    }))
+    expect(breadcrumbScroll.content).toBeGreaterThan(breadcrumbScroll.viewport)
+    expect(breadcrumbScroll.left).toBeGreaterThan(0)
+    await page.locator('.breadcrumbs').getByRole('button', { name: /我的文件|My Files/ }).click()
+    await waitForDirectory(page)
+    await expect(itemNamed(page, sourceName)).toBeVisible()
+    await page.setViewportSize({ width: 1280, height: 800 })
+
     await itemNamed(page, sourceName).dblclick()
     await waitForDirectory(page)
     await uploadFromToolbar(page, {
@@ -89,7 +183,7 @@ test('统一文件界面完成新建、上传、重命名、移动、回收与�
     }).toEqual({ size: baselineUsage.size + originalContents.length, count: baselineUsage.count + 1 })
 
     await chooseAction(page, itemNamed(page, originalName), /重命名|Rename/)
-    const renameDialog = page.locator('.breeze-modal-dialog')
+    const renameDialog = page.locator('.domus-dialog')
     await expect(renameDialog).toBeVisible()
     await renameDialog.locator('input').fill(renamedName)
     await renameDialog.locator('input').press('Enter')

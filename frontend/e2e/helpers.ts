@@ -244,16 +244,16 @@ export async function uploadFromToolbar(
     await fileChooser.setFiles(file)
 
     if (file.conflictAction) {
-      const duplicateSummary = page.locator('.duplicate-summary').filter({ hasText: file.name })
+      const duplicateSummary = page.locator('.duplicate-dialog__summary').filter({ hasText: file.name })
       await expect(duplicateSummary).toBeVisible()
       const action = file.conflictAction === 'replace' ? /替换|Replace/ : /重命名|Rename/
       await page.getByRole('button', { name: action }).click()
     }
 
     if (file.buffer.length === 0) {
-      const zeroByteDialog = page.locator('.breeze-modal-dialog').filter({ hasText: /0B|0.?byte|zero.?byte/i })
+      const zeroByteDialog = page.locator('.domus-dialog').filter({ hasText: /0B|0.?byte|zero.?byte/i })
       await expect(zeroByteDialog).toBeVisible()
-      await zeroByteDialog.locator('.breeze-modal-dialog__footer button').last().click()
+      await zeroByteDialog.locator('.n-dialog__action button').last().click()
     }
 
     const completionResponse = await completionResponsePromise

@@ -8,7 +8,7 @@ import { useWindowManagerStore } from './windowManager'
 import { useI18n } from '../composables/useI18n'
 import { ICONS } from '../composables/useFileIcon'
 import { showPrompt, showConfirm, showDuplicateDialog } from '../composables/useNativeDialog'
-import { useMessage } from '../composables/useMessage'
+import { useAppMessage } from '../ui/feedback'
 import { usePreferences } from '../composables/usePreferences'
 import { useServiceWorker } from '../composables/useServiceWorker'
 import { registerFileDecrypt } from '../composables/useFileAccess'
@@ -140,7 +140,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const wm = useWindowManagerStore()
   const ws = useWebSocket()
   const { t, te } = useI18n()
-  const message = useMessage()
+  const message = useAppMessage()
 
   function pendingLabel(type: PendingOpInput['type']): string {
     return type ? t(`pending.type_${type}`) : t('pending.title')
@@ -168,8 +168,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const pendingOps = usePendingOpsStore()
     if (!pendingOps.isQueueableError(error)) return false
     await pendingOps.enqueue(record)
-    const { useMessage } = await import('../composables/useMessage')
-    useMessage().warning(pendingToast(record.type, pendingDetailFromRecord(record)))
+    message.warning(pendingToast(record.type, pendingDetailFromRecord(record)))
     return true
   }
 
@@ -405,7 +404,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     }
 
     currentPath.value = path
-    selectedFiles.value = []
+    clearSelection()
     searchQuery.value = ''
 
     if (addToHistory) {
@@ -582,7 +581,10 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     return files.value.find(f => f.path === path)
   }
 
-  // Selection
+  // Selection. A regular selection can contain one item without entering the
+  // explicit batch mode used by touch input and modifier-assisted selection.
+  const selectMode: Ref<boolean> = ref(false)
+
   function selectFile(path: string, event?: MouseEvent | KeyboardEvent): void {
     const ctrl: boolean = !!(event && ('ctrlKey' in event ? event.ctrlKey : false)) || !!(event && ('metaKey' in event ? event.metaKey : false))
     const shift: boolean = !!(event && ('shiftKey' in event ? event.shiftKey : false))
@@ -607,26 +609,25 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   function selectAll(): void {
+    selectMode.value = true
     selectedFiles.value = sortedFiles.value.map(f => f.path)
   }
 
   function clearSelection(): void {
+    selectMode.value = false
     selectedFiles.value = []
     lastSelectedIndex.value = -1
   }
-
-  // Mobile select mode
-  const selectMode: Ref<boolean> = ref(false)
 
   function enterSelectMode(path?: string): void {
     selectMode.value = true
     if (path && !selectedFiles.value.includes(path)) {
       selectedFiles.value = [path]
     }
+    if (path) lastSelectedIndex.value = sortedFiles.value.findIndex(file => file.path === path)
   }
 
   function exitSelectMode(): void {
-    selectMode.value = false
     clearSelection()
   }
 
@@ -634,9 +635,10 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const idx: number = selectedFiles.value.indexOf(path)
     if (idx >= 0) {
       selectedFiles.value.splice(idx, 1)
-      if (selectedFiles.value.length === 0) selectMode.value = false
+      if (selectedFiles.value.length === 0) clearSelection()
     } else {
       selectedFiles.value.push(path)
+      lastSelectedIndex.value = sortedFiles.value.findIndex(file => file.path === path)
     }
   }
 
@@ -696,9 +698,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
     const failed = results.filter(r => r.status === 'rejected')
     if (failed.length > 0) {
-      const { useMessage } = await import('../composables/useMessage')
-      const msg = useMessage()
-      msg.error(t('paste.partial_failed', { n: failed.length }))
+      message.error(t('paste.partial_failed', { n: failed.length }))
     }
 
     if (mode === 'cut') {
@@ -825,7 +825,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       }))
     }
 
-    selectedFiles.value = []
+    clearSelection()
     await reloadCurrentDir()
   }
 
@@ -876,7 +876,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         console.error('Restore failed:', e)
       }
     }
-    selectedFiles.value = []
+    clearSelection()
     await reloadCurrentDir()
   }
 
