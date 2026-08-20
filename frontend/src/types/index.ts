@@ -509,44 +509,10 @@ export type WSAction =
   | 'workspace.event'
 
 // -----------------------------------------------------------------------------
-// 4. Dialog Types
+// 4. Domain Dialog Types
 // -----------------------------------------------------------------------------
 
-/** Base dialog state shared across all dialog types. */
-interface DialogStateBase {
-  resolve: (value: unknown) => void
-  positiveText?: string
-  positiveType?: string
-  icon?: string
-  placeholder?: string
-}
-
-/** Prompt dialog (text input). Returns entered string or null. */
-export interface PromptDialogState extends DialogStateBase {
-  type: 'prompt'
-  title: string
-  content: string
-  placeholder: string
-}
-
-/** Confirm dialog (yes/no). Returns boolean. */
-export interface ConfirmDialogState extends DialogStateBase {
-  type: 'confirm'
-  title: string
-  content: string
-  icon: string
-  positiveText: string
-  positiveType: string
-}
-
-/** Alert dialog (acknowledgement). Resolves when dismissed. */
-export interface AlertDialogState extends DialogStateBase {
-  type: 'alert'
-  title: string
-  content: string
-}
-
-/** Duplicate file conflict dialog options passed to showDuplicateDialog(). */
+/** Duplicate file conflict data passed to the Naive UI dialog renderer. */
 export interface DuplicateDialogOptions {
   title: string
   incomingName: string
@@ -556,24 +522,6 @@ export interface DuplicateDialogOptions {
   existingIsDir: boolean
 }
 
-/** Duplicate file conflict dialog state. */
-export interface DuplicateDialogState extends DialogStateBase {
-  type: 'duplicate'
-  title: string
-  incomingName: string
-  incomingSize: number
-  existingName: string
-  existingSize: number
-  existingIsDir: boolean
-}
-
-/** Union of all native dialog states. */
-export type DialogState =
-  | PromptDialogState
-  | ConfirmDialogState
-  | AlertDialogState
-  | DuplicateDialogState
-
 /** Result returned by the duplicate conflict dialog. */
 export interface DuplicateDecision {
   action: 'skip' | 'replace' | 'rename'
@@ -581,43 +529,7 @@ export interface DuplicateDecision {
 }
 
 // -----------------------------------------------------------------------------
-// 5. Notification / Message Types
-// -----------------------------------------------------------------------------
-
-/** Notification type determines the color and icon. */
-export type NotificationType = 'success' | 'error' | 'warning' | 'info'
-
-/** Action render function for a notification (returns VNode). */
-export type NotificationAction = () => unknown
-
-/** A single notification managed by the notification composable. */
-export interface NotificationItem {
-  id: number
-  title: string
-  content: string
-  type: NotificationType
-  duration: number
-  keepAliveOnHover: boolean
-  action?: NotificationAction
-  visible: boolean
-  paused: boolean
-  _startTimer?: () => void
-  _stopTimer?: () => void
-}
-
-/** Message type (toast-style). */
-export type MessageType = 'success' | 'error' | 'warning' | 'info'
-
-/** A single message toast managed by the message composable. */
-export interface MessageItem {
-  id: number
-  content: string
-  type: MessageType
-  visible: boolean
-}
-
-// -----------------------------------------------------------------------------
-// 6. File Access Response
+// 5. File Access Response
 // -----------------------------------------------------------------------------
 
 /**
@@ -636,7 +548,7 @@ export interface FileAccessResponse {
 }
 
 // -----------------------------------------------------------------------------
-// 7. Service Worker Decrypt Metadata
+// 6. Service Worker Decrypt Metadata
 // -----------------------------------------------------------------------------
 
 /** Metadata passed to SW for registering a decrypt mapping. */
@@ -652,25 +564,7 @@ export interface DecryptMetadata {
 }
 
 // -----------------------------------------------------------------------------
-// 8. Message / Notification Extras
-// -----------------------------------------------------------------------------
-
-/** Handle returned by message/notification show functions for programmatic removal. */
-export interface MessageHandle {
-  destroy: () => void
-}
-
-/** Options accepted by notification show functions. */
-export interface NotificationOptions {
-  title: string
-  content: string
-  duration?: number
-  keepAliveOnHover?: boolean
-  action?: NotificationAction
-}
-
-// -----------------------------------------------------------------------------
-// 9. Dialog Extras
+// 7. Dialog Extras
 // -----------------------------------------------------------------------------
 
 /** Options for the confirm dialog (icon, button text). */
@@ -684,7 +578,7 @@ export interface ConfirmOptions {
 export type DuplicateDialogResult = DuplicateDecision
 
 // -----------------------------------------------------------------------------
-// 10. i18n Types
+// 8. i18n Types
 // -----------------------------------------------------------------------------
 
 /** Supported locale codes. */
@@ -697,7 +591,7 @@ export type MessageMap = Record<string, string>
 export type Messages = Record<Locale, MessageMap>
 
 // -----------------------------------------------------------------------------
-// 11. Workspace Sync Types
+// 9. Workspace Sync Types
 // -----------------------------------------------------------------------------
 
 /** A serialized window for workspace persistence/sync. */
@@ -729,17 +623,7 @@ export interface WorkspaceEvent {
 export type ViewerCallbackFn = (action: string, currentTime?: number) => void
 
 // -----------------------------------------------------------------------------
-// 12. CodeMirror Types
-// -----------------------------------------------------------------------------
-
-/** Callbacks for the CodeMirror editor composable. */
-export interface CodeMirrorCallbacks {
-  onSave?: () => void
-  onChange?: (content: string) => void
-}
-
-// -----------------------------------------------------------------------------
-// 13. File Icon Types
+// 12. File Icon Types
 // -----------------------------------------------------------------------------
 
 /** Supported icon type keys for the file icon mapping. */
@@ -767,30 +651,3 @@ export type IconType =
   | 'shell'
   | 'sql'
   | 'cpp'
-
-// -----------------------------------------------------------------------------
-// 14. Panel Resize Types
-// -----------------------------------------------------------------------------
-
-/** Size dimensions for tray panel resize. */
-export interface PanelSize {
-  width: number
-  height: number
-}
-
-// -----------------------------------------------------------------------------
-// 15. Touch Types
-// -----------------------------------------------------------------------------
-
-/** Options for useTouchHandlers. */
-export interface TouchHandlerOptions {
-  onTap?: (e: TouchEvent) => void
-  onLongPress?: (e: TouchEvent) => void
-}
-
-/** Options for useTouchDrag. */
-export interface TouchDragOptions {
-  onStart?: (x: number, y: number, e: TouchEvent) => void
-  onMove?: (x: number, y: number, e: TouchEvent) => void
-  onEnd?: (e: TouchEvent) => void
-}

@@ -1,5 +1,28 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import type { Component } from 'vue'
+import {
+  NBadge,
+  NAlert,
+  NBreadcrumb,
+  NBreadcrumbItem,
+  NButton,
+  NButtonGroup,
+  NDescriptions,
+  NDescriptionsItem,
+  NDropdown,
+  NDrawer,
+  NDrawerContent,
+  NEmpty,
+  NInput,
+  NMenu,
+  NPopover,
+  NResult,
+  NSelect,
+  NSpin,
+  NTag,
+} from 'naive-ui'
+import type { DropdownOption, InputInst, MenuOption } from 'naive-ui'
 import { useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import {
@@ -8,6 +31,7 @@ import {
   IconArrowRight,
   IconArrowUp,
   IconCheck,
+  IconCheckboxMultipleMarkedOutline,
   IconChevronDown,
   IconClose,
   IconContentCopy,
@@ -21,6 +45,7 @@ import {
   IconMagnify,
   IconPencilOutline,
   IconPlus,
+  IconProgressClock,
   IconRefresh,
   IconRestore,
   IconSortAscending,
@@ -32,7 +57,7 @@ import {
 import { getFileIcon } from '../composables/useFileIcon'
 import { useDevice } from '../composables/useDevice'
 import { useI18n } from '../composables/useI18n'
-import { useMessage } from '../composables/useMessage'
+import { useAppMessage } from '../ui/feedback'
 import { showConfirm, showPrompt } from '../composables/useNativeDialog'
 import api from '../composables/useApi'
 import { useAuthStore } from '../stores/auth'
@@ -41,6 +66,8 @@ import { usePendingOpsStore } from '../stores/pendingOps'
 import { useTasksStore } from '../stores/tasks'
 import { useUploadStore } from '../stores/upload'
 import type { FileListItem } from '../types'
+import AccountMenu from '../components/AccountMenu.vue'
+import ActivityCenter from '../components/ActivityCenter.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -49,12 +76,16 @@ const fs = useFileSystemStore()
 const upload = useUploadStore()
 const tasks = useTasksStore()
 const pendingOps = usePendingOpsStore()
-const { isMobile, isTouchInput } = useDevice()
+const { height: viewportHeight, isMobile, isTouchInput } = useDevice()
 const { t } = useI18n()
-const message = useMessage()
+const message = useAppMessage()
 
 const uploadInput = ref<HTMLInputElement | null>(null)
-const searchInput = ref<HTMLInputElement | null>(null)
+const searchInput = ref<InputInst | null>(null)
+const fileSurface = ref<HTMLDivElement | null>(null)
+const breadcrumbViewport = ref<HTMLDivElement | null>(null)
+const breadcrumbOverflowLeft = ref(false)
+const breadcrumbOverflowRight = ref(false)
 const searchText = ref('')
 const showAccount = ref(false)
 const showActivity = ref(false)
@@ -62,13 +93,43 @@ const showInspector = ref(false)
 const showThumbnails = ref(localStorage.getItem('domus_show_thumbnails') === '1')
 const detailsFile = ref<FileListItem | null>(null)
 const actionFile = ref<FileListItem | null>(null)
+const showActionMenu = ref(false)
+const actionMenuEpoch = ref(0)
 const actionMenuX = ref(0)
 const actionMenuY = ref(0)
-const createMenuOpen = ref(false)
 const draggingFiles = ref(false)
 let searchTimer: number | null = null
 let longPressTimer: number | null = null
 let suppressClickPath = ''
+let suppressSurfaceClick = false
+let suppressSurfaceClickTimer: number | null = null
+let rubberBandInitialSelection: string[] = []
+let bodyUserSelectBeforeRubberBand: string | null = null
+let breadcrumbResizeObserver: ResizeObserver | null = null
+
+const rubberBand = reactive({
+  tracking: false,
+  active: false,
+  pointerId: -1,
+  startClientX: 0,
+  startClientY: 0,
+  startX: 0,
+  startY: 0,
+  currentX: 0,
+  currentY: 0,
+  additive: false,
+})
+
+const rubberBandStyle = computed(() => {
+  const left = Math.min(rubberBand.startX, rubberBand.currentX)
+  const top = Math.min(rubberBand.startY, rubberBand.currentY)
+  return {
+    left: `${left}px`,
+    top: `${top}px`,
+    width: `${Math.abs(rubberBand.currentX - rubberBand.startX)}px`,
+    height: `${Math.abs(rubberBand.currentY - rubberBand.startY)}px`,
+  }
+})
 
 const homePath = '/'
 const isHome = computed(() => fs.currentPath === homePath && !fs.searchMode)
@@ -84,10 +145,16 @@ const directoryFiles = computed(() => fs.sortedFiles)
 const foldersCount = computed(() => directoryFiles.value.filter(file => file.is_dir).length)
 const filesCount = computed(() => directoryFiles.value.length - foldersCount.value)
 const activeTaskIDs = computed(() => new Set(upload.uploads.map(item => item.taskId).filter(Boolean)))
-const serverTasks = computed(() => tasks.tasks
+const serverTasks = computed(() => tasks.activeTasks
   .filter(task => task.type === 'upload' && !activeTaskIDs.value.has(task.task_id))
   .slice(0, 20))
 const activityCount = computed(() => upload.activeUploads.length + tasks.activeTasks.filter(task => !activeTaskIDs.value.has(task.task_id)).length + pendingOps.pendingCount)
+const mobileActivityDrawerHeight = computed(() => {
+  const maximum = Math.max(260, Math.min(560, Math.round(viewportHeight.value * 0.72)))
+  if (activityCount.value === 0) return Math.min(304, maximum)
+  return Math.min(maximum, 210 + Math.min(activityCount.value, 3) * 104)
+})
+const mobileActivityListHeight = computed(() => `${Math.max(160, mobileActivityDrawerHeight.value - 108)}px`)
 const hasClipboard = computed(() => fs.clipboard.items.length > 0)
 const selectionCount = computed(() => fs.selectedFiles.length)
 const selectedItem = computed(() => {
@@ -103,6 +170,65 @@ const activityLabel = computed(() => {
   return t('files.activity_idle')
 })
 
+function renderIcon(icon: Component, size = 18): () => ReturnType<typeof h> {
+  return () => h(icon, { width: size, height: size })
+}
+
+const placeOptions = computed<MenuOption[]>(() => [
+  {
+    key: 'files',
+    label: t('files.my_files'),
+    icon: renderIcon(IconFolderHome, 21),
+  },
+  {
+    key: 'trash',
+    label: t('places.trash'),
+    icon: renderIcon(IconDeleteOutline, 21),
+  },
+])
+
+const sortOptions = computed(() => [
+  { label: t('toolbar.sort_name'), value: 'name' },
+  { label: t('toolbar.sort_date'), value: 'date' },
+  { label: t('toolbar.sort_size'), value: 'size' },
+])
+
+const createOptions = computed<DropdownOption[]>(() => [
+  { key: 'upload', label: t('toolbar.upload'), icon: renderIcon(IconUpload) },
+  { key: 'folder', label: t('toolbar.new_folder'), icon: renderIcon(IconFolderPlusOutline) },
+])
+
+const actionMenuOptions = computed<DropdownOption[]>(() => {
+  const file = actionFile.value
+  if (!file) return []
+  const options: DropdownOption[] = [
+    { key: 'open', label: t('menu.open'), icon: renderIcon(IconArrowRight) },
+  ]
+  if (!file.is_dir) {
+    options.push({ key: 'download', label: t('menu.download'), icon: renderIcon(IconDownload) })
+  }
+  options.push(
+    { key: 'details', label: t('menu.details'), icon: renderIcon(IconInformationOutline) },
+    { key: 'main-divider', type: 'divider' },
+  )
+  if (!fs.isTrash) {
+    options.push(
+      { key: 'copy', label: t('menu.copy'), icon: renderIcon(IconContentCopy) },
+      { key: 'cut', label: t('menu.cut'), icon: renderIcon(IconContentCut) },
+      { key: 'rename', label: t('menu.rename'), icon: renderIcon(IconPencilOutline) },
+    )
+  } else {
+    options.push({ key: 'restore', label: t('menu.restore'), icon: renderIcon(IconRestore) })
+  }
+  options.push({
+    key: 'delete',
+    label: fs.isTrash ? t('menu.permanent_delete') : t('menu.delete'),
+    icon: renderIcon(IconDeleteOutline),
+    props: { class: 'domus-danger-option' },
+  })
+  return options
+})
+
 onMounted(async () => {
   if (fs.tabs.length === 0) {
     fs.init()
@@ -116,19 +242,34 @@ onMounted(async () => {
     tasks.fetchTasks(),
   ])
   window.addEventListener('keydown', handleKeyboard)
+  await nextTick()
+  if (breadcrumbViewport.value) {
+    breadcrumbResizeObserver = new ResizeObserver(updateBreadcrumbOverflow)
+    breadcrumbResizeObserver.observe(breadcrumbViewport.value)
+  }
+  revealCurrentBreadcrumb()
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleKeyboard)
   if (searchTimer !== null) window.clearTimeout(searchTimer)
   if (longPressTimer !== null) window.clearTimeout(longPressTimer)
+  if (suppressSurfaceClickTimer !== null) window.clearTimeout(suppressSurfaceClickTimer)
+  breadcrumbResizeObserver?.disconnect()
+  if (bodyUserSelectBeforeRubberBand !== null) {
+    document.body.style.userSelect = bodyUserSelectBeforeRubberBand
+    bodyUserSelectBeforeRubberBand = null
+  }
 })
 
 watch(() => fs.currentPath, (path) => {
+  revealCurrentBreadcrumb()
   if (!path || fs.searchMode) return
   const queryPath = typeof route.query.path === 'string' ? route.query.path : ''
   if (queryPath !== path) void router.replace({ path: '/files', query: path === homePath ? {} : { path } })
 })
+
+watch(isMobile, () => revealCurrentBreadcrumb())
 
 watch(selectedItem, (file) => {
   if (showInspector.value) detailsFile.value = file
@@ -136,12 +277,33 @@ watch(selectedItem, (file) => {
 
 function closeFloatingPanels(): void {
   showAccount.value = false
+  showActivity.value = false
+  showActionMenu.value = false
   actionFile.value = null
-  createMenuOpen.value = false
 }
 
-function toggleThumbnailDisplay(): void {
-  showThumbnails.value = !showThumbnails.value
+function updateBreadcrumbOverflow(): void {
+  const viewport = breadcrumbViewport.value
+  if (!viewport || !isMobile.value) {
+    breadcrumbOverflowLeft.value = false
+    breadcrumbOverflowRight.value = false
+    return
+  }
+  breadcrumbOverflowLeft.value = viewport.scrollLeft > 2
+  breadcrumbOverflowRight.value = viewport.scrollLeft + viewport.clientWidth < viewport.scrollWidth - 2
+}
+
+function revealCurrentBreadcrumb(): void {
+  void nextTick(() => {
+    const viewport = breadcrumbViewport.value
+    if (!viewport) return
+    if (isMobile.value) viewport.scrollLeft = viewport.scrollWidth
+    updateBreadcrumbOverflow()
+  })
+}
+
+function setThumbnailDisplay(value: boolean): void {
+  showThumbnails.value = value
   localStorage.setItem('domus_show_thumbnails', showThumbnails.value ? '1' : '0')
 }
 
@@ -152,18 +314,13 @@ async function goTo(path: string): Promise<void> {
   await fs.navigate(path)
 }
 
-function parentPath(path: string): string {
-  const trimmed = path.replace(/\/$/, '')
-  const index = trimmed.lastIndexOf('/')
-  return index <= 0 ? '/' : `${trimmed.slice(0, index)}/`
-}
-
 async function openItem(file: FileListItem): Promise<void> {
   closeFloatingPanels()
   if (file.is_dir) {
     await goTo(file.path)
     return
   }
+  fs.clearSelection()
   await router.push({
     path: '/preview',
     query: { path: file.path, name: file.name, from: route.fullPath },
@@ -175,16 +332,46 @@ function handleItemClick(file: FileListItem, event: MouseEvent): void {
     suppressClickPath = ''
     return
   }
-  if (fs.searchMode || isMobile.value || isTouchInput.value) {
+  if (fs.searchMode) {
+    void openItem(file)
+    return
+  }
+  if (isMobile.value || isTouchInput.value) {
     if (fs.selectMode) fs.toggleSelect(file.path)
     else void openItem(file)
     return
   }
+
+  if (fs.selectMode) {
+    if (event.shiftKey) fs.selectFile(file.path, event)
+    else fs.toggleSelect(file.path)
+    return
+  }
+
+  if (event.ctrlKey || event.metaKey || event.shiftKey) {
+    fs.enterSelectMode()
+    if (event.shiftKey) fs.selectFile(file.path, event)
+    else fs.toggleSelect(file.path)
+    return
+  }
+
   fs.selectFile(file.path, event)
+}
+
+function enterSelectMode(path?: string): void {
+  closeFloatingPanels()
+  fs.enterSelectMode(path)
+}
+
+function toggleSelectMode(): void {
+  closeFloatingPanels()
+  if (fs.selectMode) fs.exitSelectMode()
+  else fs.enterSelectMode(selectedItem.value?.path)
 }
 
 function beginLongPress(file: FileListItem, event: PointerEvent): void {
   if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return
+  if (fs.selectMode) return
   if (longPressTimer !== null) window.clearTimeout(longPressTimer)
   longPressTimer = window.setTimeout(() => {
     suppressClickPath = file.path
@@ -198,16 +385,186 @@ function endLongPress(): void {
   longPressTimer = null
 }
 
+function rubberBandPoint(event: PointerEvent): { x: number; y: number } | null {
+  const surface = fileSurface.value
+  if (!surface) return null
+  const rect = surface.getBoundingClientRect()
+  return {
+    x: Math.max(0, Math.min(surface.scrollWidth, event.clientX - rect.left + surface.scrollLeft)),
+    y: Math.max(0, Math.min(surface.scrollHeight, event.clientY - rect.top + surface.scrollTop)),
+  }
+}
+
+function beginRubberBand(event: PointerEvent): void {
+  if (
+    event.pointerType !== 'mouse'
+    || event.button !== 0
+    || isMobile.value
+    || fs.searchMode
+    || fs.loading
+    || !!fs.error
+    || directoryFiles.value.length === 0
+    || draggingFiles.value
+    || rubberBand.tracking
+  ) return
+
+  const target = event.target as HTMLElement | null
+  if (target?.closest('.file-item, .file-list__head, button, a, input, textarea, select, [contenteditable="true"]')) return
+
+  const surface = fileSurface.value
+  const point = rubberBandPoint(event)
+  if (!surface || !point) return
+  const surfaceRect = surface.getBoundingClientRect()
+  const scrollbarWidth = surface.offsetWidth - surface.clientWidth
+  const scrollbarHeight = surface.offsetHeight - surface.clientHeight
+  if (
+    (scrollbarWidth > 0 && event.clientX >= surfaceRect.right - scrollbarWidth)
+    || (scrollbarHeight > 0 && event.clientY >= surfaceRect.bottom - scrollbarHeight)
+  ) return
+
+  closeFloatingPanels()
+  rubberBand.tracking = true
+  rubberBand.active = false
+  rubberBand.pointerId = event.pointerId
+  rubberBand.startClientX = event.clientX
+  rubberBand.startClientY = event.clientY
+  rubberBand.startX = point.x
+  rubberBand.startY = point.y
+  rubberBand.currentX = point.x
+  rubberBand.currentY = point.y
+  rubberBand.additive = event.ctrlKey || event.metaKey
+  rubberBandInitialSelection = [...fs.selectedFiles]
+  surface.setPointerCapture(event.pointerId)
+}
+
+function updateRubberBandSelection(): void {
+  const surface = fileSurface.value
+  if (!surface) return
+  const surfaceRect = surface.getBoundingClientRect()
+  const bandLeft = Math.min(rubberBand.startX, rubberBand.currentX)
+  const bandTop = Math.min(rubberBand.startY, rubberBand.currentY)
+  const bandRight = Math.max(rubberBand.startX, rubberBand.currentX)
+  const bandBottom = Math.max(rubberBand.startY, rubberBand.currentY)
+  const hitPaths: string[] = []
+
+  for (const item of surface.querySelectorAll<HTMLElement>('.file-item[data-path]')) {
+    const itemRect = item.getBoundingClientRect()
+    const itemLeft = itemRect.left - surfaceRect.left + surface.scrollLeft
+    const itemTop = itemRect.top - surfaceRect.top + surface.scrollTop
+    const itemRight = itemLeft + itemRect.width
+    const itemBottom = itemTop + itemRect.height
+    if (bandLeft < itemRight && bandRight > itemLeft && bandTop < itemBottom && bandBottom > itemTop) {
+      const path = item.dataset.path
+      if (path) hitPaths.push(path)
+    }
+  }
+
+  fs.selectedFiles = rubberBand.additive
+    ? [...new Set([...rubberBandInitialSelection, ...hitPaths])]
+    : hitPaths
+  fs.enterSelectMode(fs.selectedFiles[fs.selectedFiles.length - 1])
+}
+
+function moveRubberBand(event: PointerEvent): void {
+  if (!rubberBand.tracking || event.pointerId !== rubberBand.pointerId) return
+  const point = rubberBandPoint(event)
+  if (!point) return
+
+  if (!rubberBand.active) {
+    const distance = Math.max(
+      Math.abs(event.clientX - rubberBand.startClientX),
+      Math.abs(event.clientY - rubberBand.startClientY),
+    )
+    if (distance < 5) return
+    rubberBand.active = true
+    bodyUserSelectBeforeRubberBand = document.body.style.userSelect
+    document.body.style.userSelect = 'none'
+  }
+
+  event.preventDefault()
+  rubberBand.currentX = point.x
+  rubberBand.currentY = point.y
+  updateRubberBandSelection()
+}
+
+function endRubberBand(event: PointerEvent): void {
+  if (!rubberBand.tracking || event.pointerId !== rubberBand.pointerId) return
+  const surface = fileSurface.value
+  const used = rubberBand.active
+  if (surface?.hasPointerCapture(event.pointerId)) surface.releasePointerCapture(event.pointerId)
+  rubberBand.tracking = false
+  rubberBand.active = false
+  rubberBand.pointerId = -1
+  if (bodyUserSelectBeforeRubberBand !== null) {
+    document.body.style.userSelect = bodyUserSelectBeforeRubberBand
+    bodyUserSelectBeforeRubberBand = null
+  }
+
+  if (!used) return
+  if (fs.selectedFiles.length === 0) fs.exitSelectMode()
+  suppressSurfaceClick = true
+  if (suppressSurfaceClickTimer !== null) window.clearTimeout(suppressSurfaceClickTimer)
+  suppressSurfaceClickTimer = window.setTimeout(() => {
+    suppressSurfaceClick = false
+    suppressSurfaceClickTimer = null
+  }, 0)
+}
+
+function handleSurfaceClick(): void {
+  if (suppressSurfaceClick) {
+    suppressSurfaceClick = false
+    if (suppressSurfaceClickTimer !== null) window.clearTimeout(suppressSurfaceClickTimer)
+    suppressSurfaceClickTimer = null
+    return
+  }
+  fs.exitSelectMode()
+}
+
 function openActionMenu(file: FileListItem, event?: MouseEvent): void {
+  showActionMenu.value = false
+  actionMenuEpoch.value++
   if (!fs.searchMode && !fs.selectedFiles.includes(file.path)) fs.selectedFiles = [file.path]
   actionFile.value = file
   detailsFile.value = file
-  createMenuOpen.value = false
-  showAccount.value = false
   if (event) {
-    actionMenuX.value = Math.min(event.clientX, window.innerWidth - 232)
-    actionMenuY.value = Math.min(event.clientY, window.innerHeight - 360)
+    actionMenuX.value = event.clientX
+    actionMenuY.value = event.clientY
   }
+  // A prior teleported menu may emit clickoutside during this same pointer event.
+  // Reopen after Vue has retired that overlay so repeated actions use this file.
+  void nextTick(() => {
+    showActionMenu.value = true
+  })
+}
+
+async function handleActionSelect(key: string | number): Promise<void> {
+  const file = actionFile.value
+  if (!file) return
+  showActionMenu.value = false
+  switch (key) {
+    case 'open': await openItem(file); break
+    case 'download': await downloadItem(file); break
+    case 'details': showDetails(file); break
+    case 'copy': setClipboard(file, 'copy'); break
+    case 'cut': setClipboard(file, 'cut'); break
+    case 'rename': await renameItem(file); break
+    case 'restore': await restoreItem(file); break
+    case 'delete': await deleteItem(file); break
+  }
+}
+
+function handleCreateSelect(key: string | number): void {
+  if (key === 'upload') triggerUpload()
+  if (key === 'folder') void fs.createFolder()
+}
+
+function openAdmin(): void {
+  showAccount.value = false
+  void router.push('/admin')
+}
+
+function dropdownNodeProps(): { role: string } {
+  return { role: 'menuitem' }
 }
 
 function showDetails(file: FileListItem): void {
@@ -332,7 +689,7 @@ async function logout(): Promise<void> {
 function handleKeyboard(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null
   const typing = target?.matches('input, textarea, [contenteditable="true"]')
-  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+  if ((event.ctrlKey || event.metaKey) && ['f', 'k'].includes(event.key.toLowerCase())) {
     event.preventDefault()
     searchInput.value?.focus()
     return
@@ -407,34 +764,49 @@ function phaseLabel(phase?: string): string {
         </div>
       </div>
 
-      <nav class="place-list">
-        <button class="place-item" :class="{ active: activePlace === 'files' }" data-place="files" @click.stop="choosePlace('files')">
-          <IconFolderHome width="21" height="21" />
-          <span>{{ t('files.my_files') }}</span>
-        </button>
-        <button class="place-item" :class="{ active: activePlace === 'trash' }" data-place="trash" @click.stop="choosePlace('trash')">
-          <IconDeleteOutline width="21" height="21" />
-          <span>{{ t('places.trash') }}</span>
-        </button>
-      </nav>
+      <NMenu
+        class="place-list"
+        :value="activePlace"
+        :options="placeOptions"
+        :indent="12"
+        :root-indent="8"
+        @update:value="value => choosePlace(value as 'files' | 'trash')"
+      />
 
-      <div class="security-note">
-        <div class="security-note__icon"><IconCheck width="16" height="16" /></div>
-        <div>
-          <strong>{{ t('files.encrypted_title') }}</strong>
-          <span>{{ t('files.encrypted_body') }}</span>
-        </div>
-      </div>
+      <NAlert class="security-note" type="success" :title="t('files.encrypted_title')">
+        {{ t('files.encrypted_body') }}
+      </NAlert>
 
-      <button class="sidebar-account" @click.stop="showAccount = !showAccount; showActivity = false">
-        <img v-if="auth.user?.avatar_url" :src="auth.user.avatar_url" alt="" />
-        <IconAccountCircle v-else width="34" height="34" />
-        <span>
-          <strong>{{ auth.user?.display_name || auth.username }}</strong>
-          <small>@{{ auth.username }}</small>
-        </span>
-        <IconChevronDown width="18" height="18" />
-      </button>
+      <NPopover
+        :show="showAccount && !isMobile"
+        trigger="click"
+        placement="right-end"
+        :show-arrow="false"
+        @update:show="showAccount = $event"
+      >
+        <template #trigger>
+        <NButton quaternary class="sidebar-account" @click.stop="showActivity = false">
+          <img v-if="auth.user?.avatar_url" :src="auth.user.avatar_url" alt="" />
+          <IconAccountCircle v-else width="34" height="34" />
+          <span>
+            <strong>{{ auth.user?.display_name || auth.username }}</strong>
+            <small>@{{ auth.username }}</small>
+          </span>
+          <IconChevronDown width="18" height="18" />
+        </NButton>
+        </template>
+        <AccountMenu
+          :avatar-url="auth.user?.avatar_url"
+          :display-name="auth.user?.display_name || auth.username"
+          :username="auth.username"
+          :role="auth.user?.role"
+          :root="auth.isRoot"
+          :show-thumbnails="showThumbnails"
+          @update:show-thumbnails="setThumbnailDisplay"
+          @admin="openAdmin"
+          @logout="logout"
+        />
+      </NPopover>
     </aside>
 
     <main class="file-main">
@@ -443,123 +815,277 @@ function phaseLabel(phase?: string): string {
           <div class="brand-mark">D</div>
           <strong>DOMUS</strong>
         </div>
-        <label class="global-search">
-          <IconMagnify width="20" height="20" />
-          <input
-            ref="searchInput"
-            v-model="searchText"
-            type="search"
-            :placeholder="t('files.search_placeholder')"
-            aria-label="Search files"
-            @input="runSearch"
-          />
-          <button v-if="searchText" type="button" :aria-label="t('files.clear_search')" @click="clearSearch"><IconClose width="17" height="17" /></button>
-          <kbd>Ctrl K</kbd>
-        </label>
+        <NInput
+          ref="searchInput"
+          v-model:value="searchText"
+          class="global-search"
+          type="text"
+          clearable
+          :placeholder="t('files.search_placeholder')"
+          :aria-label="t('files.search_placeholder')"
+          @update:value="runSearch"
+          @clear="clearSearch"
+        >
+          <template #prefix><IconMagnify width="20" height="20" /></template>
+          <template #suffix><kbd>Ctrl K</kbd></template>
+        </NInput>
         <div class="header-actions">
-          <button class="activity-button" :aria-label="activityLabel" @click.stop="showActivity = !showActivity; showAccount = false">
-            <IconUpload width="20" height="20" />
-            <span v-if="activityCount" class="activity-badge">{{ activityCount }}</span>
-          </button>
-          <button class="mobile-account" @click.stop="showAccount = !showAccount; showActivity = false">
-            <img v-if="auth.user?.avatar_url" :src="auth.user.avatar_url" alt="" />
-            <IconAccountCircle v-else width="34" height="34" />
-          </button>
+          <NPopover
+            v-if="!isMobile"
+            :show="showActivity"
+            trigger="manual"
+            placement="bottom-end"
+            :show-arrow="false"
+            :style="{ width: '360px' }"
+            @clickoutside="showActivity = false"
+          >
+            <template #trigger>
+              <NBadge :value="activityCount" :show="activityCount > 0" :max="99">
+                <NButton circle class="activity-button" :aria-label="t('files.activity')" :title="t('files.activity')" @click.stop="showAccount = false; showActivity = !showActivity">
+                  <template #icon><IconProgressClock class="activity-center-icon" width="20" height="20" /></template>
+                </NButton>
+              </NBadge>
+            </template>
+            <ActivityCenter
+              :uploads="upload.uploads"
+              :server-tasks="serverTasks"
+              :pending-count="pendingOps.pendingCount"
+              :activity-label="activityLabel"
+              @cancel-upload="upload.cancelUpload"
+            />
+          </NPopover>
+          <NBadge v-else :value="activityCount" :show="activityCount > 0" :max="99">
+            <NButton circle class="activity-button" :aria-label="t('files.activity')" :title="t('files.activity')" @click.stop="showAccount = false; showActivity = !showActivity">
+              <template #icon><IconProgressClock class="activity-center-icon" width="20" height="20" /></template>
+            </NButton>
+          </NBadge>
+          <NPopover
+            :show="showAccount && isMobile"
+            trigger="click"
+            placement="bottom-end"
+            :show-arrow="false"
+            @update:show="showAccount = $event"
+          >
+            <template #trigger>
+            <NButton quaternary circle class="mobile-account" @click.stop="showActivity = false">
+              <img v-if="auth.user?.avatar_url" :src="auth.user.avatar_url" alt="" />
+              <IconAccountCircle v-else width="34" height="34" />
+            </NButton>
+            </template>
+            <AccountMenu
+              :avatar-url="auth.user?.avatar_url"
+              :display-name="auth.user?.display_name || auth.username"
+              :username="auth.username"
+              :role="auth.user?.role"
+              :root="auth.isRoot"
+              :show-thumbnails="showThumbnails"
+              @update:show-thumbnails="setThumbnailDisplay"
+              @admin="openAdmin"
+              @logout="logout"
+            />
+          </NPopover>
         </div>
       </header>
 
       <section class="file-workspace">
         <div class="location-toolbar">
-          <div class="history-buttons">
-            <button :disabled="!fs.canGoBack" :title="t('toolbar.back')" @click="fs.goBack()"><IconArrowLeft /></button>
-            <button :disabled="!fs.canGoForward" :title="t('toolbar.forward')" @click="fs.goForward()"><IconArrowRight /></button>
-            <button :disabled="!fs.canGoUp" :title="t('toolbar.up')" @click="fs.goUp()"><IconArrowUp /></button>
-          </div>
-          <div class="breadcrumbs" aria-label="Current path">
-            <button @click="goTo(homePath)">{{ t('files.my_files') }}</button>
-            <template v-for="segment in displaySegments" :key="segment.path">
-              <span>/</span>
-              <button @click="goTo(segment.path)">{{ segment.name }}</button>
-            </template>
-            <template v-if="fs.isTrash">
-              <button @click="goTo('/__trash__/')">{{ t('places.trash') }}</button>
-            </template>
+          <NButtonGroup class="history-buttons">
+            <NButton quaternary size="small" :disabled="!fs.canGoBack" :title="t('toolbar.back')" @click="fs.goBack()">
+              <template #icon><IconArrowLeft /></template>
+            </NButton>
+            <NButton quaternary size="small" :disabled="!fs.canGoForward" :title="t('toolbar.forward')" @click="fs.goForward()">
+              <template #icon><IconArrowRight /></template>
+            </NButton>
+            <NButton quaternary size="small" :disabled="!fs.canGoUp" :title="t('toolbar.up')" @click="fs.goUp()">
+              <template #icon><IconArrowUp /></template>
+            </NButton>
+          </NButtonGroup>
+          <div
+            ref="breadcrumbViewport"
+            class="breadcrumbs-viewport"
+            :class="{
+              'is-clipped-left': breadcrumbOverflowLeft,
+              'is-clipped-right': breadcrumbOverflowRight,
+            }"
+            @scroll.passive="updateBreadcrumbOverflow"
+          >
+            <NBreadcrumb class="breadcrumbs" :aria-label="t('files.location')">
+              <NBreadcrumbItem>
+                <NButton text size="tiny" @click="goTo(homePath)">{{ t('files.my_files') }}</NButton>
+              </NBreadcrumbItem>
+              <NBreadcrumbItem v-for="segment in displaySegments" :key="segment.path">
+                <NButton text size="tiny" @click="goTo(segment.path)">{{ segment.name }}</NButton>
+              </NBreadcrumbItem>
+              <NBreadcrumbItem v-if="fs.isTrash">
+                <NButton text size="tiny" @click="goTo('/__trash__/')">{{ t('places.trash') }}</NButton>
+              </NBreadcrumbItem>
+            </NBreadcrumb>
           </div>
           <div class="primary-actions">
-            <button v-if="!fs.isTrash && !fs.searchMode" class="quiet-action" @click.stop="fs.createFolder()">
-              <IconFolderPlusOutline /> <span>{{ t('toolbar.new_folder') }}</span>
-            </button>
-            <button v-if="!fs.isTrash && !fs.searchMode" class="primary-action" @click.stop="triggerUpload">
-              <IconUpload /> <span>{{ t('toolbar.upload') }}</span>
-            </button>
-            <button v-if="fs.isTrash" class="danger-action" @click="fs.emptyTrash()">
-              <IconDeleteOutline /> <span>{{ t('menu.empty_trash') }}</span>
-            </button>
+            <NButton
+              v-if="!fs.isTrash && !fs.searchMode"
+              size="small"
+              :aria-label="t('toolbar.new_folder')"
+              :title="t('toolbar.new_folder')"
+              @click.stop="fs.createFolder()"
+            >
+              <template #icon><IconFolderPlusOutline /></template>
+              <span class="action-label">{{ t('toolbar.new_folder') }}</span>
+            </NButton>
+            <NButton
+              v-if="!fs.isTrash && !fs.searchMode"
+              type="primary"
+              size="small"
+              :aria-label="t('toolbar.upload')"
+              :title="t('toolbar.upload')"
+              @click.stop="triggerUpload"
+            >
+              <template #icon><IconUpload /></template>
+              <span class="action-label">{{ t('toolbar.upload') }}</span>
+            </NButton>
+            <NButton
+              v-if="fs.isTrash"
+              type="error"
+              secondary
+              size="small"
+              :aria-label="t('menu.empty_trash')"
+              :title="t('menu.empty_trash')"
+              @click="fs.emptyTrash()"
+            >
+              <template #icon><IconDeleteOutline /></template>
+              <span class="action-label">{{ t('menu.empty_trash') }}</span>
+            </NButton>
+            <NButton
+              v-if="!fs.searchMode && directoryFiles.length"
+              size="small"
+              class="select-mode-toggle"
+              :type="fs.selectMode ? 'primary' : 'default'"
+              :secondary="fs.selectMode"
+              :aria-label="fs.selectMode ? t('files.clear_selection') : t('files.select_multiple')"
+              :aria-pressed="fs.selectMode"
+              :title="fs.selectMode ? t('files.clear_selection') : t('files.select_multiple')"
+              @click.stop="toggleSelectMode"
+            >
+              <template #icon><IconCheckboxMultipleMarkedOutline /></template>
+              <span class="action-label">{{ t('files.select_multiple') }}</span>
+            </NButton>
           </div>
+          <NButton
+            v-if="!fs.searchMode && !selectionCount && !fs.selectMode && directoryFiles.length"
+            quaternary
+            size="small"
+            class="mobile-select-entry"
+            @click.stop="enterSelectMode()"
+          >
+            <template #icon><IconCheckboxMultipleMarkedOutline /></template>
+            {{ t('files.select_multiple') }}
+          </NButton>
         </div>
 
         <div class="content-heading">
           <div>
             <div class="eyebrow">{{ fs.searchMode ? t('files.searching_for', { query: searchText }) : t('files.location') }}</div>
             <h1>{{ currentTitle }}</h1>
-            <p v-if="!fs.loading">{{ t('files.item_summary', { folders: foldersCount, files: filesCount }) }}</p>
+            <p v-if="!fs.loading">
+              {{ fs.selectMode && isMobile ? t('files.selection_count', { n: selectionCount }) : t('files.item_summary', { folders: foldersCount, files: filesCount }) }}
+            </p>
           </div>
-          <div class="view-controls">
-            <label>
+          <div v-if="!isMobile && !fs.searchMode && (selectionCount || fs.selectMode)" class="selection-controls">
+            <span class="selection-count">{{ t('files.selection_count', { n: selectionCount }) }}</span>
+            <NButton v-if="selectionCount === 1" quaternary size="small" @click="openSelected">
+              <template #icon><IconArrowRight /></template><span class="action-label">{{ t('menu.open') }}</span>
+            </NButton>
+            <NButton quaternary size="small" :disabled="selectionCount === directoryFiles.length" @click="fs.selectAll()">
+              <template #icon><IconCheckboxMultipleMarkedOutline /></template><span class="action-label">{{ t('menu.select_all') }}</span>
+            </NButton>
+            <NButton quaternary size="small" :disabled="!selectionCount" @click="fs.copySelected(); message.success(t('files.copied'))">
+              <template #icon><IconContentCopy /></template><span class="action-label">{{ t('menu.copy') }}</span>
+            </NButton>
+            <NButton v-if="!fs.isTrash" quaternary size="small" :disabled="!selectionCount" @click="fs.cutSelected(); message.success(t('files.cut'))">
+              <template #icon><IconContentCut /></template><span class="action-label">{{ t('menu.cut') }}</span>
+            </NButton>
+            <NButton v-else quaternary size="small" :disabled="!selectionCount" @click="fs.restoreSelected()">
+              <template #icon><IconRestore /></template><span class="action-label">{{ t('menu.restore') }}</span>
+            </NButton>
+            <NButton v-if="selectionCount === 1" quaternary size="small" @click="showDetails(selectedItem!)">
+              <template #icon><IconInformationOutline /></template><span class="action-label">{{ t('menu.details') }}</span>
+            </NButton>
+            <NButton quaternary type="error" size="small" :disabled="!selectionCount" @click="fs.deleteSelected()">
+              <template #icon><IconDeleteOutline /></template><span class="action-label">{{ fs.isTrash ? t('menu.permanent_delete') : t('menu.delete') }}</span>
+            </NButton>
+            <NButton quaternary circle size="small" :aria-label="t('files.clear_selection')" @click="fs.exitSelectMode()">
+              <template #icon><IconClose /></template>
+            </NButton>
+          </div>
+          <div v-else-if="!fs.selectMode" class="view-controls">
+            <div class="sort-control">
               <span>{{ t('toolbar.sort') }}</span>
-              <select v-model="fs.sortBy">
-                <option value="name">{{ t('toolbar.sort_name') }}</option>
-                <option value="date">{{ t('toolbar.sort_date') }}</option>
-                <option value="size">{{ t('toolbar.sort_size') }}</option>
-              </select>
-            </label>
-            <button :title="fs.sortOrder === 'asc' ? t('files.sort_ascending') : t('files.sort_descending')" @click="toggleSortOrder">
-              <IconSortAscending v-if="fs.sortOrder === 'asc'" />
-              <IconSortDescending v-else />
-            </button>
-            <div class="view-switch" role="group" aria-label="View mode">
-              <button :class="{ active: fs.viewMode === 'icons' }" :title="t('toolbar.view_icons')" @click="fs.viewMode = 'icons'"><IconViewGridOutline /></button>
-              <button :class="{ active: fs.viewMode !== 'icons' }" :title="t('toolbar.view_details')" @click="fs.viewMode = 'list'"><IconViewListOutline /></button>
+              <NSelect v-model:value="fs.sortBy" size="small" :options="sortOptions" :consistent-menu-width="false" />
             </div>
-            <button :title="t('toolbar.refresh')" @click="fs.refresh()"><IconRefresh /></button>
+            <NButton quaternary circle size="small" class="sort-order-button" :title="fs.sortOrder === 'asc' ? t('files.sort_ascending') : t('files.sort_descending')" @click="toggleSortOrder">
+              <template #icon>
+                <IconSortAscending v-if="fs.sortOrder === 'asc'" />
+                <IconSortDescending v-else />
+              </template>
+            </NButton>
+            <NButtonGroup class="view-switch" role="group" aria-label="View mode">
+              <NButton :type="fs.viewMode === 'icons' ? 'primary' : 'default'" :secondary="fs.viewMode === 'icons'" size="small" :title="t('toolbar.view_icons')" @click="fs.viewMode = 'icons'">
+                <template #icon><IconViewGridOutline /></template>
+              </NButton>
+              <NButton :type="fs.viewMode !== 'icons' ? 'primary' : 'default'" :secondary="fs.viewMode !== 'icons'" size="small" :title="t('toolbar.view_details')" @click="fs.viewMode = 'list'">
+                <template #icon><IconViewListOutline /></template>
+              </NButton>
+            </NButtonGroup>
+            <NButton quaternary circle size="small" class="refresh-button" :title="t('toolbar.refresh')" @click="fs.refresh()">
+              <template #icon><IconRefresh /></template>
+            </NButton>
           </div>
         </div>
 
-        <div v-if="selectionCount && !fs.searchMode" class="selection-toolbar">
-          <strong>{{ t('info.items_selected', { n: selectionCount }) }}</strong>
-          <div>
-            <button v-if="selectionCount === 1" @click="openSelected"><IconArrowRight />{{ t('menu.open') }}</button>
-            <button @click="fs.copySelected(); message.success(t('files.copied'))"><IconContentCopy />{{ t('menu.copy') }}</button>
-            <button v-if="!fs.isTrash" @click="fs.cutSelected(); message.success(t('files.cut'))"><IconContentCut />{{ t('menu.cut') }}</button>
-            <button v-if="fs.isTrash" @click="fs.restoreSelected()"><IconRestore />{{ t('menu.restore') }}</button>
-            <button v-if="selectionCount === 1" @click="showDetails(selectedItem!)"><IconInformationOutline />{{ t('menu.details') }}</button>
-            <button class="danger" @click="fs.deleteSelected()"><IconDeleteOutline />{{ fs.isTrash ? t('menu.permanent_delete') : t('menu.delete') }}</button>
-            <button class="icon-only" :aria-label="t('files.clear_selection')" @click="fs.exitSelectMode(); fs.clearSelection()"><IconClose /></button>
+        <NAlert v-if="hasClipboard && !fs.isTrash && !fs.searchMode" class="clipboard-banner" type="info" :show-icon="false">
+          <div class="clipboard-banner__content">
+            <span>{{ t('files.clipboard_ready', { n: fs.clipboard.items.length }) }}</span>
+            <NButton text type="primary" size="small" @click="fs.paste()">{{ t('menu.paste') }}</NButton>
+            <NButton text circle size="small" class="icon-only" @click="fs.clipboard = { items: [], mode: null }">
+              <template #icon><IconClose /></template>
+            </NButton>
           </div>
-        </div>
+        </NAlert>
 
-        <div v-if="hasClipboard && !fs.isTrash && !fs.searchMode" class="clipboard-banner">
-          <span>{{ t('files.clipboard_ready', { n: fs.clipboard.items.length }) }}</span>
-          <button @click="fs.paste()">{{ t('menu.paste') }}</button>
-          <button class="icon-only" @click="fs.clipboard = { items: [], mode: null }"><IconClose /></button>
-        </div>
-
-        <div class="file-surface" :class="{ 'is-grid': fs.viewMode === 'icons' }" @click.self="fs.clearSelection()">
+        <div
+          ref="fileSurface"
+          class="file-surface"
+          :class="{
+            'is-grid': fs.viewMode === 'icons',
+            'selection-mode': fs.selectMode,
+            'rubber-banding': rubberBand.active,
+          }"
+          @click="handleSurfaceClick"
+          @pointerdown="beginRubberBand"
+          @pointermove="moveRubberBand"
+          @pointerup="endRubberBand"
+          @pointercancel="endRubberBand"
+        >
           <div v-if="fs.loading || fs.searchLoading" class="surface-state" data-state="loading">
-            <div class="loading-orbit"><span /></div>
+            <NSpin size="large" />
             <strong>{{ fs.searchMode ? t('files.searching') : t('files.loading') }}</strong>
           </div>
           <div v-else-if="fs.error" class="surface-state" data-state="error">
-            <IconInformationOutline width="34" height="34" />
-            <strong>{{ t('files.load_failed') }}</strong>
-            <span>{{ fs.error }}</span>
-            <button @click="fs.refresh()">{{ t('toolbar.refresh') }}</button>
+            <NResult status="error" :title="t('files.load_failed')" :description="fs.error">
+              <template #footer><NButton @click="fs.refresh()">{{ t('toolbar.refresh') }}</NButton></template>
+            </NResult>
           </div>
           <div v-else-if="directoryFiles.length === 0" class="surface-state" data-state="empty">
-            <div class="empty-folder"><span /><span /></div>
-            <strong>{{ fs.searchMode ? t('files.no_search_results') : fs.isTrash ? t('files.trash_empty') : t('fileview.empty') }}</strong>
-            <span>{{ fs.searchMode ? t('files.search_hint') : fs.isTrash ? t('files.trash_empty_hint') : t('files.empty_hint') }}</span>
-            <button v-if="!fs.searchMode && !fs.isTrash" @click="triggerUpload"><IconUpload />{{ t('toolbar.upload') }}</button>
+            <NEmpty :description="fs.searchMode ? t('files.no_search_results') : fs.isTrash ? t('files.trash_empty') : t('fileview.empty')">
+              <template #extra>
+                <div class="empty-state-extra">
+                  <span>{{ fs.searchMode ? t('files.search_hint') : fs.isTrash ? t('files.trash_empty_hint') : t('files.empty_hint') }}</span>
+                  <NButton v-if="!fs.searchMode && !fs.isTrash" type="primary" secondary @click="triggerUpload">
+                    <template #icon><IconUpload /></template>{{ t('toolbar.upload') }}
+                  </NButton>
+                </div>
+              </template>
+            </NEmpty>
           </div>
 
           <div v-else-if="fs.viewMode === 'icons'" class="file-grid" role="list">
@@ -582,15 +1108,25 @@ function phaseLabel(phase?: string): string {
             >
               <div class="file-card__preview">
                 <img v-if="showThumbnails && file.thumbnail_url" :src="file.thumbnail_url" class="file-thumbnail" alt="" draggable="false" />
-                <component :is="getFileIcon(file.name, file.is_dir)" v-else width="46" height="46" />
-                <span v-if="fs.selectedFiles.includes(file.path)" class="selection-check"><IconCheck /></span>
-                <span v-if="file.status && file.status !== 'ready'" class="file-status">{{ phaseLabel(file.task_phase || file.status) }}</span>
+                <component :is="getFileIcon(file.name, file.is_dir)" v-else width="56" height="56" />
+                <span
+                  v-if="fs.selectMode || fs.selectedFiles.includes(file.path)"
+                  class="selection-check"
+                  :class="{ 'is-empty': !fs.selectedFiles.includes(file.path) }"
+                >
+                  <IconCheck v-if="fs.selectedFiles.includes(file.path)" />
+                </span>
+                <NTag v-if="file.status && file.status !== 'ready'" class="file-status" size="tiny" round type="info">
+                  {{ phaseLabel(file.task_phase || file.status) }}
+                </NTag>
               </div>
               <div class="file-card__copy">
                 <strong class="file-name" :title="file.name">{{ file.name }}</strong>
                 <span>{{ file.is_dir ? t('info.directory') : formatSize(file.size) }}</span>
               </div>
-              <button class="more-button" :aria-label="t('common.more')" @click.stop="openActionMenu(file)"><IconDotsHorizontal /></button>
+              <NButton quaternary circle size="tiny" class="more-button" :aria-label="t('common.more')" @click.stop="openActionMenu(file, $event)">
+                <template #icon><IconDotsHorizontal /></template>
+              </NButton>
             </article>
           </div>
 
@@ -628,14 +1164,24 @@ function phaseLabel(phase?: string): string {
                   <strong class="file-name">{{ file.name }}</strong>
                   <small class="mobile-meta">{{ displayDate(file.last_modified) }}</small>
                 </span>
-                <span v-if="fs.selectedFiles.includes(file.path)" class="selection-check"><IconCheck /></span>
+                <span
+                  v-if="fs.selectMode || fs.selectedFiles.includes(file.path)"
+                  class="selection-check"
+                  :class="{ 'is-empty': !fs.selectedFiles.includes(file.path) }"
+                >
+                  <IconCheck v-if="fs.selectedFiles.includes(file.path)" />
+                </span>
               </div>
               <span role="cell">{{ file.is_dir ? t('info.directory') : (file.content_type || t('info.file')) }}</span>
               <span role="cell">{{ file.is_dir ? '—' : formatSize(file.size) }}</span>
               <span role="cell">{{ displayDate(file.last_modified) }}</span>
-              <button class="more-button" :aria-label="t('common.more')" @click.stop="openActionMenu(file)"><IconDotsHorizontal /></button>
+              <NButton quaternary circle size="tiny" class="more-button" :aria-label="t('common.more')" @click.stop="openActionMenu(file, $event)">
+                <template #icon><IconDotsHorizontal /></template>
+              </NButton>
             </div>
           </div>
+
+          <div v-if="rubberBand.active" class="rubber-band" :style="rubberBandStyle" aria-hidden="true" />
         </div>
 
         <footer class="file-statusbar">
@@ -645,114 +1191,121 @@ function phaseLabel(phase?: string): string {
       </section>
     </main>
 
-    <nav class="mobile-bottom-nav" aria-label="File locations">
-      <button :class="{ active: activePlace === 'files' }" @click.stop="choosePlace('files')"><IconFolderHome /><span>{{ t('files.my_files') }}</span></button>
-      <button class="mobile-create" :disabled="fs.isTrash || fs.searchMode" @click.stop="createMenuOpen = !createMenuOpen"><IconPlus /></button>
-      <button :class="{ active: activePlace === 'trash' }" @click.stop="choosePlace('trash')"><IconDeleteOutline /><span>{{ t('places.trash') }}</span></button>
+    <nav class="mobile-bottom-nav" :class="{ 'is-selection': fs.selectMode }" :aria-label="fs.selectMode ? t('files.select_multiple') : 'File locations'">
+      <template v-if="fs.selectMode">
+        <NButton quaternary :disabled="!directoryFiles.length || selectionCount === directoryFiles.length" @click.stop="fs.selectAll()">
+          <IconCheckboxMultipleMarkedOutline /><span>{{ t('menu.select_all') }}</span>
+        </NButton>
+        <NButton quaternary :disabled="!selectionCount" @click.stop="fs.copySelected(); message.success(t('files.copied'))">
+          <IconContentCopy /><span>{{ t('mobile.selection.copy') }}</span>
+        </NButton>
+        <NButton v-if="!fs.isTrash" quaternary :disabled="!selectionCount" @click.stop="fs.cutSelected(); message.success(t('files.cut'))">
+          <IconContentCut /><span>{{ t('mobile.selection.cut') }}</span>
+        </NButton>
+        <NButton v-else quaternary :disabled="!selectionCount" @click.stop="fs.restoreSelected()">
+          <IconRestore /><span>{{ t('menu.restore') }}</span>
+        </NButton>
+        <NButton quaternary type="error" class="mobile-selection-delete" :disabled="!selectionCount" @click.stop="fs.deleteSelected()">
+          <IconDeleteOutline /><span>{{ fs.isTrash ? t('menu.permanent_delete') : t('mobile.selection.delete') }}</span>
+        </NButton>
+        <NButton quaternary @click.stop="fs.exitSelectMode()">
+          <IconCheck /><span>{{ t('mobile.selection.done') }}</span>
+        </NButton>
+      </template>
+      <template v-else>
+        <NButton quaternary :class="{ active: activePlace === 'files' }" @click.stop="choosePlace('files')">
+          <IconFolderHome /><span>{{ t('files.my_files') }}</span>
+        </NButton>
+        <NDropdown
+          trigger="click"
+          placement="top"
+          :options="createOptions"
+          :menu-props="() => ({ role: 'menu' })"
+          :node-props="dropdownNodeProps"
+          @select="handleCreateSelect"
+        >
+          <NButton circle type="primary" class="mobile-create" :disabled="fs.isTrash || fs.searchMode" @click.stop>
+            <template #icon><IconPlus /></template>
+          </NButton>
+        </NDropdown>
+        <NButton quaternary :class="{ active: activePlace === 'trash' }" @click.stop="choosePlace('trash')">
+          <IconDeleteOutline /><span>{{ t('places.trash') }}</span>
+        </NButton>
+      </template>
     </nav>
 
-    <div v-if="createMenuOpen" class="create-menu" @click.stop>
-      <button @click="triggerUpload"><IconUpload />{{ t('toolbar.upload') }}</button>
-      <button @click="createMenuOpen = false; fs.createFolder()"><IconFolderPlusOutline />{{ t('toolbar.new_folder') }}</button>
-    </div>
+    <NDropdown
+      :key="actionMenuEpoch"
+      :show="showActionMenu"
+      trigger="manual"
+      placement="bottom-start"
+      :x="actionMenuX"
+      :y="actionMenuY"
+      :options="actionMenuOptions"
+      :menu-props="() => ({ class: 'action-menu', role: 'menu' })"
+      :node-props="dropdownNodeProps"
+      @select="handleActionSelect"
+      @clickoutside="showActionMenu = false"
+    />
 
-    <div
-      v-if="actionFile"
-      class="action-menu"
-      :style="isMobile ? undefined : { left: `${actionMenuX}px`, top: `${actionMenuY}px` }"
-      @click.stop
+    <NDrawer
+      v-if="isMobile"
+      :show="showActivity"
+      placement="bottom"
+      :height="mobileActivityDrawerHeight"
+      content-class="mobile-activity-drawer"
+      :content-style="{ borderRadius: '20px 20px 0 0', overflow: 'hidden' }"
+      @update:show="showActivity = $event"
     >
-      <div class="action-menu__handle" />
-      <div class="action-menu__title">
-        <component :is="getFileIcon(actionFile.name, actionFile.is_dir)" />
-        <span>{{ actionFile.name }}</span>
-        <button @click="actionFile = null"><IconClose /></button>
-      </div>
-      <button @click="openItem(actionFile)"><IconArrowRight />{{ t('menu.open') }}</button>
-      <button v-if="!actionFile.is_dir" @click="downloadItem(actionFile)"><IconDownload />{{ t('menu.download') }}</button>
-      <button @click="showDetails(actionFile)"><IconInformationOutline />{{ t('menu.details') }}</button>
-      <div class="action-menu__separator" />
-      <button v-if="!fs.isTrash" @click="setClipboard(actionFile, 'copy')"><IconContentCopy />{{ t('menu.copy') }}</button>
-      <button v-if="!fs.isTrash" @click="setClipboard(actionFile, 'cut')"><IconContentCut />{{ t('menu.cut') }}</button>
-      <button v-if="!fs.isTrash" @click="renameItem(actionFile)"><IconPencilOutline />{{ t('menu.rename') }}</button>
-      <button v-if="fs.isTrash" @click="restoreItem(actionFile)"><IconRestore />{{ t('menu.restore') }}</button>
-      <button class="danger" @click="deleteItem(actionFile)"><IconDeleteOutline />{{ fs.isTrash ? t('menu.permanent_delete') : t('menu.delete') }}</button>
-    </div>
-
-    <aside v-if="showInspector && detailsFile" class="inspector" @click.stop>
-      <div class="inspector__header">
-        <div>
-          <span>{{ t('menu.details') }}</span>
-          <strong>{{ detailsFile.name }}</strong>
-        </div>
-        <button @click="showInspector = false"><IconClose /></button>
-      </div>
-      <div class="inspector__preview">
-        <img v-if="showThumbnails && detailsFile.thumbnail_url" :src="detailsFile.thumbnail_url" alt="" />
-        <component :is="getFileIcon(detailsFile.name, detailsFile.is_dir)" v-else />
-      </div>
-      <dl>
-        <div><dt>{{ t('info.type') }}</dt><dd>{{ detailsFile.is_dir ? t('info.directory') : (detailsFile.content_type || t('info.file')) }}</dd></div>
-        <div><dt>{{ t('info.size') }}</dt><dd>{{ detailsFile.is_dir ? '—' : formatSize(detailsFile.size) }}</dd></div>
-        <div><dt>{{ t('info.modified') }}</dt><dd>{{ displayDate(detailsFile.last_modified) }}</dd></div>
-        <div><dt>{{ t('info.created') }}</dt><dd>{{ displayDate(detailsFile.created_at) }}</dd></div>
-        <div v-if="detailsFile.media_width"><dt>{{ t('info.dimensions') }}</dt><dd>{{ detailsFile.media_width }} × {{ detailsFile.media_height }}</dd></div>
-        <div><dt>{{ t('files.path') }}</dt><dd class="path-value">{{ detailsFile.path }}</dd></div>
-      </dl>
-      <div class="inspector__actions">
-        <button v-if="!detailsFile.is_dir" @click="downloadItem(detailsFile)"><IconDownload />{{ t('menu.download') }}</button>
-        <button @click="openItem(detailsFile)"><IconArrowRight />{{ t('menu.open') }}</button>
-      </div>
-    </aside>
-
-    <section v-if="showActivity" class="activity-panel" @click.stop>
-      <div class="panel-heading">
-        <div><span>{{ t('files.activity') }}</span><strong>{{ activityLabel }}</strong></div>
-        <button @click="showActivity = false"><IconClose /></button>
-      </div>
-      <div v-if="upload.uploads.length === 0 && serverTasks.length === 0 && pendingOps.pendingCount === 0" class="panel-empty">
-        <IconCheck width="30" height="30" />
-        <strong>{{ t('files.all_done') }}</strong>
-        <span>{{ t('files.all_done_hint') }}</span>
-      </div>
-      <div v-else class="activity-list">
-        <article v-for="item in upload.uploads" :key="item.id">
-          <div><strong>{{ item.fileName }}</strong><span>{{ phaseLabel(item.phase) }}</span></div>
-          <span>{{ Math.round(item.progress) }}%</span>
-          <div class="progress"><i :style="{ width: `${Math.max(2, item.progress)}%` }" /></div>
-          <button v-if="item.status === 'uploading' || item.status === 'paused'" @click="upload.cancelUpload(item.id)">{{ t('upload.cancel') }}</button>
-        </article>
-        <article v-for="item in serverTasks" :key="item.task_id">
-          <div><strong>{{ item.name || item.type }}</strong><span>{{ item.phase || item.status }}</span></div>
-          <span>{{ Math.round((item.progress || 0) * 100) }}%</span>
-          <div class="progress"><i :style="{ width: `${Math.max(2, (item.progress || 0) * 100)}%` }" /></div>
-        </article>
-        <article v-if="pendingOps.pendingCount" class="pending-row">
-          <div><strong>{{ t('pending.title') }}</strong><span>{{ t('pending.status_queued') }}</span></div>
-          <span>{{ pendingOps.pendingCount }}</span>
-        </article>
-      </div>
-    </section>
-
-    <section v-if="showAccount" class="account-menu" @click.stop>
-      <div class="account-menu__identity">
-        <img v-if="auth.user?.avatar_url" :src="auth.user.avatar_url" alt="" />
-        <IconAccountCircle v-else />
-        <div><strong>{{ auth.user?.display_name || auth.username }}</strong><span>@{{ auth.username }} · {{ auth.user?.role }}</span></div>
-      </div>
-      <button
-        class="preference-toggle"
-        role="switch"
-        :aria-checked="showThumbnails"
-        @click="toggleThumbnailDisplay"
+      <NDrawerContent
+        :title="t('files.activity')"
+        closable
+        :body-content-style="{ padding: '0 20px max(20px, env(safe-area-inset-bottom))', overflow: 'hidden' }"
       >
-        <IconViewGridOutline />
-        <span><strong>{{ t('files.show_thumbnails') }}</strong><small>{{ t('files.show_thumbnails_hint') }}</small></span>
-        <i :class="{ on: showThumbnails }"><b /></i>
-      </button>
-      <button v-if="auth.isRoot" @click="router.push('/admin')"><IconAccountCircle />{{ t('titlebar.admin_panel') }}</button>
-      <button class="danger" @click="logout"><IconArrowLeft />{{ t('titlebar.sign_out') }}</button>
-    </section>
+        <ActivityCenter
+          :uploads="upload.uploads"
+          :server-tasks="serverTasks"
+          :pending-count="pendingOps.pendingCount"
+          :activity-label="activityLabel"
+          :show-heading="false"
+          :max-height="mobileActivityListHeight"
+          @cancel-upload="upload.cancelUpload"
+        />
+      </NDrawerContent>
+    </NDrawer>
+
+    <NDrawer
+      :show="showInspector && Boolean(detailsFile)"
+      :placement="isMobile ? 'bottom' : 'right'"
+      :width="isMobile ? undefined : 380"
+      :height="isMobile ? '78vh' : undefined"
+      @update:show="showInspector = $event"
+    >
+      <NDrawerContent v-if="detailsFile" class="inspector" :title="detailsFile.name" closable>
+        <div class="inspector__preview">
+          <img v-if="showThumbnails && detailsFile.thumbnail_url" :src="detailsFile.thumbnail_url" alt="" />
+          <component :is="getFileIcon(detailsFile.name, detailsFile.is_dir)" v-else />
+        </div>
+        <NDescriptions :column="1" label-placement="top" bordered size="small">
+          <NDescriptionsItem :label="t('info.type')">{{ detailsFile.is_dir ? t('info.directory') : (detailsFile.content_type || t('info.file')) }}</NDescriptionsItem>
+          <NDescriptionsItem :label="t('info.size')">{{ detailsFile.is_dir ? '—' : formatSize(detailsFile.size) }}</NDescriptionsItem>
+          <NDescriptionsItem :label="t('info.modified')">{{ displayDate(detailsFile.last_modified) }}</NDescriptionsItem>
+          <NDescriptionsItem :label="t('info.created')">{{ displayDate(detailsFile.created_at) }}</NDescriptionsItem>
+          <NDescriptionsItem v-if="detailsFile.media_width" :label="t('info.dimensions')">{{ detailsFile.media_width }} × {{ detailsFile.media_height }}</NDescriptionsItem>
+          <NDescriptionsItem :label="t('files.path')"><span class="path-value">{{ detailsFile.path }}</span></NDescriptionsItem>
+        </NDescriptions>
+        <template #footer>
+          <div class="inspector__actions">
+            <NButton v-if="!detailsFile.is_dir" @click="downloadItem(detailsFile)">
+              <template #icon><IconDownload /></template>{{ t('menu.download') }}
+            </NButton>
+            <NButton type="primary" @click="openItem(detailsFile)">
+              <template #icon><IconArrowRight /></template>{{ t('menu.open') }}
+            </NButton>
+          </div>
+        </template>
+      </NDrawerContent>
+    </NDrawer>
 
     <div v-if="draggingFiles" class="drop-overlay">
       <div><IconUpload /><strong>{{ t('fileview.drop') }}</strong><span>{{ t('files.drop_encrypted') }}</span></div>
@@ -764,445 +1317,359 @@ function phaseLabel(phase?: string): string {
 
 <style lang="scss" scoped>
 .file-shell {
-  --ink: #18243b;
-  --muted: #778197;
-  --line: #e8ebf2;
+  --ink: #172033;
+  --muted: #657087;
+  --line: #e4e8f0;
   --surface: #fff;
-  --canvas: #f6f7fb;
-  --accent: #5568e8;
-  --accent-soft: #edf0ff;
+  --canvas: #f4f6fa;
+  --accent: #4f5fe7;
+  --accent-soft: #e9edff;
   height: 100dvh;
   overflow: hidden;
   color: var(--ink);
   background: var(--canvas);
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 14px;
   user-select: none;
 }
 
 button, input, select { font: inherit; }
-button { color: inherit; }
 
 .file-sidebar {
   position: fixed;
   inset: 0 auto 0 0;
   z-index: 30;
   display: flex;
-  width: 244px;
+  width: 260px;
   flex-direction: column;
-  padding: 26px 18px 20px;
+  padding: 28px 18px 18px;
   border-right: 1px solid var(--line);
-  background: rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(24px);
+  background: rgba(252, 253, 255, .96);
+  box-shadow: 8px 0 28px rgb(26 36 58 / 2.5%);
+  backdrop-filter: blur(20px);
 }
 
-.brand-lockup, .mobile-brand { display: flex; align-items: center; gap: 11px; }
+.brand-lockup, .mobile-brand { display: flex; align-items: center; gap: 12px; padding: 0 8px; }
 .brand-mark {
   display: grid;
-  width: 38px;
-  height: 38px;
+  width: 42px;
+  height: 42px;
   place-items: center;
-  border-radius: 12px;
+  border-radius: 13px;
   color: #fff;
-  background: linear-gradient(145deg, #6578f4, #4354d3);
-  box-shadow: 0 8px 18px rgba(85, 104, 232, 0.25);
-  font-size: 18px;
+  background: linear-gradient(145deg, #6574f0, #4352d0);
+  box-shadow: 0 10px 22px rgb(79 95 231 / 24%);
+  font-size: 19px;
   font-weight: 800;
 }
-.brand-name { font-size: 16px; font-weight: 800; letter-spacing: .12em; }
-.brand-caption { margin-top: 2px; color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; }
+.brand-name { font-size: 16px; font-weight: 800; letter-spacing: .14em; }
+.brand-caption { margin-top: 3px; color: #68748a; font-size: 10px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 
-.place-list { display: grid; gap: 5px; margin-top: 42px; }
-.place-item {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  width: 100%;
-  min-height: 46px;
-  padding: 0 13px;
-  border: 0;
-  border-radius: 12px;
-  background: transparent;
-  color: #5e687c;
-  cursor: pointer;
-  font-size: 14px;
-  font-weight: 650;
-  text-align: left;
-  transition: .16s ease;
-}
-.place-item:hover { background: #f4f5fa; color: var(--ink); }
-.place-item.active { color: var(--accent); background: var(--accent-soft); }
+.place-list { margin-top: 44px; }
+.place-list :deep(.n-menu-item-content) { border-radius: 12px; }
+.place-list :deep(.n-menu-item-content-header) { font-weight: 620; }
 
 .security-note {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 10px;
   margin-top: auto;
-  margin-bottom: 18px;
-  padding: 14px;
-  border: 1px solid #e2e6f6;
-  border-radius: 14px;
-  background: #f9faff;
+  margin-bottom: 10px;
 }
-.security-note__icon { display: grid; width: 24px; height: 24px; place-items: center; border-radius: 50%; color: #fff; background: #42a579; }
-.security-note strong, .security-note span { display: block; }
-.security-note strong { font-size: 12px; }
-.security-note span { margin-top: 3px; color: var(--muted); font-size: 10px; line-height: 1.45; }
+.security-note :deep(.n-alert-body__title) { font-size: 13px; font-weight: 700; }
+.security-note :deep(.n-alert-body__content) { color: #626d82; font-size: 11px; line-height: 1.5; }
 
 .sidebar-account {
-  display: grid;
-  grid-template-columns: auto 1fr auto;
-  align-items: center;
-  gap: 10px;
   width: 100%;
-  padding: 9px;
-  border: 0;
-  border-radius: 12px;
-  background: transparent;
-  cursor: pointer;
+  height: 58px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 13px;
   text-align: left;
 }
-.sidebar-account:hover { background: #f4f5fa; }
-.sidebar-account img, .mobile-account img { width: 34px; height: 34px; border-radius: 50%; object-fit: cover; }
+.sidebar-account:hover { border-color: #e6e9f0; background: #fff; box-shadow: 0 5px 16px rgb(26 36 58 / 5%); }
+.sidebar-account :deep(.n-button__content) { display: grid; width: 100%; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; }
+.sidebar-account img, .mobile-account img { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; }
 .sidebar-account span { min-width: 0; }
 .sidebar-account strong, .sidebar-account small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sidebar-account strong { font-size: 12px; }
-.sidebar-account small { margin-top: 2px; color: var(--muted); font-size: 10px; }
+.sidebar-account strong { font-size: 13px; font-weight: 680; }
+.sidebar-account small { margin-top: 2px; color: var(--muted); font-size: 11px; }
 
-.file-main { height: 100dvh; margin-left: 244px; overflow: hidden; }
+.file-main { height: 100dvh; margin-left: 260px; overflow: hidden; }
 .file-header {
   position: sticky;
   top: 0;
   z-index: 25;
   display: flex;
-  height: 72px;
+  height: 76px;
   align-items: center;
-  justify-content: center;
-  padding: 0 30px;
+  justify-content: flex-start;
+  padding: 0 32px;
   border-bottom: 1px solid var(--line);
-  background: rgba(246, 247, 251, .88);
-  backdrop-filter: blur(22px);
+  background: rgba(250, 251, 253, .88);
+  backdrop-filter: blur(20px);
 }
 .mobile-brand { display: none; }
 .global-search {
-  display: grid;
-  width: min(540px, 52vw);
+  width: min(620px, 58vw);
   height: 42px;
-  grid-template-columns: auto 1fr auto auto;
-  align-items: center;
-  gap: 10px;
-  padding: 0 12px;
-  border: 1px solid #e3e6ef;
-  border-radius: 13px;
-  background: #fff;
-  color: #8992a5;
-  box-shadow: 0 3px 12px rgba(24, 36, 59, .03);
+  box-shadow: 0 4px 16px rgb(24 36 59 / 4%);
 }
-.global-search:focus-within { border-color: #aeb8fa; box-shadow: 0 0 0 3px rgba(85, 104, 232, .09); }
-.global-search input { min-width: 0; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: 13px; }
-.global-search input::placeholder { color: #9ba3b3; }
-.global-search button { display: grid; padding: 3px; border: 0; place-items: center; background: none; cursor: pointer; }
-.global-search kbd { padding: 3px 7px; border: 1px solid #e4e7ef; border-radius: 6px; color: #959daf; background: #f8f9fb; font-size: 10px; }
-.header-actions { position: absolute; right: 30px; display: flex; align-items: center; gap: 9px; }
+.global-search :deep(.n-input__input-el) { font-size: 14px; }
+.global-search kbd { padding: 3px 8px; border: 1px solid #e2e6ee; border-radius: 6px; color: #657087; background: #f7f8fb; font-size: 11px; }
+.header-actions { position: absolute; right: 32px; display: flex; align-items: center; gap: 10px; }
 .activity-button, .mobile-account {
   position: relative;
   display: grid;
-  width: 40px;
-  height: 40px;
-  border: 1px solid #e3e6ef;
+  width: 42px;
+  height: 42px;
+  border: 1px solid #dfe4ed;
   place-items: center;
   border-radius: 12px;
   background: #fff;
+  box-shadow: 0 3px 10px rgb(25 35 58 / 4%);
   cursor: pointer;
 }
-.activity-badge { position: absolute; top: -4px; right: -4px; min-width: 17px; height: 17px; padding: 0 4px; border: 2px solid var(--canvas); border-radius: 10px; color: #fff; background: #ee5b68; font-size: 9px; line-height: 13px; }
 .mobile-account { display: none; border: 0; background: transparent; }
 
-.file-workspace { display: flex; height: calc(100dvh - 72px); min-height: 0; flex-direction: column; padding: 0 30px; }
-.location-toolbar { display: grid; min-height: 70px; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 18px; border-bottom: 1px solid var(--line); }
-.history-buttons { display: flex; gap: 4px; }
-.history-buttons button, .view-controls > button, .view-switch button {
-  display: grid;
-  width: 34px;
-  height: 34px;
-  padding: 0;
-  border: 0;
-  place-items: center;
-  border-radius: 9px;
-  color: #667086;
-  background: transparent;
-  cursor: pointer;
-}
-.history-buttons button:hover:not(:disabled), .view-controls > button:hover, .view-switch button:hover { color: var(--ink); background: #eceef4; }
-.history-buttons button:disabled { opacity: .3; cursor: default; }
+.file-workspace { display: flex; height: calc(100dvh - 76px); min-height: 0; flex-direction: column; padding: 0 32px; }
+.location-toolbar { display: grid; min-height: 68px; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 18px; border-bottom: 1px solid var(--line); }
+.history-buttons { display: flex; }
 .history-buttons svg, .view-controls svg { width: 18px; height: 18px; }
+.breadcrumbs-viewport { min-width: 0; overflow: hidden; }
 .breadcrumbs { display: flex; min-width: 0; align-items: center; gap: 5px; overflow: hidden; color: #9aa1b0; }
-.breadcrumbs button { overflow: hidden; padding: 6px 7px; border: 0; border-radius: 7px; color: #657086; background: transparent; cursor: pointer; font-size: 12px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.breadcrumbs button:hover { color: var(--accent); background: var(--accent-soft); }
-.primary-actions { display: flex; gap: 9px; }
-.primary-actions button, .surface-state button {
-  display: inline-flex;
-  min-height: 38px;
+.breadcrumbs :deep(.n-breadcrumb-item__link) { overflow: hidden; max-width: 180px; }
+.breadcrumbs :deep(.n-button) { max-width: 180px; color: #5d687e; font-size: 13px; font-weight: 650; }
+.breadcrumbs :deep(.n-button__content) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.primary-actions { display: flex; gap: 10px; }
+.mobile-select-entry { display: none; }
+
+.content-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding: 28px 0 20px; }
+.eyebrow { margin-bottom: 7px; color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+.content-heading h1 { margin: 0; font-size: 30px; font-weight: 720; line-height: 1.1; letter-spacing: -.04em; }
+.content-heading p { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
+.view-controls { display: flex; align-items: center; gap: 7px; }
+.sort-control { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 12px; }
+.sort-control .n-select { width: 122px; }
+.selection-controls {
+  display: flex;
+  min-width: 0;
   align-items: center;
-  gap: 8px;
-  padding: 0 14px;
-  border: 1px solid #dfe3ec;
+  justify-content: flex-end;
+  gap: 3px;
+  font-size: 13px;
+}
+.selection-controls svg { width: 16px; height: 16px; }
+.selection-count {
+  flex: 0 0 auto;
+  margin-right: 5px;
+  padding: 7px 11px;
   border-radius: 10px;
-  background: #fff;
-  cursor: pointer;
+  color: #4050cd;
+  background: #e9edff;
   font-size: 12px;
   font-weight: 700;
+  white-space: nowrap;
 }
-.primary-actions svg, .surface-state button svg { width: 17px; height: 17px; }
-.primary-actions .primary-action { border-color: var(--accent); color: #fff; background: var(--accent); box-shadow: 0 7px 16px rgba(85, 104, 232, .2); }
-.primary-actions .danger-action { color: #c74652; border-color: #f0d6d9; background: #fff7f8; }
+.clipboard-banner { margin-bottom: 14px; border-radius: 13px; }
+.clipboard-banner__content { display: flex; align-items: center; gap: 10px; }
+.clipboard-banner__content > :first-child { margin-right: auto; }
 
-.content-heading { display: flex; align-items: end; justify-content: space-between; gap: 20px; padding: 27px 0 18px; }
-.eyebrow { margin-bottom: 5px; color: var(--accent); font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-.content-heading h1 { margin: 0; font-size: 25px; line-height: 1.15; letter-spacing: -.03em; }
-.content-heading p { margin: 6px 0 0; color: var(--muted); font-size: 11px; }
-.view-controls { display: flex; align-items: center; gap: 6px; }
-.view-controls label { display: flex; height: 34px; align-items: center; gap: 7px; padding: 0 8px 0 11px; border: 1px solid #e1e4ec; border-radius: 9px; color: var(--muted); background: #fff; font-size: 10px; }
-.view-controls select { max-width: 100px; border: 0; outline: 0; color: var(--ink); background: transparent; font-size: 11px; font-weight: 650; }
-.view-switch { display: flex; padding: 3px; border: 1px solid #e1e4ec; border-radius: 10px; background: #fff; }
-.view-switch button { width: 28px; height: 27px; border-radius: 7px; }
-.view-switch button.active { color: var(--accent); background: var(--accent-soft); }
-
-.selection-toolbar, .clipboard-banner {
-  display: flex;
-  min-height: 48px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
-  padding: 7px 10px 7px 15px;
-  border: 1px solid #dce1ff;
-  border-radius: 12px;
-  color: #4456cc;
-  background: #f2f4ff;
-  font-size: 11px;
+.file-surface {
+  position: relative;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: rgb(255 255 255 / 82%);
+  box-shadow: 0 8px 30px rgb(26 36 58 / 4%);
 }
-.selection-toolbar > div { display: flex; align-items: center; gap: 3px; }
-.selection-toolbar button, .clipboard-banner button {
-  display: inline-flex;
-  min-height: 32px;
-  align-items: center;
-  gap: 5px;
-  padding: 0 9px;
-  border: 0;
-  border-radius: 8px;
-  color: #4e5db9;
-  background: transparent;
-  cursor: pointer;
-  font-size: 10px;
-  font-weight: 700;
+.file-surface.rubber-banding { cursor: crosshair; user-select: none; }
+.rubber-band {
+  position: absolute;
+  z-index: 4;
+  border: 1px solid rgb(79 95 231 / 72%);
+  border-radius: 3px;
+  background: rgb(79 95 231 / 13%);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 38%);
+  pointer-events: none;
 }
-.selection-toolbar button:hover, .clipboard-banner button:hover { background: #e6e9ff; }
-.selection-toolbar button.danger { color: #ca4653; }
-.selection-toolbar svg { width: 15px; height: 15px; }
-.selection-toolbar .icon-only, .clipboard-banner .icon-only { width: 30px; padding: 0; justify-content: center; }
-.clipboard-banner { justify-content: flex-start; color: #526074; border-color: #e3e6ed; background: #fafbfc; }
-.clipboard-banner button:first-of-type { margin-left: auto; color: var(--accent); }
-
-.file-surface { position: relative; min-height: 0; flex: 1; overflow: auto; padding-bottom: 24px; }
-.file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 13px; }
+.file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(172px, 192px)); align-content: start; gap: 16px; }
 .file-card {
   position: relative;
   min-width: 0;
-  padding: 10px;
-  border: 1px solid transparent;
-  border-radius: 14px;
-  background: transparent;
+  padding: 9px;
+  border: 1px solid #e6eaf1;
+  border-radius: 16px;
+  background: #fff;
+  box-shadow: 0 3px 12px rgb(25 35 58 / 3%);
   cursor: default;
   outline: none;
-  transition: .14s ease;
+  transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease, background .16s ease;
 }
-.file-card:hover { border-color: #e3e6ef; background: rgba(255, 255, 255, .72); }
-.file-card:focus-visible { box-shadow: 0 0 0 3px rgba(85, 104, 232, .15); }
-.file-card.selected { border-color: #cbd2ff; background: var(--accent-soft); }
+.file-card:hover { border-color: #cfd5e3; box-shadow: 0 10px 26px rgb(25 35 58 / 9%); transform: translateY(-2px); }
+.file-card:focus-visible { box-shadow: 0 0 0 3px rgb(79 95 231 / 16%); }
+.file-card.selected { border-color: #97a4f6; background: #f6f7ff; box-shadow: 0 0 0 2px rgb(79 95 231 / 10%); }
 .file-card.cut, .file-row.cut { opacity: .48; }
 .file-card__preview {
   position: relative;
   display: grid;
-  height: 116px;
+  height: 128px;
   place-items: center;
   overflow: hidden;
-  border-radius: 11px;
-  color: #6979df;
-  background: #eef0f5;
+  border: 1px solid #edf0f5;
+  border-radius: 12px;
+  color: #5c6de4;
+  background: linear-gradient(145deg, #f2f4f8, #e9edf4);
 }
 .file-card__preview img { width: 100%; height: 100%; object-fit: cover; }
-.file-card__copy { padding: 10px 24px 2px 2px; }
+.file-card__copy { padding: 12px 30px 6px 4px; }
 .file-card__copy strong, .file-card__copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.file-card__copy strong { font-size: 12px; font-weight: 650; }
-.file-card__copy span { margin-top: 4px; color: var(--muted); font-size: 10px; }
-.more-button { display: grid; width: 28px; height: 28px; padding: 0; border: 0; place-items: center; border-radius: 8px; color: #7e8798; background: transparent; cursor: pointer; }
-.more-button:hover { color: var(--ink); background: #e5e8ef; }
-.file-card > .more-button { position: absolute; right: 8px; bottom: 8px; }
+.file-card__copy strong { font-size: 13px; font-weight: 680; }
+.file-card__copy span { margin-top: 5px; color: var(--muted); font-size: 11px; }
+.more-button { display: grid; width: 30px; height: 30px; padding: 0; border: 0; place-items: center; border-radius: 9px; color: #5f6b82; background: transparent; cursor: pointer; }
+.more-button:hover { color: var(--ink); background: #edf0f5; }
+.file-card > .more-button { position: absolute; right: 8px; bottom: 9px; opacity: .75; transition: opacity .16s ease; }
+.file-card:hover > .more-button,
+.file-card.selected > .more-button,
+.file-card:focus-within > .more-button { opacity: 1; }
 .more-button svg { width: 17px; height: 17px; }
-.selection-check { position: absolute; top: 8px; right: 8px; display: grid; width: 20px; height: 20px; place-items: center; border-radius: 50%; color: #fff; background: var(--accent); box-shadow: 0 2px 6px rgba(38, 48, 120, .25); }
-.selection-check svg { width: 13px; height: 13px; }
-.file-status { position: absolute; right: 7px; bottom: 7px; padding: 4px 7px; border-radius: 7px; color: #fff; background: rgba(24, 36, 59, .72); font-size: 8px; backdrop-filter: blur(5px); }
+.selection-check { position: absolute; top: 9px; right: 9px; display: grid; width: 24px; height: 24px; place-items: center; border: 2px solid #fff; border-radius: 50%; color: #fff; background: var(--accent); box-shadow: 0 3px 8px rgb(38 48 120 / 24%); }
+.selection-check svg { width: 14px; height: 14px; }
+.selection-check.is-empty { border-color: #9da7ba; background: rgb(255 255 255 / 94%); box-shadow: 0 2px 7px rgb(38 48 120 / 10%); }
+.file-surface.selection-mode .file-card,
+.file-surface.selection-mode .file-row { cursor: pointer; }
+.file-status { position: absolute; right: 7px; bottom: 7px; }
 
-.file-list { overflow: hidden; border: 1px solid var(--line); border-radius: 13px; background: rgba(255, 255, 255, .72); }
+.file-list { overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: #fff; }
 .file-list__head, .file-row { display: grid; grid-template-columns: minmax(240px, 2fr) minmax(120px, 1fr) 100px 145px 38px; align-items: center; gap: 12px; }
-.file-list__head { min-height: 38px; padding: 0 12px; border-bottom: 1px solid var(--line); color: #8b93a3; background: #f9fafc; font-size: 9px; font-weight: 750; letter-spacing: .04em; text-transform: uppercase; }
-.file-row { min-height: 54px; padding: 0 12px; border-bottom: 1px solid #eef0f4; color: #6f788a; outline: 0; font-size: 10px; }
+.file-list__head { min-height: 44px; padding: 0 16px; border-bottom: 1px solid var(--line); color: #626d82; background: #f7f8fb; font-size: 11px; font-weight: 720; letter-spacing: .04em; text-transform: uppercase; }
+.file-row { min-height: 64px; padding: 0 16px; border-bottom: 1px solid #edf0f4; color: #667087; outline: 0; font-size: 12px; }
 .file-row:last-child { border-bottom: 0; }
 .file-row:hover { background: #f8f9fc; }
 .file-row.selected { background: var(--accent-soft); }
 .file-row__name { position: relative; display: flex; min-width: 0; align-items: center; gap: 11px; color: var(--ink); }
 .file-row__name > span:nth-child(2) { min-width: 0; }
-.file-row__name strong { display: block; overflow: hidden; font-size: 11px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
-.file-row__icon { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; overflow: hidden; border-radius: 9px; color: #6979df; background: #eef0f5; }
-.file-row__icon svg { width: 20px; height: 20px; }
+.file-row__name strong { display: block; overflow: hidden; font-size: 13px; font-weight: 660; text-overflow: ellipsis; white-space: nowrap; }
+.file-row__icon { display: grid; width: 40px; height: 40px; flex: 0 0 auto; place-items: center; overflow: hidden; border-radius: 11px; color: #5c6de4; background: #eef1f6; }
+.file-row__icon svg { width: 23px; height: 23px; }
 .file-row__icon img { width: 100%; height: 100%; object-fit: cover; }
 .file-row .selection-check { position: static; margin-left: auto; flex: 0 0 auto; }
 .mobile-meta { display: none; }
 
-.surface-state { display: flex; min-height: 360px; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: var(--muted); text-align: center; }
-.surface-state strong { color: var(--ink); font-size: 14px; }
-.surface-state > span { max-width: 330px; font-size: 11px; line-height: 1.5; }
-.surface-state button { margin-top: 7px; color: var(--accent); }
-.loading-orbit { position: relative; width: 34px; height: 34px; margin-bottom: 4px; border: 2px solid #e2e5ef; border-top-color: var(--accent); border-radius: 50%; animation: orbit .8s linear infinite; }
-.loading-orbit span { position: absolute; top: 1px; right: 2px; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
-@keyframes orbit { to { transform: rotate(360deg); } }
-.empty-folder { position: relative; width: 64px; height: 47px; margin-bottom: 10px; border-radius: 8px 10px 10px 10px; background: #e8eaf2; }
-.empty-folder::before { content: ''; position: absolute; top: -8px; left: 5px; width: 27px; height: 12px; border-radius: 6px 6px 0 0; background: #e8eaf2; }
-.empty-folder span:first-child { position: absolute; inset: 11px 10px 9px; border: 1px dashed #b9bfcd; border-radius: 5px; }
+.surface-state { display: flex; min-height: 100%; align-items: center; justify-content: center; flex-direction: column; gap: 10px; color: var(--muted); text-align: center; }
+.surface-state strong { color: var(--ink); font-size: 16px; }
+.surface-state > span { max-width: 360px; font-size: 13px; line-height: 1.55; }
+.empty-state-extra { display: flex; align-items: center; flex-direction: column; gap: 16px; color: var(--muted); font-size: 13px; }
 
-.file-statusbar { display: flex; min-height: 44px; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); color: #9299a8; font-size: 9px; }
+.file-statusbar { display: flex; min-height: 42px; align-items: center; justify-content: space-between; color: #657087; font-size: 11px; }
 
-.mobile-bottom-nav, .create-menu { display: none; }
+.mobile-bottom-nav { display: none; }
 .upload-input { display: none; }
 
-.action-menu, .account-menu, .activity-panel, .inspector {
-  position: fixed;
-  z-index: 70;
-  border: 1px solid #e2e5ec;
-  border-radius: 14px;
-  background: rgba(255, 255, 255, .98);
-  box-shadow: 0 18px 55px rgba(29, 38, 61, .16);
-  backdrop-filter: blur(22px);
-}
-.action-menu { width: 220px; padding: 7px; }
-.action-menu__handle { display: none; }
-.action-menu__title { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 8px; padding: 7px 6px 10px; border-bottom: 1px solid var(--line); margin-bottom: 5px; }
-.action-menu__title > svg { width: 20px; height: 20px; color: var(--accent); }
-.action-menu__title span { overflow: hidden; font-size: 11px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-.action-menu__title button, .panel-heading button, .inspector__header button { display: grid; width: 28px; height: 28px; padding: 0; border: 0; place-items: center; border-radius: 8px; background: transparent; cursor: pointer; }
-.action-menu > button, .account-menu > button { display: flex; width: 100%; min-height: 36px; align-items: center; gap: 9px; padding: 0 9px; border: 0; border-radius: 8px; background: transparent; cursor: pointer; font-size: 11px; font-weight: 600; text-align: left; }
-.action-menu > button:hover, .account-menu > button:hover { background: #f1f3f7; }
-.action-menu > button svg, .account-menu > button svg { width: 16px; height: 16px; color: #70798c; }
-.action-menu > button.danger, .account-menu > button.danger { color: #c84753; }
-.action-menu__separator { height: 1px; margin: 5px 4px; background: var(--line); }
-
-.inspector { top: 88px; right: 18px; bottom: 18px; display: flex; width: 320px; flex-direction: column; padding: 18px; }
-.inspector__header, .panel-heading { display: flex; align-items: start; justify-content: space-between; gap: 14px; }
-.inspector__header span, .inspector__header strong, .panel-heading span, .panel-heading strong { display: block; }
-.inspector__header span, .panel-heading span { color: var(--muted); font-size: 9px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-.inspector__header strong, .panel-heading strong { margin-top: 4px; max-width: 230px; overflow: hidden; font-size: 14px; text-overflow: ellipsis; white-space: nowrap; }
-.inspector__preview { display: grid; height: 180px; place-items: center; overflow: hidden; margin: 22px 0; border-radius: 14px; color: var(--accent); background: #f0f1f6; }
-.inspector__preview svg { width: 58px; height: 58px; }
+.inspector__preview { display: grid; height: 210px; place-items: center; overflow: hidden; margin: 22px 0; border: 1px solid #e8ebf1; border-radius: 16px; color: var(--accent); background: linear-gradient(145deg, #f4f5f8, #e9edf3); }
+.inspector__preview svg { width: 68px; height: 68px; }
 .inspector__preview img { width: 100%; height: 100%; object-fit: contain; }
-.inspector dl { margin: 0; overflow: auto; }
-.inspector dl div { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 10px; padding: 10px 2px; border-bottom: 1px solid var(--line); font-size: 10px; }
-.inspector dt { color: var(--muted); }
-.inspector dd { margin: 0; overflow-wrap: anywhere; }
 .path-value { font-family: ui-monospace, monospace; }
-.inspector__actions { display: flex; gap: 8px; margin-top: auto; padding-top: 16px; }
-.inspector__actions button { display: flex; min-height: 38px; flex: 1; align-items: center; justify-content: center; gap: 6px; border: 1px solid #e1e4ec; border-radius: 9px; background: #fff; cursor: pointer; font-size: 10px; font-weight: 700; }
-.inspector__actions svg { width: 15px; height: 15px; }
+.inspector__actions { display: flex; justify-content: flex-end; gap: 8px; }
 
-.activity-panel { top: 64px; right: 24px; width: 360px; max-height: min(560px, calc(100dvh - 82px)); overflow: auto; padding: 17px; }
-.panel-empty { display: flex; min-height: 190px; align-items: center; justify-content: center; flex-direction: column; gap: 7px; color: #52a27d; text-align: center; }
-.panel-empty strong { color: var(--ink); font-size: 13px; }
-.panel-empty span { color: var(--muted); font-size: 10px; }
-.activity-list { display: grid; gap: 9px; margin-top: 15px; }
-.activity-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px 12px; padding: 12px; border-radius: 11px; background: #f7f8fb; font-size: 9px; }
-.activity-list article strong, .activity-list article span { display: block; }
-.activity-list article strong { overflow: hidden; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
-.activity-list article div span { margin-top: 3px; color: var(--muted); }
-.progress { grid-column: 1 / -1; height: 4px; overflow: hidden; border-radius: 4px; background: #e4e7ee; }
-.progress i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .2s ease; }
-.activity-list article > button { grid-column: 1 / -1; justify-self: start; padding: 4px 8px; border: 0; border-radius: 6px; color: #c74652; background: #fff0f2; cursor: pointer; font-size: 9px; }
-
-.account-menu { left: 16px; bottom: 78px; width: 218px; padding: 8px; }
-.account-menu__identity { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 9px; padding: 8px 7px 12px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
-.account-menu__identity > img, .account-menu__identity > svg { width: 35px; height: 35px; border-radius: 50%; object-fit: cover; }
-.account-menu__identity strong, .account-menu__identity span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.account-menu__identity strong { font-size: 11px; }
-.account-menu__identity span { margin-top: 3px; color: var(--muted); font-size: 9px; }
-.account-menu > button.preference-toggle { min-height: 52px; }
-.preference-toggle > span { min-width: 0; flex: 1; }
-.preference-toggle strong, .preference-toggle small { display: block; }
-.preference-toggle small { margin-top: 3px; color: var(--muted); font-size: 9px; font-weight: 500; line-height: 1.25; }
-.preference-toggle > i { position: relative; width: 30px; height: 17px; flex: 0 0 auto; border-radius: 999px; background: #ccd1dc; transition: .16s ease; }
-.preference-toggle > i b { position: absolute; top: 2px; left: 2px; width: 13px; height: 13px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0, 0, 0, .2); transition: .16s ease; }
-.preference-toggle > i.on { background: var(--accent); }
-.preference-toggle > i.on b { transform: translateX(13px); }
-
-.drop-overlay { position: fixed; inset: 12px; z-index: 100; display: grid; border: 2px dashed #8f9cf4; place-items: center; border-radius: 20px; background: rgba(243, 245, 255, .93); backdrop-filter: blur(12px); pointer-events: none; }
+.drop-overlay { position: fixed; inset: 14px; z-index: 100; display: grid; border: 2px dashed #8f9cf4; place-items: center; border-radius: 24px; background: rgb(243 245 255 / 94%); box-shadow: inset 0 0 0 8px rgb(255 255 255 / 52%); backdrop-filter: blur(14px); pointer-events: none; }
 .drop-overlay > div { display: flex; align-items: center; flex-direction: column; gap: 9px; color: var(--accent); }
 .drop-overlay svg { width: 42px; height: 42px; }
-.drop-overlay strong { color: var(--ink); font-size: 17px; }
-.drop-overlay span { color: var(--muted); font-size: 11px; }
+.drop-overlay strong { color: var(--ink); font-size: 20px; }
+.drop-overlay span { color: var(--muted); font-size: 13px; }
+
+@media (max-width: 1150px) and (min-width: 768px) {
+  .selection-controls .action-label { display: none; }
+  .selection-controls :deep(.n-button:not(.n-button--circle)) { width: 36px; padding: 0; }
+}
+
+@media (max-width: 940px) and (min-width: 768px) {
+  .primary-actions .action-label { display: none; }
+  .primary-actions :deep(.n-button) { width: 36px; padding: 0; }
+}
 
 @media (max-width: 980px) {
-  .file-sidebar { width: 205px; }
-  .file-main { margin-left: 205px; }
+  .file-sidebar { width: 220px; }
+  .file-main { margin-left: 220px; }
   .file-workspace { padding: 0 22px; }
+  .global-search { width: min(480px, 56vw); }
   .file-list__head, .file-row { grid-template-columns: minmax(200px, 2fr) 90px 125px 38px; }
   .file-list__head > :nth-child(2), .file-row > :nth-child(2) { display: none; }
 }
 
 @media (max-width: 767px) {
-  .file-shell { --canvas: #f8f9fc; min-height: 100dvh; }
+  .file-shell { --canvas: #f6f7fa; min-height: 100dvh; }
   .file-sidebar { display: none; }
   .file-main { height: 100dvh; margin-left: 0; }
-  .file-header { height: auto; min-height: 70px; justify-content: space-between; gap: 12px; padding: max(12px, env(safe-area-inset-top)) 15px 10px; }
+  .file-header { height: auto; min-height: 72px; justify-content: space-between; gap: 12px; padding: max(12px, env(safe-area-inset-top)) 16px 11px; background: rgb(255 255 255 / 92%); }
   .mobile-brand { display: flex; flex: 0 0 auto; }
-  .mobile-brand .brand-mark { width: 34px; height: 34px; border-radius: 11px; font-size: 15px; }
-  .mobile-brand strong { display: none; font-size: 13px; letter-spacing: .08em; }
-  .global-search { order: 2; width: 100%; height: 40px; grid-template-columns: auto 1fr auto; }
+  .mobile-brand { padding: 0; }
+  .mobile-brand .brand-mark { width: 38px; height: 38px; border-radius: 12px; font-size: 16px; }
+  .mobile-brand strong { display: none; font-size: 14px; letter-spacing: .1em; }
+  .global-search { order: 2; width: 100%; height: 44px; }
   .global-search kbd { display: none; }
   .header-actions { position: static; order: 3; gap: 4px; }
-  .activity-button { width: 36px; height: 36px; border: 0; background: transparent; }
-  .mobile-account { display: grid; width: 36px; height: 36px; }
-  .file-workspace { height: calc(100dvh - 70px); min-height: 0; padding: 0 14px 88px; }
-  .location-toolbar { min-height: 54px; grid-template-columns: auto minmax(0, 1fr); gap: 8px; }
+  .activity-button { width: 40px; height: 40px; border-color: #e1e5ed; background: #fff; }
+  .mobile-account { display: grid; width: 40px; height: 40px; border: 1px solid #e1e5ed; background: #fff; }
+  .file-workspace { height: calc(100dvh - 72px); min-height: 0; padding: 0 15px 92px; }
+  .location-toolbar { min-height: 58px; grid-template-columns: auto minmax(0, 1fr) auto; gap: 9px; }
   .history-buttons button:nth-child(2) { display: none; }
-  .history-buttons button { width: 30px; height: 30px; }
-  .breadcrumbs { gap: 2px; }
-  .breadcrumbs button { max-width: 110px; padding: 5px 4px; font-size: 10px; }
-  .breadcrumbs button:not(:last-child), .breadcrumbs span:not(:last-of-type) { display: none; }
+  .history-buttons button { width: 36px; height: 36px; }
+  .breadcrumbs-viewport {
+    width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-mask-repeat: no-repeat;
+    mask-repeat: no-repeat;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+    touch-action: pan-x;
+  }
+  .breadcrumbs-viewport::-webkit-scrollbar { display: none; }
+  .breadcrumbs-viewport.is-clipped-left:not(.is-clipped-right) {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 14px, #000 100%);
+    mask-image: linear-gradient(to right, transparent, #000 14px, #000 100%);
+  }
+  .breadcrumbs-viewport.is-clipped-right:not(.is-clipped-left) {
+    -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 14px), transparent);
+    mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 14px), transparent);
+  }
+  .breadcrumbs-viewport.is-clipped-left.is-clipped-right {
+    -webkit-mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 14px), transparent);
+    mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 14px), transparent);
+  }
+  .breadcrumbs { width: max-content; min-width: max-content; gap: 2px; overflow: visible; }
+  .breadcrumbs :deep(.n-breadcrumb-item) { flex: 0 0 auto; }
+  .breadcrumbs :deep(.n-breadcrumb-item__link),
+  .breadcrumbs :deep(.n-button) { max-width: none; font-size: 12px; }
   .primary-actions { display: none; }
-  .content-heading { align-items: center; padding: 20px 2px 14px; }
-  .content-heading h1 { font-size: 22px; }
-  .content-heading p { font-size: 10px; }
+  .mobile-select-entry { display: flex; }
+  .content-heading { align-items: center; padding: 21px 2px 16px; }
+  .eyebrow { margin-bottom: 6px; font-size: 10px; }
+  .content-heading h1 { font-size: 25px; }
+  .content-heading p { margin-top: 6px; font-size: 12px; }
   .view-controls { gap: 3px; }
-  .view-controls label span, .view-controls > button, .view-controls > button:last-child { display: none; }
-  .view-controls label { height: 32px; padding: 0 6px; }
-  .view-switch { padding: 2px; }
-  .selection-toolbar { position: fixed; left: 10px; right: 10px; bottom: calc(77px + env(safe-area-inset-bottom)); z-index: 45; min-height: 56px; padding: 8px 10px; box-shadow: 0 12px 34px rgba(38, 47, 71, .18); }
-  .selection-toolbar > strong { display: none; }
-  .selection-toolbar > div { width: 100%; justify-content: space-around; }
-  .selection-toolbar button { min-width: 38px; min-height: 38px; justify-content: center; padding: 0 7px; font-size: 0; }
-  .selection-toolbar button svg { width: 18px; height: 18px; }
-  .clipboard-banner { font-size: 9px; }
-  .file-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
-  .file-card { padding: 7px; border-radius: 13px; background: #fff; box-shadow: 0 4px 14px rgba(34, 43, 67, .035); }
+  .sort-control > span, .sort-order-button, .refresh-button { display: none; }
+  .sort-control .n-select { width: 104px; }
+  .clipboard-banner { font-size: 12px; }
+  .clipboard-banner__content { gap: 6px; }
+  .file-surface { padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+  .file-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .file-card { padding: 8px; border-radius: 15px; background: #fff; box-shadow: 0 5px 18px rgb(34 43 67 / 5%); transform: none; }
+  .file-card:hover { transform: none; }
   .file-card__preview { height: auto; aspect-ratio: 1.18; }
-  .file-card__copy { padding: 9px 22px 3px 1px; }
-  .file-card__copy strong { font-size: 11px; }
-  .file-card__copy span { font-size: 9px; }
+  .file-card__copy { padding: 11px 24px 5px 2px; }
+  .file-card__copy strong { font-size: 13px; }
+  .file-card__copy span { font-size: 11px; }
   .file-card > .more-button { right: 5px; bottom: 5px; }
+  .file-card > .more-button { opacity: .82; }
   .file-list { border: 0; border-radius: 0; background: transparent; }
   .file-list__head { display: none; }
-  .file-row { grid-template-columns: minmax(0, 1fr) auto; min-height: 62px; padding: 5px 4px; border-bottom-color: #e9ebf1; font-size: 0; }
+  .file-row { grid-template-columns: minmax(0, 1fr) auto; min-height: 68px; padding: 6px 4px; border-bottom-color: #e6eaf0; font-size: 0; }
   .file-row > :nth-child(2), .file-row > :nth-child(3), .file-row > :nth-child(4) { display: none; }
-  .file-row__icon { width: 40px; height: 40px; border-radius: 11px; }
-  .file-row__name strong { font-size: 12px; }
-  .mobile-meta { display: block; margin-top: 3px; color: var(--muted); font-size: 9px; font-weight: 400; }
+  .file-row__icon { width: 44px; height: 44px; border-radius: 12px; }
+  .file-row__name strong { font-size: 13px; }
+  .mobile-meta { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; font-weight: 400; }
   .surface-state { min-height: 330px; }
   .file-statusbar { display: none; }
   .mobile-bottom-nav {
@@ -1212,39 +1679,42 @@ button { color: inherit; }
     bottom: max(10px, env(safe-area-inset-bottom));
     z-index: 40;
     display: grid;
-    height: 66px;
+    height: 68px;
     grid-template-columns: 1fr 64px 1fr;
     align-items: center;
     border: 1px solid rgba(224, 227, 236, .9);
-    border-radius: 20px;
+    border-radius: 21px;
     background: rgba(255, 255, 255, .94);
     box-shadow: 0 14px 42px rgba(33, 42, 64, .16);
     backdrop-filter: blur(20px);
   }
-  .mobile-bottom-nav button { display: flex; height: 100%; align-items: center; justify-content: center; flex-direction: column; gap: 3px; border: 0; color: #8b93a3; background: transparent; font-size: 8px; font-weight: 700; }
+  .mobile-bottom-nav button { display: flex; height: 100%; align-items: center; justify-content: center; border: 0; color: #657187; background: transparent; font-size: 10px; font-weight: 700; }
+  .mobile-bottom-nav button :deep(.n-button__content) { flex-direction: column; gap: 4px; }
   .mobile-bottom-nav button svg { width: 21px; height: 21px; }
   .mobile-bottom-nav button.active { color: var(--accent); }
+  .mobile-bottom-nav.is-selection { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .mobile-bottom-nav.is-selection button { min-width: 0; padding: 0 3px; }
+  .mobile-bottom-nav.is-selection .mobile-selection-delete { color: var(--domus-danger); }
   .mobile-bottom-nav .mobile-create { width: 52px; height: 52px; place-self: center; border-radius: 17px; color: #fff; background: var(--accent); box-shadow: 0 8px 18px rgba(85, 104, 232, .3); }
   .mobile-bottom-nav .mobile-create:disabled { opacity: .38; }
   .mobile-bottom-nav .mobile-create svg { width: 25px; height: 25px; }
-  .create-menu { position: fixed; right: 50%; bottom: calc(85px + env(safe-area-inset-bottom)); z-index: 65; display: grid; width: 190px; padding: 7px; transform: translateX(50%); border: 1px solid var(--line); border-radius: 14px; background: #fff; box-shadow: 0 14px 40px rgba(33, 42, 64, .18); }
-  .create-menu button { display: flex; min-height: 43px; align-items: center; gap: 10px; padding: 0 12px; border: 0; border-radius: 9px; background: transparent; font-size: 11px; font-weight: 650; text-align: left; }
-  .create-menu svg { width: 18px; height: 18px; color: var(--accent); }
-  .action-menu { left: 0 !important; right: 0; top: auto !important; bottom: 0; z-index: 80; width: auto; padding: 7px 14px calc(15px + env(safe-area-inset-bottom)); border-width: 1px 0 0; border-radius: 22px 22px 0 0; box-shadow: 0 -12px 44px rgba(29, 38, 61, .16); }
-  .action-menu__handle { display: block; width: 36px; height: 4px; margin: 1px auto 7px; border-radius: 4px; background: #d9dde6; }
-  .action-menu > button { min-height: 43px; font-size: 12px; }
-  .inspector { top: auto; right: 0; bottom: 0; left: 0; z-index: 82; width: auto; max-height: 85dvh; padding: 18px 18px calc(18px + env(safe-area-inset-bottom)); border-width: 1px 0 0; border-radius: 22px 22px 0 0; }
   .inspector__preview { height: 150px; margin: 16px 0; }
-  .activity-panel { top: 62px; right: 10px; left: 10px; width: auto; max-height: calc(100dvh - 150px); }
-  .account-menu { top: 62px; right: 10px; bottom: auto; left: auto; width: 220px; }
 }
 
 @media (max-width: 420px) {
-  .file-header { display: grid; grid-template-columns: auto 1fr; }
-  .mobile-brand { grid-column: 1; }
-  .header-actions { grid-column: 2; justify-self: end; }
-  .global-search { grid-column: 1 / -1; order: 3; }
-  .file-workspace { height: calc(100dvh - 122px); min-height: 0; }
+  .file-header {
+    display: grid;
+    height: 118px;
+    min-height: 118px;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: 40px 44px;
+    column-gap: 12px;
+    row-gap: 10px;
+  }
+  .mobile-brand { grid-row: 1; grid-column: 1; }
+  .header-actions { grid-row: 1; grid-column: 2; justify-self: end; }
+  .global-search { grid-row: 2; grid-column: 1 / -1; order: initial; }
+  .file-workspace { height: calc(100dvh - 118px); min-height: 0; }
   .file-card__preview { aspect-ratio: 1.08; }
 }
 

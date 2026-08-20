@@ -15,7 +15,7 @@ async function downloadItem(page: Page, fileName: string): Promise<Buffer> {
   await expect(item).toBeVisible()
   const downloadPromise = page.waitForEvent('download')
   await item.click({ button: 'right' })
-  await page.locator('.action-menu').getByRole('button', { name: /下载|Download/ }).click()
+  await page.locator('.action-menu').getByRole('menuitem', { name: /下载|Download/ }).click()
   const download = await downloadPromise
   expect(download.suggestedFilename()).toBe(fileName)
   const path = await download.path()

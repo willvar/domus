@@ -1,16 +1,30 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, h } from 'vue'
+import {
+  NAlert,
+  NAvatar,
+  NButton,
+  NCard,
+  NDataTable,
+  NForm,
+  NFormItem,
+  NInput,
+  NModal,
+  NSelect,
+  NStatistic,
+  NTag,
+} from 'naive-ui'
 import { useRouter } from 'vue-router'
 import { useI18n } from '../composables/useI18n'
-import { useMessage } from '../composables/useMessage'
+import { useAppMessage } from '../ui/feedback'
 import { showPrompt, showConfirm } from '../composables/useNativeDialog'
 import api from '../composables/useApi'
 import dayjs from 'dayjs'
-import { Button, Modal, Form, FormItem, Input, Select, DataTable } from '../barrels/breeze'
+import { IconAccount, IconArrowLeft, IconCheck, IconEmailOutline, IconPlus } from '../barrels/icons'
 
 const router = useRouter()
 const { t } = useI18n()
-const message = useMessage()
+const message = useAppMessage()
 
 const users = ref<any[]>([])
 const loading = ref(false)
@@ -25,20 +39,44 @@ const roleOptions = [
   { label: 'User', value: 'user' },
 ]
 
+const otpProtectedCount = computed(() => users.value.filter(user => user.totp_enabled).length)
+const emailLinkedCount = computed(() => users.value.filter(user => Boolean(user.email)).length)
+
 const columns = computed(() => [
-  { title: t('admin.username'), key: 'username', minWidth: 100 },
-  { title: t('admin.role'), key: 'role', width: 80 },
+  {
+    title: t('admin.username'),
+    key: 'username',
+    minWidth: 180,
+    render: (row: any) => h('div', { class: 'user-cell' }, [
+      h(NAvatar, { round: true, size: 34 }, () => String(row.username || '?').slice(0, 1).toUpperCase()),
+      h('div', {}, [
+        h('strong', {}, row.username),
+        h('small', {}, `#${row.id}`),
+      ]),
+    ]),
+  },
+  {
+    title: t('admin.role'),
+    key: 'role',
+    width: 100,
+    render: (row: any) => h(NTag, { size: 'small', round: true, type: row.role === 'root' ? 'info' : 'default' }, () => row.role),
+  },
   {
     title: t('admin.email'),
     key: 'email',
     width: 160,
-    render: (row: any) => row.email || '---',
+    render: (row: any) => row.email || '—',
   },
   {
     title: t('admin.otp'),
     key: 'totp_enabled',
     width: 80,
-    render: (row: any) => row.totp_enabled ? t('admin.otp_enabled') : '---',
+    render: (row: any) => h(NTag, {
+      size: 'small',
+      round: true,
+      bordered: false,
+      type: row.totp_enabled ? 'success' : 'default',
+    }, () => row.totp_enabled ? t('admin.otp_enabled') : '—'),
   },
   {
     title: t('admin.created'),
@@ -49,18 +87,18 @@ const columns = computed(() => [
   {
     title: t('admin.actions'),
     key: 'actions',
-    width: 280,
+    width: 330,
     render(row: any) {
       const buttons = [
-        h(Button, { size: 'tiny', onClick: () => openEdit(row) }, () => t('admin.edit')),
-        h(Button, { size: 'tiny', onClick: () => resetPassword(row) }, () => t('admin.reset_pwd')),
-        h(Button, { size: 'tiny', type: 'error', onClick: () => deleteUser(row) }, () => t('admin.delete')),
+        h(NButton, { size: 'small', quaternary: true, onClick: () => openEdit(row) }, () => t('admin.edit')),
+        h(NButton, { size: 'small', quaternary: true, onClick: () => resetPassword(row) }, () => t('admin.reset_pwd')),
+        h(NButton, { size: 'small', quaternary: true, type: 'error', onClick: () => deleteUser(row) }, () => t('admin.delete')),
       ]
       if (row.totp_enabled) {
-        buttons.push(h(Button, { size: 'tiny', type: 'warning', onClick: () => resetOTP(row) }, () => t('admin.reset_otp')))
+        buttons.push(h(NButton, { size: 'small', quaternary: true, type: 'warning', onClick: () => resetOTP(row) }, () => t('admin.reset_otp')))
       }
       if (row.email) {
-        buttons.push(h(Button, { size: 'tiny', type: 'warning', onClick: () => resetEmail(row) }, () => t('admin.reset_email')))
+        buttons.push(h(NButton, { size: 'small', quaternary: true, type: 'warning', onClick: () => resetEmail(row) }, () => t('admin.reset_email')))
       }
       return h('div', { class: 'action-buttons' }, buttons)
     },
@@ -186,109 +224,199 @@ onMounted(() => {
 
 <template>
   <div class="admin-view">
-    <div v-if="!corsOk" class="cors-warning">
-      <strong>{{ t('admin.cors_warning_title') }}</strong>
-      <p>{{ t('admin.cors_warning_body') }}</p>
-    </div>
-    <div class="admin-header">
-      <h1>{{ t('admin.title') }}</h1>
-      <div style="display:flex;gap:8px">
-        <Button type="primary" size="small" @click="showCreate = true">
-          {{ t('admin.add_user') }}
-        </Button>
-        <Button size="small" @click="router.push('/')">
-          {{ t('admin.back_to_files') }}
-        </Button>
-      </div>
-    </div>
+    <header class="admin-topbar">
+      <div class="admin-brand"><span>D</span><strong>DOMUS</strong></div>
+      <NButton quaternary @click="router.push('/')">
+        <template #icon><IconArrowLeft /></template>
+        {{ t('admin.back_to_files') }}
+      </NButton>
+    </header>
 
-    <DataTable
-      :columns="columns"
-      :data="users"
-      :loading="loading"
-      :row-key="(row) => row.id"
-      size="small"
-    />
+    <main class="admin-content">
+      <div class="admin-header">
+        <div>
+          <span>{{ t('titlebar.admin_panel') }}</span>
+          <h1>{{ t('admin.title') }}</h1>
+          <p>{{ t('admin.subtitle') }}</p>
+        </div>
+        <NButton type="primary" @click="showCreate = true">
+          <template #icon><IconPlus /></template>
+          {{ t('admin.add_user') }}
+        </NButton>
+      </div>
+
+      <NAlert v-if="!corsOk" class="cors-warning" type="error" :title="t('admin.cors_warning_title')">
+        {{ t('admin.cors_warning_body') }}
+      </NAlert>
+
+      <section class="admin-stats">
+        <NCard :bordered="false">
+          <NStatistic :label="t('admin.total_users')" :value="users.length">
+            <template #prefix><IconAccount /></template>
+          </NStatistic>
+        </NCard>
+        <NCard :bordered="false">
+          <NStatistic :label="t('admin.otp_protected')" :value="otpProtectedCount">
+            <template #prefix><IconCheck /></template>
+          </NStatistic>
+        </NCard>
+        <NCard :bordered="false">
+          <NStatistic :label="t('admin.email_linked')" :value="emailLinkedCount">
+            <template #prefix><IconEmailOutline /></template>
+          </NStatistic>
+        </NCard>
+      </section>
+
+      <NCard class="users-card" :bordered="false">
+        <template #header>
+          <div class="users-card__header">
+            <div><strong>{{ t('admin.accounts') }}</strong><span>{{ t('admin.accounts_hint') }}</span></div>
+            <span>{{ users.length }}</span>
+          </div>
+        </template>
+        <NDataTable
+          :columns="columns"
+          :data="users"
+          :loading="loading"
+          :row-key="(row) => row.id"
+          size="small"
+          :bordered="false"
+          :scroll-x="1050"
+        />
+      </NCard>
+    </main>
 
     <!-- Create User Dialog -->
-    <Modal :show="showCreate" preset="dialog" :title="t('admin.create_user')" @close="showCreate = false" @mask-click="showCreate = false">
-      <Form>
-        <FormItem :label="t('admin.username')">
-          <Input :value="newUser.username" placeholder="" @update:value="v => newUser.username = v" />
-        </FormItem>
-        <FormItem :label="t('admin.password')">
-          <Input :value="newUser.password" type="password" placeholder="" @update:value="v => newUser.password = v" />
-        </FormItem>
-        <FormItem :label="t('admin.role')">
-          <Select v-model:value="newUser.role" :options="roleOptions" />
-        </FormItem>
-        <Button type="primary" block @click="createUser">{{ t('admin.create') }}</Button>
-      </Form>
-    </Modal>
+    <NModal
+      v-model:show="showCreate"
+      preset="card"
+      class="admin-dialog"
+      :title="t('admin.create_user')"
+      :bordered="false"
+    >
+      <NForm @submit.prevent="createUser">
+        <NFormItem :label="t('admin.username')">
+          <NInput :value="newUser.username" @update:value="v => newUser.username = v" />
+        </NFormItem>
+        <NFormItem :label="t('admin.password')">
+          <NInput :value="newUser.password" type="password" show-password-on="click" @update:value="v => newUser.password = v" />
+        </NFormItem>
+        <NFormItem :label="t('admin.role')">
+          <NSelect v-model:value="newUser.role" :options="roleOptions" />
+        </NFormItem>
+        <NButton type="primary" block attr-type="submit">{{ t('admin.create') }}</NButton>
+      </NForm>
+    </NModal>
 
     <!-- Edit User Dialog -->
-    <Modal :show="showEdit" preset="dialog" :title="t('admin.edit_user')" @close="showEdit = false" @mask-click="showEdit = false">
-      <Form v-if="editingUser">
-        <FormItem :label="t('admin.username')">
-          <Input :value="editingUser.username" disabled />
-        </FormItem>
-        <FormItem :label="t('admin.role')">
-          <Select v-model:value="editingUser.role" :options="roleOptions" />
-        </FormItem>
-        <Button type="primary" block @click="saveEdit">{{ t('admin.save') }}</Button>
-      </Form>
-    </Modal>
+    <NModal
+      v-model:show="showEdit"
+      preset="card"
+      class="admin-dialog"
+      :title="t('admin.edit_user')"
+      :bordered="false"
+    >
+      <NForm v-if="editingUser" @submit.prevent="saveEdit">
+        <NFormItem :label="t('admin.username')">
+          <NInput :value="editingUser.username" disabled />
+        </NFormItem>
+        <NFormItem :label="t('admin.role')">
+          <NSelect v-model:value="editingUser.role" :options="roleOptions" />
+        </NFormItem>
+        <NButton type="primary" block attr-type="submit">{{ t('admin.save') }}</NButton>
+      </NForm>
+    </NModal>
   </div>
 </template>
 
 <style lang="scss" scoped>
 .admin-view {
-  max-width: 1000px;
+  min-height: 100dvh;
+  overflow: auto;
+  color: #172033;
+  background: #f4f6fa;
+}
+
+.admin-topbar {
+  display: flex;
+  height: 72px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 max(28px, calc((100vw - 1180px) / 2));
+  border-bottom: 1px solid #e3e7ef;
+  background: rgb(255 255 255 / 88%);
+  backdrop-filter: blur(18px);
+}
+
+.admin-brand { display: flex; align-items: center; gap: 11px; font-size: 14px; letter-spacing: .14em; }
+.admin-brand span { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 11px; color: #fff; background: linear-gradient(145deg, #6574f0, #4352d0); box-shadow: 0 8px 18px rgb(79 95 231 / 22%); font-size: 15px; font-weight: 800; letter-spacing: 0; }
+
+.admin-content {
+  width: min(1180px, calc(100% - 48px));
   margin: 0 auto;
-  padding: 32px 24px;
-  min-height: 100vh;
-  background: var(--breeze-bg);
+  padding: 48px 0 72px;
 }
 
 .admin-header {
   display: flex;
-  align-items: center;
+  align-items: end;
   justify-content: space-between;
-  margin-bottom: 20px;
+  gap: 24px;
+  margin-bottom: 28px;
 
   h1 {
-    font-size: 22px;
-    font-weight: 600;
-    margin: 0;
-    color: var(--breeze-text);
+    margin: 6px 0 0;
+    font-size: 34px;
+    font-weight: 730;
+    letter-spacing: -.04em;
   }
+
+  > div > span { color: #4f5fe7; font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
+  p { margin: 9px 0 0; color: #657087; font-size: 14px; }
 }
 
 :deep(.action-buttons) {
   display: flex;
-  gap: 4px;
+  gap: 2px;
   flex-wrap: wrap;
 }
 
+:deep(.user-cell) { display: flex; align-items: center; gap: 11px; }
+:deep(.user-cell strong),
+:deep(.user-cell small) { display: block; }
+:deep(.user-cell strong) { font-size: 13px; font-weight: 680; }
+:deep(.user-cell small) { margin-top: 2px; color: #657087; font-size: 10px; }
+
 .cors-warning {
-  padding: 12px 16px;
-  margin-bottom: 16px;
-  border-radius: 6px;
-  background: rgba(218, 68, 83, 0.12);
-  border: 1px solid var(--breeze-danger, #da4453);
-  color: var(--breeze-text);
+  margin-bottom: 22px;
+}
 
-  strong {
-    display: block;
-    margin-bottom: 4px;
-    color: var(--breeze-danger, #da4453);
-  }
+.admin-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }
+.admin-stats :deep(.n-card) { border: 1px solid #e6e9f0; box-shadow: 0 8px 26px rgb(26 36 58 / 4%); }
+.admin-stats :deep(.n-statistic-value) { display: flex; align-items: center; gap: 10px; color: #172033; font-size: 28px; font-weight: 720; }
+.admin-stats :deep(.n-statistic-value__prefix) { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 11px; color: #4f5fe7; background: #edf0ff; }
+.admin-stats :deep(.n-statistic-value__prefix svg) { width: 19px; height: 19px; }
 
-  p {
-    margin: 0;
-    font-size: 13px;
-    line-height: 1.5;
-    color: var(--breeze-text-secondary);
-  }
+.users-card { border: 1px solid #e4e8ef; box-shadow: 0 12px 36px rgb(26 36 58 / 5%); }
+.users-card :deep(.n-card__content) { padding: 0; overflow: hidden; border-radius: 0 0 18px 18px; }
+.users-card__header { display: flex; align-items: center; justify-content: space-between; }
+.users-card__header strong,
+.users-card__header div span { display: block; }
+.users-card__header strong { font-size: 17px; }
+.users-card__header div span { margin-top: 4px; color: #68748a; font-size: 12px; font-weight: 400; }
+.users-card__header > span { display: grid; min-width: 32px; height: 26px; place-items: center; border-radius: 999px; color: #4f5fe7; background: #edf0ff; font-size: 12px; font-weight: 700; }
+
+.admin-dialog {
+  width: min(480px, calc(100vw - 32px));
+}
+
+@media (max-width: 700px) {
+  .admin-topbar { height: 64px; padding: 0 16px; }
+  .admin-brand strong { display: none; }
+  .admin-content { width: min(100% - 30px, 1180px); padding: 30px 0 50px; }
+  .admin-header { align-items: flex-start; flex-direction: column; gap: 18px; }
+  .admin-header h1 { font-size: 29px; }
+  .admin-stats { grid-template-columns: 1fr; gap: 10px; }
+  .admin-stats :deep(.n-card__content) { padding: 17px 20px; }
 }
 </style>

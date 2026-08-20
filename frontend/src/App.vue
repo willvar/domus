@@ -1,10 +1,10 @@
 <script setup lang="ts">
-import { onMounted, watchEffect } from 'vue'
+import { onMounted, onUnmounted, watchEffect } from 'vue'
+import { NSpin } from 'naive-ui'
 import { useAuthStore } from './stores/auth'
 import { useI18n } from './composables/useI18n'
 import LoginPage from './components/LoginPage.vue'
-import GlobalDialog from './components/GlobalDialog.vue'
-import { Spin, MessageList, NotificationList } from './barrels/breeze'
+import NaiveProvider from './components/NaiveProvider.vue'
 
 const auth = useAuthStore()
 const { t } = useI18n()
@@ -13,30 +13,36 @@ watchEffect(() => {
   document.title = t('app.title')
 })
 
+function preventContextMenu(event: MouseEvent): void {
+  event.preventDefault()
+}
+
 onMounted(async () => {
-  document.addEventListener('contextmenu', (e) => e.preventDefault())
+  document.addEventListener('contextmenu', preventContextMenu)
   await auth.ensureAuthInitialized()
+})
+
+onUnmounted(() => {
+  document.removeEventListener('contextmenu', preventContextMenu)
 })
 </script>
 
 <template>
-  <div v-if="auth.loading" class="loading-screen">
-    <Spin size="large" />
-  </div>
+  <NaiveProvider>
+    <div v-if="auth.loading" class="loading-screen">
+      <NSpin size="large" />
+    </div>
 
-  <LoginPage v-else-if="!auth.isLoggedIn" />
+    <LoginPage v-else-if="!auth.isLoggedIn" />
 
-  <router-view v-else />
-
-  <GlobalDialog />
-  <MessageList />
-  <NotificationList />
+    <router-view v-else />
+  </NaiveProvider>
 </template>
 
 <style lang="scss" scoped>
 .loading-screen {
   @include flex-center;
   height: 100%;
-  background: var(--breeze-bg);
+  background: #f6f7fb;
 }
 </style>

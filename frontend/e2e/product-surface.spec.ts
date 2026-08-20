@@ -24,6 +24,28 @@ test('桌面与移动端共用唯一文件管理界面，退役产品面不再�
   await expect(page.locator('.file-shell')).toBeVisible()
   await expect(page.locator('.file-sidebar')).toBeHidden()
   await expect(page.locator('.mobile-bottom-nav')).toBeVisible()
+
+  const taskCenterButton = page.getByRole('button', { name: /任务中心|Task center/ })
+  await expect(taskCenterButton.locator('.activity-center-icon')).toBeVisible()
+  await taskCenterButton.click()
+  const taskCenterDrawer = page.locator('.mobile-activity-drawer')
+  await expect(taskCenterDrawer).toBeVisible()
+  await expect(taskCenterDrawer).toContainText(/任务中心|Task center/)
+  await expect.poll(async () => {
+    const box = await taskCenterDrawer.boundingBox()
+    return box ? Math.round(box.y + box.height) : 0
+  }).toBe(844)
+  const taskCenterBox = await taskCenterDrawer.boundingBox()
+  const mobileHeaderBox = await page.locator('.file-header').boundingBox()
+  expect(taskCenterBox).not.toBeNull()
+  expect(mobileHeaderBox).not.toBeNull()
+  expect(taskCenterBox!.x).toBeCloseTo(0, 1)
+  expect(taskCenterBox!.width).toBeCloseTo(390, 1)
+  expect(taskCenterBox!.height).toBeLessThanOrEqual(844 * 0.72 + 1)
+  expect(taskCenterBox!.y).toBeGreaterThan(mobileHeaderBox!.y + mobileHeaderBox!.height)
+  await page.keyboard.press('Escape')
+  await expect(taskCenterDrawer).toBeHidden()
+
   await page.locator('.mobile-bottom-nav').getByRole('button', { name: /回收站|Trash/ }).click()
   await expect(page.locator('.content-heading h1')).toHaveText(/回收站|Trash/)
   await page.locator('.mobile-bottom-nav').getByRole('button', { name: /我的文件|My Files/ }).click()
