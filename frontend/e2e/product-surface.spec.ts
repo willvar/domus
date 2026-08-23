@@ -2,6 +2,12 @@ import { expect, test } from '@playwright/test'
 import { apiBaseURL, e2eCredentials, login, websocketActionCount } from './helpers'
 
 test('桌面与移动端共用唯一文件管理界面，退役产品面不再出现', async ({ page }) => {
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
+  const loginStory = page.locator('.login-story')
+  await expect(loginStory).toBeVisible()
+  await expect(loginStory).toContainText(/让文件管理回归简单|File management, kept simple/)
+  await expect(loginStory).not.toContainText(/OSS|DOFS|对象存储|object storage|直传|encrypt/i)
+
   await login(page, e2eCredentials())
 
   await expect(page).toHaveURL(/\/files(?:\?.*)?$/)
@@ -10,6 +16,8 @@ test('桌面与移动端共用唯一文件管理界面，退役产品面不再�
   await expect(page.locator('.mobile-bottom-nav')).toBeHidden()
   await expect(page.locator('.desktop, .plasma-window, .xterm')).toHaveCount(0)
   await expect(page.locator('.file-shell')).not.toContainText(/共享|Share|终端|Terminal|转码|Transcode/)
+  await expect(page.locator('.file-sidebar')).not.toContainText(/OSS|DOFS|对象存储|object storage|直传|encrypt/i)
+  await expect(page.locator('.file-statusbar')).not.toContainText(/OSS|DOFS|对象存储|object storage|直传|encrypt/i)
 
   for (const response of [
     await page.request.get(`${apiBaseURL}/file/shared`),

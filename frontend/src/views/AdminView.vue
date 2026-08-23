@@ -23,7 +23,7 @@ import dayjs from 'dayjs'
 import { IconAccount, IconArrowLeft, IconCheck, IconEmailOutline, IconPlus } from '../barrels/icons'
 
 const router = useRouter()
-const { t } = useI18n()
+const { t, te } = useI18n()
 const message = useAppMessage()
 
 const users = ref<any[]>([])
@@ -119,8 +119,8 @@ async function loadUsers() {
   try {
     const { data } = await api.get('/audit/user/')
     users.value = Array.isArray(data) ? data : []
-  } catch {
-    message.error('Failed to load users')
+  } catch (e: any) {
+    message.error(te(e, 'admin.load_failed'))
   } finally {
     loading.value = false
   }
@@ -134,7 +134,7 @@ async function createUser() {
     newUser.value = { username: '', password: '', role: 'user' }
     await loadUsers()
   } catch (e: any) {
-    message.error(e.error || 'Failed')
+    message.error(te(e, 'admin.create_failed'))
   }
 }
 
@@ -149,7 +149,7 @@ async function saveEdit() {
     editingUser.value = null
     await loadUsers()
   } catch (e: any) {
-    message.error(e.error || 'Failed')
+    message.error(te(e, 'admin.update_failed'))
   }
 }
 
@@ -159,8 +159,8 @@ async function resetPassword(user: any) {
   try {
     await api.put('/audit/user/' + user.id, { password })
     message.success(t('admin.pwd_updated'))
-  } catch {
-    message.error('Failed to reset password')
+  } catch (e: any) {
+    message.error(te(e, 'admin.password_reset_failed'))
   }
 }
 
@@ -171,7 +171,7 @@ async function deleteUser(user: any) {
     message.success(t('admin.user_deleted'))
     await loadUsers()
   } catch (e: any) {
-    message.error(e.error || 'Failed')
+    message.error(te(e, 'admin.delete_failed'))
   }
 }
 
@@ -181,8 +181,8 @@ async function resetOTP(user: any) {
     await api.delete('/audit/user/' + user.id + '/otp')
     message.success(t('admin.otp_reset'))
     await loadUsers()
-  } catch {
-    message.error('Failed to reset OTP')
+  } catch (e: any) {
+    message.error(te(e, 'admin.otp_reset_failed'))
   }
 }
 
@@ -192,8 +192,8 @@ async function resetEmail(user: any) {
     await api.delete('/audit/user/' + user.id + '/email')
     message.success(t('admin.email_reset'))
     await loadUsers()
-  } catch {
-    message.error('Failed to reset email')
+  } catch (e: any) {
+    message.error(te(e, 'admin.email_reset_failed'))
   }
 }
 

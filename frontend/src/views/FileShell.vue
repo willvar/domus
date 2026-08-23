@@ -802,10 +802,6 @@ function phaseLabel(phase?: string): string {
         @update:value="value => choosePlace(value as 'files' | 'trash')"
       />
 
-      <NAlert class="security-note" type="success" :title="t('files.encrypted_title')">
-        {{ t('files.encrypted_body') }}
-      </NAlert>
-
       <NPopover
         :show="showAccount && !isMobile"
         trigger="click"
@@ -1216,7 +1212,6 @@ function phaseLabel(phase?: string): string {
 
         <footer class="file-statusbar">
           <span>{{ t('files.item_summary', { folders: foldersCount, files: filesCount }) }}</span>
-          <span>DOFS · {{ t('files.client_encrypted') }}</span>
         </footer>
       </section>
     </main>
@@ -1341,7 +1336,7 @@ function phaseLabel(phase?: string): string {
     </NDrawer>
 
     <div v-if="draggingFiles" class="drop-overlay">
-      <div><IconUpload /><strong>{{ t('fileview.drop') }}</strong><span>{{ t('files.drop_encrypted') }}</span></div>
+      <div><IconUpload /><strong>{{ t('fileview.drop') }}</strong><span>{{ t('files.drop_hint') }}</span></div>
     </div>
 
     <input ref="uploadInput" class="upload-input" type="file" multiple @change="handleUploadSelection" />
@@ -1402,16 +1397,10 @@ button, input, select { font: inherit; }
 .place-list :deep(.n-menu-item-content) { border-radius: 12px; }
 .place-list :deep(.n-menu-item-content-header) { font-weight: 620; }
 
-.security-note {
-  margin-top: auto;
-  margin-bottom: 10px;
-}
-.security-note :deep(.n-alert-body__title) { font-size: 13px; font-weight: 700; }
-.security-note :deep(.n-alert-body__content) { color: #626d82; font-size: 11px; line-height: 1.5; }
-
 .sidebar-account {
   width: 100%;
   height: 58px;
+  margin-top: auto;
   padding: 8px 10px;
   border: 1px solid transparent;
   border-radius: 13px;
