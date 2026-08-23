@@ -25,12 +25,12 @@ help:
 
 build:
 	@mkdir -p $(BUILD_DIR)
-	CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -trimpath -o $(BUILD_DIR)/domus .
+	CGO_ENABLED=0 GOWORK=off go build -ldflags="$(LDFLAGS)" -trimpath -o $(BUILD_DIR)/domus .
 	@echo "Built: $(BUILD_DIR)/domus ($(VERSION))"
 
 build-win:
 	@mkdir -p $(BUILD_DIR)
-	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="$(LDFLAGS)" -trimpath -o $(BUILD_DIR)/domus.exe .
+	GOOS=windows GOARCH=amd64 CGO_ENABLED=0 GOWORK=off go build -ldflags="$(LDFLAGS)" -trimpath -o $(BUILD_DIR)/domus.exe .
 	@echo "Built: $(BUILD_DIR)/domus.exe ($(VERSION))"
 
 build-prod: build
@@ -64,7 +64,7 @@ dev-web:
 	go run . start -c "$(DEV_CONFIG)"
 
 test:
-	go test ./... -count=1 -timeout 120s
+	GOWORK=off go test ./... -count=1 -timeout 120s
 
 test-e2e:
 	DOMUS_E2E_CONFIG="$(DEV_CONFIG)" \
@@ -77,10 +77,10 @@ test-dofs:
 	$(MAKE) -C ../dofs test-fuse
 
 tidy:
-	go mod tidy
+	GOWORK=off go mod tidy
 
 lint:
-	golangci-lint run
+	GOWORK=off golangci-lint run
 	cd frontend && npm run check
 
 clean:
