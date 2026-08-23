@@ -8,7 +8,7 @@ require (
 	github.com/gofiber/websocket/v2 v2.2.1
 	github.com/google/uuid v1.6.0
 	github.com/minio/minio-go/v7 v7.3.0
-	github.com/willvar/dofs v0.1.1
+	github.com/willvar/dofs v0.1.2
 	golang.org/x/crypto v0.55.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/term v0.45.0
