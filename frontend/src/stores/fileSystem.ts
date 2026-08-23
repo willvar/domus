@@ -976,7 +976,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const notebookExts: Set<string> = new Set(['ipynb'])
   const textExts: Set<string> = new Set([
     'txt', 'json', 'yaml', 'yml', 'xml', 'log', 'ini', 'conf', 'cfg',
-    'js', 'ts', 'jsx', 'tsx', 'vue', 'html', 'css', 'scss', 'less',
+    'js', 'ts', 'jsx', 'tsx', 'vue', 'html', 'htm', 'css', 'scss', 'less',
     'sass', 'styl', 'pug', 'coffee', 'liquid',
     'go', 'py', 'rb', 'java', 'c', 'cpp', 'h', 'hpp', 'rs', 'swift', 'kt',
     'd', 'pas', 'f90', 'f95', 'f', 'v', 'sv', 'vhd', 'vhdl',
@@ -997,7 +997,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const extToLanguage: Record<string, string> = {
     // Web
     js: 'javascript', ts: 'typescript', jsx: 'javascript', tsx: 'typescript',
-    vue: 'vue', html: 'html', css: 'css', scss: 'scss', less: 'less', liquid: 'liquid',
+    vue: 'vue', html: 'html', htm: 'html', css: 'css', scss: 'scss', less: 'less', liquid: 'liquid',
     sass: 'sass', styl: 'stylus', pug: 'pug', coffee: 'coffeescript',
     // Systems / compiled
     go: 'go', py: 'python', rb: 'ruby', java: 'java',
@@ -1621,6 +1621,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     downloadFile,
     appWindows,
     getViewerType,
+    getLanguage,
     findApp,
     openViewer,
     saveViewer,

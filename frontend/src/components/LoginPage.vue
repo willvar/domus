@@ -194,8 +194,8 @@ function resetTo(newTab: string) {
           <h1>{{ t('login.headline') }}</h1>
           <p>{{ t('login.subtitle') }}</p>
           <ul>
-            <li><span><IconCheck /></span>{{ t('login.feature_encrypt') }}</li>
-            <li><span><IconCheck /></span>{{ t('login.feature_direct') }}</li>
+            <li><span><IconCheck /></span>{{ t('login.feature_organize') }}</li>
+            <li><span><IconCheck /></span>{{ t('login.feature_preview') }}</li>
             <li><span><IconCheck /></span>{{ t('login.feature_isolated') }}</li>
           </ul>
         </div>
@@ -210,8 +210,8 @@ function resetTo(newTab: string) {
           <div class="storage-visual__card storage-visual__card--front">
             <div class="storage-visual__lock">D</div>
             <div>
-              <strong>encrypted-object</strong>
-              <small>browser → object storage</small>
+              <strong>{{ t('login.visual_title') }}</strong>
+              <small>{{ t('login.visual_caption') }}</small>
             </div>
             <IconCheck />
           </div>
@@ -311,7 +311,6 @@ function resetTo(newTab: string) {
           </NForm>
         </div>
       </template>
-        <div class="login-security"><span><IconCheck /></span>{{ t('login.security_note') }}</div>
       </NCard>
     </section>
   </div>
@@ -428,8 +427,7 @@ function resetTo(newTab: string) {
   font-weight: 560;
 }
 
-.login-story__copy li span,
-.login-security span {
+.login-story__copy li span {
   display: grid;
   width: 21px;
   height: 21px;
@@ -440,8 +438,7 @@ function resetTo(newTab: string) {
   background: #35a47f;
 }
 
-.login-story__copy li svg,
-.login-security svg { width: 13px; height: 13px; }
+.login-story__copy li svg { width: 13px; height: 13px; }
 
 .storage-visual {
   position: relative;
@@ -575,19 +572,6 @@ function resetTo(newTab: string) {
   color: #626d82;
   margin-bottom: 16px;
 }
-
-.login-security {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin-top: 24px;
-  color: #657087;
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.login-security span { width: 18px; height: 18px; }
-.login-security svg { width: 11px; height: 11px; }
 
 @media (max-width: 980px) {
   .login-page { grid-template-columns: minmax(370px, .85fr) minmax(430px, 1fr); }

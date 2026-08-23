@@ -37,9 +37,9 @@ export function useI18n(): {
       if (import.meta.env.DEV) {
         console.warn(`[i18n] missing translation for "${i18nKey}"`)
       }
-      return key.replace(/_/g, ' ').replace(/^./, (c: string) => c.toUpperCase())
+      return fallbackKey ? t(fallbackKey) : t('error.operation_failed')
     }
-    return fallbackKey ? t(fallbackKey) : (error?.message || '')
+    return fallbackKey ? t(fallbackKey) : t('error.operation_failed')
   }
 
   function setLocale(lang: Locale): void {

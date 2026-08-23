@@ -27,10 +27,22 @@ function phaseLabel(phase?: string): string {
     generating: t('files.phase_preparing'),
     encrypting: t('files.phase_encrypting'),
     uploading: t('files.phase_uploading'),
+    uploading_oss: t('files.phase_uploading'),
+    transferring: t('files.phase_uploading'),
+    hashing: t('tasks.phase_hashing'),
     thumbnail: t('files.phase_preview'),
     processing: t('files.phase_finishing'),
+    finalizing: t('files.phase_finishing'),
+    pending: t('tasks.status_pending'),
+    running: t('tasks.status_running'),
+    paused: t('tasks.status_paused'),
+    completed: t('tasks.status_completed'),
+    failed: t('tasks.status_failed'),
+    aborted: t('tasks.status_aborted'),
+    cancelled: t('tasks.status_cancelled'),
   }
-  return (phase && labels[phase]) || phase || t('files.phase_waiting')
+  if (!phase) return t('files.phase_waiting')
+  return labels[phase] || t('tasks.phase_processing')
 }
 </script>
 
@@ -65,7 +77,7 @@ function phaseLabel(phase?: string): string {
           </NButton>
         </article>
         <article v-for="item in serverTasks" :key="item.task_id">
-          <div><strong>{{ item.name || item.type }}</strong><span>{{ item.phase || item.status }}</span></div>
+          <div><strong>{{ item.name || item.type }}</strong><span>{{ phaseLabel(item.phase || item.status) }}</span></div>
           <span>{{ Math.round((item.progress || 0) * 100) }}%</span>
           <NProgress class="progress" type="line" :percentage="(item.progress || 0) * 100" :show-indicator="false" />
         </article>
