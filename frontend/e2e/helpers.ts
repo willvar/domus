@@ -330,9 +330,30 @@ export async function uploadFromToolbar(
 }
 
 export async function permanentlyDelete(page: Page, path: string): Promise<void> {
+  const normalized = path !== '/' && path.endsWith('/') ? path.slice(0, -1) : path
+  const separator = normalized.lastIndexOf('/')
+  const parent = separator <= 0 ? '/' : `${normalized.slice(0, separator)}/`
+  const listing = await page.request.get(`${apiBaseURL}/file/`, { params: { path: parent } })
+  expect(listing.ok(), `cleanup listing failed with HTTP ${listing.status()}`).toBeTruthy()
+  const body = await listing.json() as { files?: Array<{ path: string; inode?: number }> }
+  const file = (body.files || []).find(item => item.path === path)
+  if (!file?.inode) return
   const response = await page.request.delete(`${apiBaseURL}/file/delete`, {
-    params: { path, permanent: 'true' },
+    params: { path, permanent: 'true', expected_inode: String(file.inode) },
   })
-  if (response.status() === 404) return
   expect(response.ok(), `cleanup failed with HTTP ${response.status()}`).toBeTruthy()
+}
+
+export async function permanentlyDeleteTrashEntry(page: Page, trashID: string): Promise<void> {
+  const listing = await page.request.get(`${apiBaseURL}/trash/`)
+  expect(listing.ok(), `trash cleanup listing failed with HTTP ${listing.status()}`).toBeTruthy()
+  const body = await listing.json() as {
+    files?: Array<{ trash_id?: string; inode?: number }>
+  }
+  const entry = (body.files || []).find(item => item.trash_id === trashID)
+  if (!entry?.inode) return
+  const response = await page.request.delete(`${apiBaseURL}/trash/${encodeURIComponent(trashID)}`, {
+    params: { path: '/', expected_inode: String(entry.inode) },
+  })
+  expect(response.ok(), `trash cleanup failed with HTTP ${response.status()}`).toBeTruthy()
 }

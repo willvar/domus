@@ -42,11 +42,11 @@ func setupTestDB(t *testing.T) (*gorm.DB, *Repos) {
 	if err := revokeLegacyPathShares(database); err != nil {
 		t.Fatalf("failed to revoke legacy shares: %v", err)
 	}
-	if err := database.AutoMigrate(&User{}, &DBSession{}, &Task{}, &AuditLog{}, &WorkspaceState{}, &Share{}); err != nil {
+	if err := database.AutoMigrate(&User{}, &DBSession{}, &Task{}, &AuditLog{}, &WorkspaceState{}, &Share{}, &TrashEntry{}); err != nil {
 		t.Fatalf("failed to migrate: %v", err)
 	}
 	for _, statement := range []string{
-		"DELETE FROM shares", "DELETE FROM tasks", "DELETE FROM workspace_states",
+		"DELETE FROM domus_trash_entries", "DELETE FROM shares", "DELETE FROM tasks", "DELETE FROM workspace_states",
 		"DELETE FROM sessions", "DELETE FROM users",
 	} {
 		if err := database.Exec(statement).Error; err != nil {
@@ -136,6 +136,18 @@ func TestDeleteUserAndRelatedApplicationData(t *testing.T) {
 	if err := repos.Workspace.Save(owner.ID, `{"layout":"test"}`); err != nil {
 		t.Fatal(err)
 	}
+	if err := repos.Trash.Create(&TrashEntry{
+		ID: "owner-trash", UserID: owner.ID, RootInode: 10, OriginalPath: "/doc.txt",
+		OriginalName: "doc.txt", State: TrashStateReady,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := repos.Trash.Create(&TrashEntry{
+		ID: "other-trash", UserID: other.ID, RootInode: 11, OriginalPath: "/keep.txt",
+		OriginalName: "keep.txt", State: TrashStateReady,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	for _, share := range []Share{
 		{ShareID: "owned", OwnerID: owner.ID, FileInode: 1, FilePath: "/a", FileName: "a", TargetUserID: target.ID, WrappedDEK: "aa", Permission: "read"},
 		{ShareID: "incoming", OwnerID: other.ID, FileInode: 2, FilePath: "/b", FileName: "b", TargetUserID: owner.ID, WrappedDEK: "bb", Permission: "read"},
@@ -157,6 +169,12 @@ func TestDeleteUserAndRelatedApplicationData(t *testing.T) {
 	}
 	if _, err := repos.Workspace.Get(owner.ID); err == nil {
 		t.Fatal("workspace state was not deleted")
+	}
+	if _, err := repos.Trash.Get(owner.ID, "owner-trash"); err == nil {
+		t.Fatal("trash entry was not deleted")
+	}
+	if _, err := repos.Trash.Get(other.ID, "other-trash"); err != nil {
+		t.Fatalf("unrelated trash entry was deleted: %v", err)
 	}
 	for _, deleted := range []string{"owned", "incoming"} {
 		if _, err := repos.Shares.GetByID(deleted); err == nil {

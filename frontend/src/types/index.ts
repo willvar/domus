@@ -53,6 +53,7 @@ export interface LoginResponse {
  * Mirrors `store.FileInfo` in `internal/store/oss.go`.
  */
 export interface FileInfo {
+  inode?: number
   name: string
   path: string
   is_dir: boolean
@@ -87,6 +88,10 @@ export interface FileListItem extends FileInfo {
   _permission?: 'read' | 'write'
   _expiresAt?: string | null
   _originalName?: string
+  trash_id?: string
+  relative_path?: string
+  original_path?: string
+  deleted_at?: string
 }
 
 /** Share record. Mirrors model.Share. */
@@ -394,6 +399,7 @@ export interface ConflictInfo {
 /** Pending offline operation stored in IndexedDB. */
 export interface PendingOp {
   id: string
+  schemaVersion?: number
   createdAt: number
   lastAttempt: number | null
   lastError: string | null
@@ -466,6 +472,7 @@ export interface PendingRequest {
  */
 export interface WSPushEventMap {
   'dir.changed': { path: string; change_type: string }
+  'trash.changed': Record<string, never>
   'task.update': TaskUpdateEvent
   'session.expired': void
   'session.output': { session_id: string; data_base64: string }
@@ -520,11 +527,12 @@ export interface DuplicateDialogOptions {
   existingName: string
   existingSize: number
   existingIsDir: boolean
+  allowMerge?: boolean
 }
 
 /** Result returned by the duplicate conflict dialog. */
 export interface DuplicateDecision {
-  action: 'skip' | 'replace' | 'rename'
+  action: 'skip' | 'replace' | 'rename' | 'merge'
   applyToAll?: boolean
 }
 
@@ -537,6 +545,7 @@ export interface DuplicateDecision {
  * Contains everything the Service Worker needs for client-side decryption.
  */
 export interface FileAccessResponse {
+  inode?: number
   url: string
   size: number
   name: string

@@ -3,7 +3,7 @@ package handler
 import (
 	"context"
 	"errors"
-	"log"
+	"path"
 	"strings"
 
 	"domus/internal/model"
@@ -11,69 +11,29 @@ import (
 	"gorm.io/gorm"
 )
 
-const trashRootPath = "/__trash__/"
 const trashStorageRootPath = "/.domus/trash/"
 
-func normalizeAppPath(path string) string {
-	if path == "" {
+func normalizeAppPath(rawPath string) string {
+	if rawPath == "" {
 		return "/"
 	}
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
+	if !strings.HasPrefix(rawPath, "/") {
+		rawPath = "/" + rawPath
 	}
-	if path != "/" && strings.HasSuffix(path, "/") {
-		return path
+	directory := strings.HasSuffix(rawPath, "/")
+	cleaned := path.Clean(rawPath)
+	if directory && cleaned != "/" {
+		cleaned += "/"
 	}
-	return path
-}
-
-func isTrashAppPath(path string) bool {
-	path = normalizeAppPath(path)
-	return path == trashRootPath || strings.HasPrefix(path, trashRootPath)
+	return cleaned
 }
 
 func isProtectedMutationRoot(path string) bool {
 	path = normalizeAppPath(path)
-	return path == "/" || path == strings.TrimSuffix(trashRootPath, "/") || path == trashRootPath
-}
-
-func trashAppPath(path string) string {
-	path = normalizeAppPath(path)
-	if path == "/" {
-		return trashRootPath
-	}
-	return trashRootPath + strings.TrimPrefix(path, "/")
-}
-
-// pruneEmptyTrashParents removes the path-shaped directory scaffolding left
-// behind after restoring or permanently deleting an item from the trash. The
-// private trash root itself is permanent and is never removed.
-func (h *Handler) pruneEmptyTrashParents(userID, storagePath string) error {
-	current := parentDirOf(storagePath)
-	for current != trashStorageRootPath && strings.HasPrefix(current, trashStorageRootPath) {
-		children, err := h.Repos.Files.ListDirectChildren(userID, current)
-		if err != nil {
-			return err
-		}
-		if len(children) != 0 {
-			return nil
-		}
-		if err := h.Repos.Files.Delete(userID, current); err != nil {
-			return err
-		}
-		current = parentDirOf(current)
-	}
-	return nil
-}
-
-func (h *Handler) pruneEmptyTrashParentsBestEffort(userID, storagePath string) {
-	if err := h.pruneEmptyTrashParents(userID, storagePath); err != nil {
-		log.Printf("[trash] prune empty parents for %s: %v", storagePath, err)
-	}
+	return path == "/"
 }
 
 // ensureParentDirRecords creates any missing ancestor directory records for a destination path.
-// Trash root itself is implicit and intentionally not materialized as a normal file record.
 func (h *Handler) ensureParentDirRecords(userID, storagePath string, isDir bool) error {
 	storagePath = normalizeAppPath(storagePath)
 	trimmed := strings.Trim(storagePath, "/")
@@ -150,6 +110,9 @@ func (h *Handler) revokeFileShares(userID string, inode int64) {
 func (h *Handler) permanentlyDeletePathWithProgress(userID, resolvedPath string, isDir bool, progress func(done, total int, current string)) error {
 	if isDir {
 		records, err := h.Repos.Files.ListByPrefix(userID, resolvedPath)
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -200,14 +163,6 @@ func (h *Handler) permanentlyDeletePathWithProgress(userID, resolvedPath string,
 	return nil
 }
 
-func shouldMoveShares(srcAppPath, dstAppPath string) bool {
-	return !isTrashAppPath(srcAppPath) && !isTrashAppPath(dstAppPath)
-}
-
-func shouldDeleteSharesOnMove(srcAppPath, dstAppPath string) bool {
-	return !isTrashAppPath(srcAppPath) && isTrashAppPath(dstAppPath)
-}
-
 func syncMovedFileRecords(h *Handler, userID, srcResolved, dstResolved, srcAppPath, dstAppPath string, isDir bool) error {
 	if isDir {
 		records, err := h.Repos.Files.ListByPrefix(userID, srcResolved)
@@ -217,26 +172,15 @@ func syncMovedFileRecords(h *Handler, userID, srcResolved, dstResolved, srcAppPa
 		if err := h.Repos.Files.MoveByPrefix(userID, srcResolved, dstResolved); err != nil {
 			return err
 		}
-		if shouldMoveShares(srcAppPath, dstAppPath) {
-			for index := range records {
-				if records[index].IsDir {
-					continue
-				}
-				if current, err := h.Repos.Files.GetByID(userID, records[index].ID); err == nil {
-					_ = h.Repos.Shares.SyncByInode(
-						userID, current.ID, current.Path, current.Name, current.Size, current.ContentType,
-					)
-				}
+		for index := range records {
+			if records[index].IsDir {
+				continue
 			}
-		} else if shouldDeleteSharesOnMove(srcAppPath, dstAppPath) {
-			for index := range records {
-				if !records[index].IsDir {
-					h.revokeFileShares(userID, records[index].ID)
-				}
+			if current, err := h.Repos.Files.GetByID(userID, records[index].ID); err == nil {
+				_ = h.Repos.Shares.SyncByInode(
+					userID, current.ID, current.Path, current.Name, current.Size, current.ContentType,
+				)
 			}
-		}
-		if isTrashAppPath(srcAppPath) && !isTrashAppPath(dstAppPath) {
-			h.pruneEmptyTrashParentsBestEffort(userID, srcResolved)
 		}
 		return nil
 	}
@@ -252,17 +196,10 @@ func syncMovedFileRecords(h *Handler, userID, srcResolved, dstResolved, srcAppPa
 	if err := h.Repos.Files.Move(userID, srcResolved, dstResolved, newName); err != nil {
 		return err
 	}
-	if shouldMoveShares(srcAppPath, dstAppPath) {
-		if current, err := h.Repos.Files.GetByID(userID, record.ID); err == nil {
-			_ = h.Repos.Shares.SyncByInode(
-				userID, current.ID, current.Path, current.Name, current.Size, current.ContentType,
-			)
-		}
-	} else if shouldDeleteSharesOnMove(srcAppPath, dstAppPath) {
-		h.revokeFileShares(userID, record.ID)
-	}
-	if isTrashAppPath(srcAppPath) && !isTrashAppPath(dstAppPath) {
-		h.pruneEmptyTrashParentsBestEffort(userID, srcResolved)
+	if current, err := h.Repos.Files.GetByID(userID, record.ID); err == nil {
+		_ = h.Repos.Shares.SyncByInode(
+			userID, current.ID, current.Path, current.Name, current.Size, current.ContentType,
+		)
 	}
 	return nil
 }

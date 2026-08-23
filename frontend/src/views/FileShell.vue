@@ -66,6 +66,11 @@ import { usePendingOpsStore } from '../stores/pendingOps'
 import { useTasksStore } from '../stores/tasks'
 import { useUploadStore } from '../stores/upload'
 import type { FileListItem } from '../types'
+import {
+  TRASH_ROOT_LOCATION,
+  trashLocationFromRouteQuery,
+  trashLocationRouteQuery,
+} from '../utils/trashLocation'
 import AccountMenu from '../components/AccountMenu.vue'
 import ActivityCenter from '../components/ActivityCenter.vue'
 
@@ -136,7 +141,7 @@ const isHome = computed(() => fs.currentPath === homePath && !fs.searchMode)
 const activePlace = computed(() => fs.isTrash ? 'trash' : 'files')
 const currentTitle = computed(() => {
   if (fs.searchMode) return t('files.search_results')
-  if (fs.isTrash) return t('places.trash')
+  if (fs.isTrash) return fs.pathSegments[fs.pathSegments.length - 1]?.name || t('places.trash')
   if (isHome.value) return t('files.my_files')
   const value = fs.currentPath.replace(/\/$/, '').split('/').pop()
   return value || t('files.my_files')
@@ -162,7 +167,6 @@ const selectedItem = computed(() => {
   return directoryFiles.value.find(file => file.path === fs.selectedFiles[0]) || null
 })
 const displaySegments = computed(() => {
-  if (fs.isTrash) return []
   return fs.pathSegments
 })
 const activityLabel = computed(() => {
@@ -201,6 +205,7 @@ const createOptions = computed<DropdownOption[]>(() => [
 const actionMenuOptions = computed<DropdownOption[]>(() => {
   const file = actionFile.value
   if (!file) return []
+  const fileIsTrashItem = !!file.trash_id
   const options: DropdownOption[] = [
     { key: 'open', label: t('menu.open'), icon: renderIcon(IconArrowRight) },
   ]
@@ -211,7 +216,7 @@ const actionMenuOptions = computed<DropdownOption[]>(() => {
     { key: 'details', label: t('menu.details'), icon: renderIcon(IconInformationOutline) },
     { key: 'main-divider', type: 'divider' },
   )
-  if (!fs.isTrash) {
+  if (!fileIsTrashItem) {
     options.push(
       { key: 'copy', label: t('menu.copy'), icon: renderIcon(IconContentCopy) },
       { key: 'cut', label: t('menu.cut'), icon: renderIcon(IconContentCut) },
@@ -222,7 +227,7 @@ const actionMenuOptions = computed<DropdownOption[]>(() => {
   }
   options.push({
     key: 'delete',
-    label: fs.isTrash ? t('menu.permanent_delete') : t('menu.delete'),
+    label: fileIsTrashItem ? t('menu.permanent_delete') : t('menu.delete'),
     icon: renderIcon(IconDeleteOutline),
     props: { class: 'domus-danger-option' },
   })
@@ -232,9 +237,16 @@ const actionMenuOptions = computed<DropdownOption[]>(() => {
 onMounted(async () => {
   if (fs.tabs.length === 0) {
     fs.init()
-    const requested = typeof route.query.path === 'string' && route.query.path.startsWith('/')
-      ? route.query.path
-      : homePath
+    const trashLocation = trashLocationFromRouteQuery(
+      route.query.place,
+      route.query.trash,
+      route.query.path,
+    )
+    const requested = trashLocation || (
+      typeof route.query.path === 'string' && route.query.path.startsWith('/')
+        ? route.query.path
+        : homePath
+    )
     fs.createTab(requested)
   }
   await Promise.allSettled([
@@ -265,8 +277,15 @@ onBeforeUnmount(() => {
 watch(() => fs.currentPath, (path) => {
   revealCurrentBreadcrumb()
   if (!path || fs.searchMode) return
+  if (fs.isTrash) {
+    void router.replace({ path: '/files', query: trashLocationRouteQuery(path) })
+    return
+  }
   const queryPath = typeof route.query.path === 'string' ? route.query.path : ''
-  if (queryPath !== path) void router.replace({ path: '/files', query: path === homePath ? {} : { path } })
+  const hasVirtualQuery = route.query.place != null || route.query.trash != null
+  if (queryPath !== path || hasVirtualQuery) {
+    void router.replace({ path: '/files', query: path === homePath ? {} : { path } })
+  }
 })
 
 watch(isMobile, () => revealCurrentBreadcrumb())
@@ -323,7 +342,12 @@ async function openItem(file: FileListItem): Promise<void> {
   fs.clearSelection()
   await router.push({
     path: '/preview',
-    query: { path: file.path, name: file.name, from: route.fullPath },
+    query: {
+      path: file.path,
+      name: file.name,
+      inode: file.inode ? String(file.inode) : undefined,
+      from: route.fullPath,
+    },
   })
 }
 
@@ -371,7 +395,7 @@ function toggleSelectMode(): void {
 
 function beginLongPress(file: FileListItem, event: PointerEvent): void {
   if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return
-  if (fs.selectMode) return
+  if (fs.selectMode || fs.searchMode) return
   if (longPressTimer !== null) window.clearTimeout(longPressTimer)
   longPressTimer = window.setTimeout(() => {
     suppressClickPath = file.path
@@ -602,7 +626,11 @@ async function deleteItem(file: FileListItem): Promise<void> {
   }
   const ok = await showConfirm(t('dialog.delete_title'), t('dialog.confirm_delete', { n: 1 }), { icon: 'warning', positiveType: 'error' })
   if (!ok) return
-  await api.delete('/file/delete', { params: { path: file.path } })
+  if (!file.inode) {
+    message.error(t('files.delete_failed', { n: 1 }))
+    return
+  }
+  await api.post('/trash/', { path: file.path, expected_inode: file.inode })
   await fs.performSearch(searchText.value.trim())
 }
 
@@ -677,7 +705,7 @@ function toggleSortOrder(): void {
 }
 
 function choosePlace(place: 'files' | 'trash'): void {
-  void goTo(place === 'trash' ? '/__trash__/' : homePath)
+  void goTo(place === 'trash' ? TRASH_ROOT_LOCATION : homePath)
 }
 
 async function logout(): Promise<void> {
@@ -712,7 +740,8 @@ function handleKeyboard(event: KeyboardEvent): void {
     event.preventDefault()
     void fs.paste()
   } else if (event.key === 'Delete' && selectionCount.value) {
-    void fs.deleteSelected()
+    event.preventDefault()
+    void fs.deleteSelected(event.shiftKey)
   } else if (event.key === 'Enter' && selectionCount.value === 1) {
     void openSelected()
   } else if (event.key === 'F2' && selectionCount.value === 1) {
@@ -731,7 +760,7 @@ function formatSize(bytes: number): string {
 
 function displayDate(value: string): string {
   if (!value) return '—'
-  return dayjs(value).format('YYYY-MM-DD HH:mm')
+  return dayjs(value).format(fs.isTrash && !fs.searchMode ? 'YYYY-MM-DD HH:mm:ss' : 'YYYY-MM-DD HH:mm')
 }
 
 function phaseLabel(phase?: string): string {
@@ -910,14 +939,14 @@ function phaseLabel(phase?: string): string {
             @scroll.passive="updateBreadcrumbOverflow"
           >
             <NBreadcrumb class="breadcrumbs" :aria-label="t('files.location')">
-              <NBreadcrumbItem>
+              <NBreadcrumbItem v-if="!fs.isTrash">
                 <NButton text size="tiny" @click="goTo(homePath)">{{ t('files.my_files') }}</NButton>
+              </NBreadcrumbItem>
+              <NBreadcrumbItem v-else>
+                <NButton text size="tiny" @click="goTo(TRASH_ROOT_LOCATION)">{{ t('places.trash') }}</NButton>
               </NBreadcrumbItem>
               <NBreadcrumbItem v-for="segment in displaySegments" :key="segment.path">
                 <NButton text size="tiny" @click="goTo(segment.path)">{{ segment.name }}</NButton>
-              </NBreadcrumbItem>
-              <NBreadcrumbItem v-if="fs.isTrash">
-                <NButton text size="tiny" @click="goTo('/__trash__/')">{{ t('places.trash') }}</NButton>
               </NBreadcrumbItem>
             </NBreadcrumb>
           </div>
@@ -944,7 +973,7 @@ function phaseLabel(phase?: string): string {
               <span class="action-label">{{ t('toolbar.upload') }}</span>
             </NButton>
             <NButton
-              v-if="fs.isTrash"
+              v-if="fs.isTrashRoot && !fs.searchMode"
               type="error"
               secondary
               size="small"
@@ -1123,6 +1152,7 @@ function phaseLabel(phase?: string): string {
               <div class="file-card__copy">
                 <strong class="file-name" :title="file.name">{{ file.name }}</strong>
                 <span>{{ file.is_dir ? t('info.directory') : formatSize(file.size) }}</span>
+                <span v-if="fs.isTrashRoot && !fs.searchMode">{{ t('info.deleted') }} {{ displayDate(file.last_modified) }}</span>
               </div>
               <NButton quaternary circle size="tiny" class="more-button" :aria-label="t('common.more')" @click.stop="openActionMenu(file, $event)">
                 <template #icon><IconDotsHorizontal /></template>
@@ -1291,8 +1321,11 @@ function phaseLabel(phase?: string): string {
           <NDescriptionsItem :label="t('info.size')">{{ detailsFile.is_dir ? '—' : formatSize(detailsFile.size) }}</NDescriptionsItem>
           <NDescriptionsItem :label="t('info.modified')">{{ displayDate(detailsFile.last_modified) }}</NDescriptionsItem>
           <NDescriptionsItem :label="t('info.created')">{{ displayDate(detailsFile.created_at) }}</NDescriptionsItem>
+          <NDescriptionsItem v-if="detailsFile.deleted_at" :label="t('info.deleted')">{{ displayDate(detailsFile.deleted_at) }}</NDescriptionsItem>
           <NDescriptionsItem v-if="detailsFile.media_width" :label="t('info.dimensions')">{{ detailsFile.media_width }} × {{ detailsFile.media_height }}</NDescriptionsItem>
-          <NDescriptionsItem :label="t('files.path')"><span class="path-value">{{ detailsFile.path }}</span></NDescriptionsItem>
+          <NDescriptionsItem :label="detailsFile.original_path ? t('info.original_path') : t('files.path')">
+            <span class="path-value">{{ detailsFile.original_path || detailsFile.path }}</span>
+          </NDescriptionsItem>
         </NDescriptions>
         <template #footer>
           <div class="inspector__actions">

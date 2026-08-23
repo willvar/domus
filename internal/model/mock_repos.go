@@ -11,6 +11,7 @@ func MockRepos() *Repos {
 	return &Repos{
 		Users:     &MockUserRepo{},
 		Files:     &MockFileRepo{},
+		Trash:     &MockTrashRepo{},
 		Sessions:  &MockSessionRepo{},
 		Tasks:     &MockTaskRepo{},
 		Audit:     &MockAuditRepo{},
@@ -18,6 +19,75 @@ func MockRepos() *Repos {
 		Workspace: &MockWorkspaceRepo{},
 		Cleanup:   &MockUserCleanupRepo{},
 	}
+}
+
+// --- MockTrashRepo ---
+
+type MockTrashRepo struct {
+	CreateFn          func(entry *TrashEntry) error
+	GetFn             func(userID, id string) (*TrashEntry, error)
+	ListFn            func(userID string, limit, offset int) ([]TrashEntry, error)
+	ListRecoverableFn func() ([]TrashEntry, error)
+	TransitionFn      func(userID, id, fromState, toState string, operationInode int64, operationPath, targetPath string) error
+	MarkReadyFn       func(userID, id, fromState string) error
+	DeleteFn          func(userID, id string) error
+	DeleteByUserIDFn  func(userID string) error
+}
+
+func (m *MockTrashRepo) Create(entry *TrashEntry) error {
+	if m.CreateFn != nil {
+		return m.CreateFn(entry)
+	}
+	return nil
+}
+
+func (m *MockTrashRepo) Get(userID, id string) (*TrashEntry, error) {
+	if m.GetFn != nil {
+		return m.GetFn(userID, id)
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+
+func (m *MockTrashRepo) List(userID string, limit, offset int) ([]TrashEntry, error) {
+	if m.ListFn != nil {
+		return m.ListFn(userID, limit, offset)
+	}
+	return []TrashEntry{}, nil
+}
+
+func (m *MockTrashRepo) ListRecoverable() ([]TrashEntry, error) {
+	if m.ListRecoverableFn != nil {
+		return m.ListRecoverableFn()
+	}
+	return []TrashEntry{}, nil
+}
+
+func (m *MockTrashRepo) Transition(userID, id, fromState, toState string, operationInode int64, operationPath, targetPath string) error {
+	if m.TransitionFn != nil {
+		return m.TransitionFn(userID, id, fromState, toState, operationInode, operationPath, targetPath)
+	}
+	return nil
+}
+
+func (m *MockTrashRepo) MarkReady(userID, id, fromState string) error {
+	if m.MarkReadyFn != nil {
+		return m.MarkReadyFn(userID, id, fromState)
+	}
+	return nil
+}
+
+func (m *MockTrashRepo) Delete(userID, id string) error {
+	if m.DeleteFn != nil {
+		return m.DeleteFn(userID, id)
+	}
+	return nil
+}
+
+func (m *MockTrashRepo) DeleteByUserID(userID string) error {
+	if m.DeleteByUserIDFn != nil {
+		return m.DeleteByUserIDFn(userID)
+	}
+	return nil
 }
 
 // --- MockUserRepo ---
@@ -138,6 +208,8 @@ type MockFileRepo struct {
 	ListAllChildrenFn                func(userID, parent string) ([]FileRecord, error)
 	MoveFn                           func(userID, oldPath, newPath, newName string) error
 	MoveByPrefixFn                   func(userID, oldPrefix, newPrefix string) error
+	MoveNoReplaceFn                  func(userID, oldPath, newPath, newName string) error
+	MoveByPrefixNoReplaceFn          func(userID, oldPrefix, newPrefix string) error
 	UpdateThumbnailFn                func(userID, path, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) error
 	UpdateThumbnailIfGenerationFn    func(userID, path string, fileID, generation int64, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) (bool, error)
 	UpdateContentTypeFn              func(userID, path, contentType string) error
@@ -214,6 +286,18 @@ func (m *MockFileRepo) Move(userID, oldPath, newPath, newName string) error {
 func (m *MockFileRepo) MoveByPrefix(userID, oldPrefix, newPrefix string) error {
 	if m.MoveByPrefixFn != nil {
 		return m.MoveByPrefixFn(userID, oldPrefix, newPrefix)
+	}
+	return nil
+}
+func (m *MockFileRepo) MoveNoReplace(userID, oldPath, newPath, newName string) error {
+	if m.MoveNoReplaceFn != nil {
+		return m.MoveNoReplaceFn(userID, oldPath, newPath, newName)
+	}
+	return nil
+}
+func (m *MockFileRepo) MoveByPrefixNoReplace(userID, oldPrefix, newPrefix string) error {
+	if m.MoveByPrefixNoReplaceFn != nil {
+		return m.MoveByPrefixNoReplaceFn(userID, oldPrefix, newPrefix)
 	}
 	return nil
 }

@@ -18,6 +18,7 @@
 - [当前用户 `/user`](./user.md)
 - [审计与管理 `/audit` + `/admin`](./audit-admin.md)
 - [文件与上传 `/file`](./file.md)
+- [回收站 `/trash`](./file.md#回收站-trash)
 - [任务 `/task`](./jobs-tasks.md)
 
 ### WebSocket

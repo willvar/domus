@@ -15,6 +15,7 @@ var fileControlFields = map[string]map[string]struct{}{
 	"/file/upload/heartbeat": fieldSet("upload_id"),
 	"/file/upload/cancel":    fieldSet("upload_id", "task_id", "reason", "status"),
 	"/file/upload/cleanup":   fieldSet("client_instance_id"),
+	"/trash":                 fieldSet("path", "expected_inode"),
 }
 
 func fieldSet(names ...string) map[string]struct{} {
@@ -50,6 +51,9 @@ func rejectFileContentPayload(c *fiber.Ctx) error {
 	allowed := fileControlFields[path]
 	if path == "/file/upload" {
 		allowed = uploadControlFields
+	}
+	if strings.HasPrefix(path, "/trash/") && strings.HasSuffix(path, "/restore") {
+		allowed = fieldSet("path", "expected_inode", "conflict", "nested_conflict")
 	}
 	if allowed != nil {
 		for name := range fields {

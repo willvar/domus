@@ -1,10 +1,12 @@
 import { expect, test, type Locator, type Page } from '@playwright/test'
 import {
+  apiBaseURL,
   e2eCredentials,
   getStorageUsage,
   login,
   openFilesRoot,
   permanentlyDelete,
+  permanentlyDeleteTrashEntry,
   uploadFromToolbar,
   waitForServiceWorker,
 } from './helpers'
@@ -23,6 +25,12 @@ async function waitForDirectory(page: Page): Promise<void> {
 async function navigateTo(page: Page, path: string): Promise<void> {
   await page.goto(`/files?path=${encodeURIComponent(path)}`, { waitUntil: 'domcontentloaded' })
   await waitForDirectory(page)
+}
+
+async function navigateToTrash(page: Page): Promise<void> {
+  await page.goto('/files?place=trash', { waitUntil: 'domcontentloaded' })
+  await waitForDirectory(page)
+  await expect(page.locator('.breadcrumbs')).toContainText(/回收站|Trash/)
 }
 
 async function chooseAction(page: Page, item: Locator, label: RegExp): Promise<void> {
@@ -60,12 +68,12 @@ test('统一文件界面完成新建、上传、重命名、移动、回收与�
   const sourcePath = `${rootPath}${sourceName}/`
   const destinationPath = `${rootPath}${destinationName}/`
   const finalPath = `${destinationPath}${renamedName}`
-  const trashPath = `/__trash__/${destinationName}/`
   const marker = `DOMUS_LIFECYCLE_${suffix}`
   const replacementMarker = `DOMUS_REUPLOAD_${suffix}`
   const originalContents = Buffer.from(`${marker}\nrename move trash restore\n`)
   const replacementContents = Buffer.from(`${replacementMarker}\nreuse the exact deleted filename\n`)
   let authenticated = false
+  let trashEntryID: string | null = null
 
   try {
     await login(page, credentials)
@@ -199,15 +207,24 @@ test('统一文件界面完成新建、上传、重命名、移动、回收与�
     await clipboard.getByRole('button', { name: /粘贴|Paste/ }).click()
     await expect(itemNamed(page, renamedName)).toBeVisible({ timeout: 30_000 })
 
+    const trashResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url())
+      return url.origin === new URL(apiBaseURL).origin &&
+        url.pathname === '/trash/' &&
+        response.request().method() === 'POST'
+    })
     await chooseAction(page, itemNamed(page, renamedName), /^删除$|^Delete$/)
     await confirmDialog(page)
+    const trashResponse = await trashResponsePromise
+    expect(trashResponse.ok(), `trash failed with HTTP ${trashResponse.status()}`).toBeTruthy()
+    trashEntryID = ((await trashResponse.json()) as { id?: string }).id || null
+    expect(trashEntryID).toBeTruthy()
     await expect(itemNamed(page, renamedName)).toBeHidden()
 
-    await navigateTo(page, trashPath)
+    await navigateToTrash(page)
     await chooseAction(page, itemNamed(page, renamedName), /还原|Restore/)
     await expect(itemNamed(page, renamedName)).toBeHidden({ timeout: 30_000 })
-    await navigateTo(page, '/__trash__/')
-    await expect(itemNamed(page, destinationName)).toBeHidden()
+    trashEntryID = null
 
     await navigateTo(page, destinationPath)
     const restored = itemNamed(page, renamedName)
@@ -238,9 +255,252 @@ test('统一文件界面完成新建、上传、重命名、移动、回收与�
     await expect(page.locator('.text-preview')).toContainText(replacementMarker)
   } finally {
     if (authenticated) {
+      if (trashEntryID) await permanentlyDeleteTrashEntry(page, trashEntryID)
       await permanentlyDelete(page, finalPath)
       await permanentlyDelete(page, sourcePath)
       await permanentlyDelete(page, destinationPath)
+    }
+  }
+})
+
+test('目录可回收还原并可通过 Shift+Delete 永久删除', async ({ page }) => {
+  const credentials = e2eCredentials()
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+  const directoryName = `e2e-directory-delete-${suffix}`
+  const childName = `child-${suffix}.txt`
+  const remainingName = `remaining-${suffix}.txt`
+  const directoryPath = `/${directoryName}/`
+  const contents = Buffer.from(`DOMUS_DIRECTORY_DELETE_${suffix}\n`)
+  let authenticated = false
+  let cleanupPath: string | null = directoryPath
+  let trashEntryID: string | null = null
+
+  try {
+    await login(page, credentials)
+    authenticated = true
+    await openFilesRoot(page)
+    await waitForDirectory(page)
+    const baselineUsage = await getStorageUsage(page)
+
+    await createFolder(page, directoryName)
+    await itemNamed(page, directoryName).dblclick()
+    await waitForDirectory(page)
+    await uploadFromToolbar(page, {
+      name: childName,
+      mimeType: 'text/plain',
+      buffer: contents,
+    })
+    await uploadFromToolbar(page, {
+      name: remainingName,
+      mimeType: 'text/plain',
+      buffer: contents,
+    })
+    const populatedUsage = { size: baselineUsage.size + contents.length * 2, count: baselineUsage.count + 2 }
+    await expect.poll(() => getStorageUsage(page)).toEqual(populatedUsage)
+
+    await navigateTo(page, '/')
+    const directory = itemNamed(page, directoryName)
+    await directory.click()
+    await expect(directory).toHaveClass(/selected/)
+    await page.locator('.selection-controls').getByRole('button', { name: /^\s*(删除|Delete)\s*$/ }).click()
+    const deleteResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url())
+      return url.origin === new URL(apiBaseURL).origin &&
+        url.pathname === '/trash/' &&
+        response.request().method() === 'POST'
+    })
+    await confirmDialog(page)
+    const deleteResponse = await deleteResponsePromise
+    const deleteBody = await deleteResponse.text()
+    expect(
+      deleteResponse.ok(),
+      `directory delete failed with HTTP ${deleteResponse.status()}: ${deleteBody}`,
+    ).toBeTruthy()
+    trashEntryID = (JSON.parse(deleteBody) as { id?: string }).id || null
+    expect(trashEntryID).toBeTruthy()
+    await expect(directory).toBeHidden()
+    cleanupPath = null
+    await expect.poll(() => getStorageUsage(page)).toEqual(populatedUsage)
+
+    await navigateToTrash(page)
+    const trashedDirectory = itemNamed(page, directoryName)
+    await expect(trashedDirectory).toBeVisible()
+    await trashedDirectory.dblclick()
+    await waitForDirectory(page)
+    await expect(itemNamed(page, childName)).toBeVisible()
+    await expect(itemNamed(page, remainingName)).toBeVisible()
+
+    // A descendant can be restored independently. Its missing original parent
+    // is recreated, while the remainder stays inside the same trash entry.
+    await itemNamed(page, childName).click()
+    await page.locator('.selection-controls').getByRole('button', { name: /\s*(还原|Restore)\s*/ }).click()
+    await expect(itemNamed(page, childName)).toBeHidden()
+    await expect(itemNamed(page, remainingName)).toBeVisible()
+
+    await navigateTo(page, directoryPath)
+    await expect(itemNamed(page, childName)).toBeVisible()
+    await expect(itemNamed(page, remainingName)).toBeHidden()
+
+    await navigateToTrash(page)
+    await itemNamed(page, directoryName).click()
+    await page.locator('.selection-controls').getByRole('button', { name: /\s*(还原|Restore)\s*/ }).click()
+    const mergeDialog = page.locator('.domus-dialog')
+    await expect(mergeDialog).toBeVisible()
+    await mergeDialog.getByRole('button', { name: /合并文件夹|Merge folders/ }).click()
+    await expect(itemNamed(page, directoryName)).toBeHidden()
+    cleanupPath = directoryPath
+    trashEntryID = null
+
+    await navigateTo(page, '/')
+    const restoredDirectory = itemNamed(page, directoryName)
+    await expect(restoredDirectory).toBeVisible()
+    await restoredDirectory.dblclick()
+    await waitForDirectory(page)
+    await expect(itemNamed(page, childName)).toBeVisible()
+    await expect(itemNamed(page, remainingName)).toBeVisible()
+    await expect.poll(() => getStorageUsage(page)).toEqual(populatedUsage)
+
+    await navigateTo(page, '/')
+    const permanentDirectory = itemNamed(page, directoryName)
+    await permanentDirectory.click()
+    const permanentInode = await permanentDirectory.getAttribute('data-inode')
+    const permanentResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url())
+      return url.origin === new URL(apiBaseURL).origin &&
+        url.pathname === '/file/delete' &&
+        url.searchParams.get('path') === directoryPath &&
+        url.searchParams.get('permanent') === 'true' &&
+        (!permanentInode || url.searchParams.get('expected_inode') === permanentInode) &&
+        response.request().method() === 'DELETE'
+    })
+    await page.keyboard.press('Shift+Delete')
+    await confirmDialog(page)
+    const permanentResponse = await permanentResponsePromise
+    const permanentBody = await permanentResponse.text()
+    expect(
+      permanentResponse.ok(),
+      `Shift+Delete failed with HTTP ${permanentResponse.status()}: ${permanentBody}`,
+    ).toBeTruthy()
+    await expect(permanentDirectory).toBeHidden()
+    cleanupPath = null
+    await expect.poll(() => getStorageUsage(page)).toEqual(baselineUsage)
+
+    await navigateToTrash(page)
+    await expect(itemNamed(page, directoryName)).toBeHidden()
+  } finally {
+    if (authenticated && trashEntryID) {
+      await permanentlyDeleteTrashEntry(page, trashEntryID)
+    }
+    if (authenticated && cleanupPath) {
+      await permanentlyDelete(page, cleanupPath)
+    }
+  }
+})
+
+test('用户的 __trash__ 目录与产品回收站互不重叠', async ({ page }) => {
+  const credentials = e2eCredentials()
+  const markerName = `e2e-real-trash-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+  const userTrashPath = '/__trash__/'
+  const markerPath = `${userTrashPath}${markerName}/`
+  let authenticated = false
+  let createdUserTrash = false
+
+  try {
+    await login(page, credentials)
+    authenticated = true
+    await openFilesRoot(page)
+    await waitForDirectory(page)
+
+    const userTrash = itemNamed(page, '__trash__')
+    if (await userTrash.count() === 0) {
+      await createFolder(page, '__trash__')
+      createdUserTrash = true
+    }
+
+    await navigateTo(page, userTrashPath)
+    await expect(page.locator('.breadcrumbs')).toContainText('__trash__')
+    await createFolder(page, markerName)
+    await expect(itemNamed(page, markerName)).toBeVisible()
+
+    await navigateToTrash(page)
+    await expect(page).toHaveURL(/\/files\?place=trash(?:&.*)?$/)
+    await expect(itemNamed(page, markerName)).toBeHidden()
+
+    await navigateTo(page, userTrashPath)
+    await expect(itemNamed(page, markerName)).toBeVisible()
+  } finally {
+    if (authenticated) {
+      await permanentlyDelete(page, markerPath)
+      if (createdUserTrash) await permanentlyDelete(page, userTrashPath)
+    }
+  }
+})
+
+test('同一路径的多次删除保留独立版本并可分别操作', async ({ page }) => {
+  const credentials = e2eCredentials()
+  const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
+  const fileName = `e2e-trash-versions-${suffix}.txt`
+  const filePath = `/${fileName}`
+  const versions = [
+    Buffer.from(`DOMUS_TRASH_VERSION_ONE_${suffix}\n`),
+    Buffer.from(`DOMUS_TRASH_VERSION_TWO_${suffix}\n`),
+  ]
+  const trashIDs: string[] = []
+  let authenticated = false
+
+  try {
+    await login(page, credentials)
+    authenticated = true
+    await openFilesRoot(page)
+    await waitForDirectory(page)
+    const baselineUsage = await getStorageUsage(page)
+
+    for (const contents of versions) {
+      await uploadFromToolbar(page, { name: fileName, mimeType: 'text/plain', buffer: contents })
+      const responsePromise = page.waitForResponse((response) => {
+        const url = new URL(response.url())
+        return url.origin === new URL(apiBaseURL).origin &&
+          url.pathname === '/trash/' &&
+          response.request().method() === 'POST'
+      })
+      await chooseAction(page, itemNamed(page, fileName), /^删除$|^Delete$/)
+      await confirmDialog(page)
+      const response = await responsePromise
+      expect(response.ok(), `version trash failed with HTTP ${response.status()}`).toBeTruthy()
+      const id = ((await response.json()) as { id?: string }).id
+      expect(id).toBeTruthy()
+      trashIDs.push(id!)
+      await expect(itemNamed(page, fileName)).toBeHidden()
+    }
+
+    await navigateToTrash(page)
+    const deletedVersions = itemNamed(page, fileName)
+    await expect(deletedVersions).toHaveCount(2)
+
+    // The preview reads through the ID-addressed trash access endpoint. A
+    // permanent delete removes only that selected event, not its same-name peer.
+    await waitForServiceWorker(page)
+    await deletedVersions.first().dblclick()
+    await expect(page.locator('.text-preview')).toContainText(/DOMUS_TRASH_VERSION_(ONE|TWO)_/)
+    await page.getByRole('button', { name: /永久删除|Delete Permanently/ }).click()
+    await confirmDialog(page)
+    await expect(page).toHaveURL(/\/files\?place=trash(?:&.*)?$/)
+    await expect(itemNamed(page, fileName)).toHaveCount(1)
+
+    await itemNamed(page, fileName).click()
+    await page.locator('.selection-controls').getByRole('button', { name: /\s*(还原|Restore)\s*/ }).click()
+    await expect(itemNamed(page, fileName)).toBeHidden()
+
+    await navigateTo(page, '/')
+    await expect(itemNamed(page, fileName)).toBeVisible()
+    await expect.poll(() => getStorageUsage(page)).toEqual({
+      size: baselineUsage.size + Math.min(versions[0].length, versions[1].length),
+      count: baselineUsage.count + 1,
+    })
+  } finally {
+    if (authenticated) {
+      for (const trashID of trashIDs) await permanentlyDeleteTrashEntry(page, trashID)
+      await permanentlyDelete(page, filePath)
     }
   }
 })

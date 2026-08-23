@@ -30,6 +30,16 @@ func (h *Hub) PushDirChanged(userID, resolvedPath, appPath, changeType string) {
 	})
 }
 
+// PushTrashChanged invalidates the ID-addressed recycle-bin view on every
+// active device for the user. It is intentionally not a directory
+// subscription because trash is no longer part of the visible namespace.
+func (h *Hub) PushTrashChanged(userID string) {
+	h.SendToUser(userID, map[string]any{
+		"event": "trash.changed",
+		"data":  map[string]any{},
+	})
+}
+
 // PushSessionExpired notifies all connections of a user that their session has expired.
 func (h *Hub) PushSessionExpired(userID string) {
 	h.SendToUser(userID, map[string]any{

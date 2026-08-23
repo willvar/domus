@@ -175,7 +175,7 @@ func (r *Repo) DeleteByPrefix(userID, prefix string) error {
 	return r.deleteNode(ctx, controller, userID, node)
 }
 
-func (r *Repo) move(userID, oldPath, newPath string) error {
+func (r *Repo) move(userID, oldPath, newPath string, noReplace bool) error {
 	ctx, cancel := operationContext()
 	defer cancel()
 	user, err := r.user(userID)
@@ -199,7 +199,7 @@ func (r *Repo) move(userID, oldPath, newPath string) error {
 		return err
 	}
 	defer controller.Close()
-	if _, err := controller.Rename(ctx, source.Inode, parent.Inode, name, false); err != nil {
+	if _, err := controller.Rename(ctx, source.Inode, parent.Inode, name, noReplace); err != nil {
 		return err
 	}
 	if replacedInode != 0 && replacedInode != source.Inode {
@@ -211,11 +211,19 @@ func (r *Repo) move(userID, oldPath, newPath string) error {
 }
 
 func (r *Repo) Move(userID, oldPath, newPath, _ string) error {
-	return r.move(userID, oldPath, newPath)
+	return r.move(userID, oldPath, newPath, false)
 }
 
 func (r *Repo) MoveByPrefix(userID, oldPrefix, newPrefix string) error {
-	return r.move(userID, oldPrefix, newPrefix)
+	return r.move(userID, oldPrefix, newPrefix, false)
+}
+
+func (r *Repo) MoveNoReplace(userID, oldPath, newPath, _ string) error {
+	return r.move(userID, oldPath, newPath, true)
+}
+
+func (r *Repo) MoveByPrefixNoReplace(userID, oldPrefix, newPrefix string) error {
+	return r.move(userID, oldPrefix, newPrefix, true)
 }
 
 func (r *Repo) thumbnailInode(userID, objectKey, wrapped string) (uint64, error) {

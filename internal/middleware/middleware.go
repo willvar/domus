@@ -124,9 +124,7 @@ func (m *Middleware) WebSocketUpgrade() fiber.Handler {
 
 const (
 	internalRootPath       = "/.domus/"
-	internalTrashPath      = "/.domus/trash/"
 	internalUserPath       = "/.domus/user/"
-	virtualTrashPath       = "/__trash__/"
 	virtualPrivateUserPath = "/.user/"
 )
 
@@ -153,8 +151,8 @@ func normalizePath(p string) (string, error) {
 }
 
 // ResolvePath maps a public application path to a path inside the current
-// user's DOFS namespace. The recycle bin is a virtual UI location backed by a
-// reserved hidden directory; callers cannot address other reserved internals.
+// user's DOFS namespace. Domus-owned internals are unreachable, while every
+// other valid name (including /__trash__/) remains available to the user.
 func ResolveApplicationPath(p string) (string, error) {
 	cleaned, err := normalizePath(p)
 	if err != nil {
@@ -163,12 +161,6 @@ func ResolveApplicationPath(p string) (string, error) {
 	if cleaned == strings.TrimSuffix(internalRootPath, "/") || strings.HasPrefix(cleaned, internalRootPath) ||
 		cleaned == strings.TrimSuffix(virtualPrivateUserPath, "/") || strings.HasPrefix(cleaned, virtualPrivateUserPath) {
 		return "", fiber.NewError(fiber.StatusForbidden, "reserved path")
-	}
-	if cleaned == strings.TrimSuffix(virtualTrashPath, "/") {
-		return internalTrashPath, nil
-	}
-	if strings.HasPrefix(cleaned, virtualTrashPath) {
-		return internalTrashPath + strings.TrimPrefix(cleaned, virtualTrashPath), nil
 	}
 	return cleaned, nil
 }
@@ -202,13 +194,10 @@ func ResolveInternalPath(_ *fiber.Ctx, p string) (string, error) {
 }
 
 // ToAppPath converts a stored namespace path back into its public application
-// representation. Paths outside the recycle bin are already canonical.
+// representation. Internal paths have no public path representation.
 func ToAppPath(storagePath, _ string) string {
-	if storagePath == strings.TrimSuffix(internalTrashPath, "/") || storagePath == internalTrashPath {
-		return virtualTrashPath
-	}
-	if strings.HasPrefix(storagePath, internalTrashPath) {
-		return virtualTrashPath + strings.TrimPrefix(storagePath, internalTrashPath)
+	if IsInternalStoragePath(storagePath) {
+		return ""
 	}
 	if !strings.HasPrefix(storagePath, "/") {
 		return "/" + storagePath

@@ -20,6 +20,7 @@ import (
 func NewMemRepos(onTaskUpdate TaskUpdateFunc) *Repos {
 	users := &memUserRepo{data: make(map[string]*User)}
 	files := &memFileRepo{data: make(map[string]*FileRecord), nextID: 1}
+	trash := &memTrashRepo{data: make(map[string]*TrashEntry)}
 	sessions := &memSessionRepo{data: make(map[string]*memSessionEntry)}
 	tasks := &memTaskRepo{data: make(map[string]*Task), nextID: 1, onTaskUpdate: onTaskUpdate}
 	shares := &memShareRepo{data: make(map[string]*Share), nextID: 1, users: users}
@@ -28,6 +29,7 @@ func NewMemRepos(onTaskUpdate TaskUpdateFunc) *Repos {
 	cleanup := &memUserCleanupRepo{
 		users:     users,
 		files:     files,
+		trash:     trash,
 		sessions:  sessions,
 		tasks:     tasks,
 		shares:    shares,
@@ -37,6 +39,7 @@ func NewMemRepos(onTaskUpdate TaskUpdateFunc) *Repos {
 	return &Repos{
 		Users:     users,
 		Files:     files,
+		Trash:     trash,
 		Sessions:  sessions,
 		Tasks:     tasks,
 		Audit:     audit,
@@ -44,6 +47,143 @@ func NewMemRepos(onTaskUpdate TaskUpdateFunc) *Repos {
 		Workspace: workspace,
 		Cleanup:   cleanup,
 	}
+}
+
+// ---------------------------------------------------------------------------
+// memTrashRepo
+// ---------------------------------------------------------------------------
+
+type memTrashRepo struct {
+	mu   sync.Mutex
+	data map[string]*TrashEntry
+}
+
+func trashKey(userID, id string) string { return userID + ":" + id }
+
+func copyTrashEntry(entry *TrashEntry) *TrashEntry {
+	if entry == nil {
+		return nil
+	}
+	copy := *entry
+	return &copy
+}
+
+func (r *memTrashRepo) Create(entry *TrashEntry) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := trashKey(entry.UserID, entry.ID)
+	if _, exists := r.data[key]; exists {
+		return gorm.ErrDuplicatedKey
+	}
+	for _, existing := range r.data {
+		if existing.UserID == entry.UserID && existing.RootInode == entry.RootInode {
+			return gorm.ErrDuplicatedKey
+		}
+	}
+	now := time.Now().UTC()
+	copy := *entry
+	if copy.DeletedAt.IsZero() {
+		copy.DeletedAt = now
+	}
+	if copy.State == "" {
+		copy.State = TrashStatePending
+	}
+	copy.CreatedAt = now
+	copy.UpdatedAt = now
+	r.data[key] = &copy
+	*entry = copy
+	return nil
+}
+
+func (r *memTrashRepo) Get(userID, id string) (*TrashEntry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, exists := r.data[trashKey(userID, id)]
+	if !exists {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return copyTrashEntry(entry), nil
+}
+
+func (r *memTrashRepo) List(userID string, limit, offset int) ([]TrashEntry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entries := make([]TrashEntry, 0)
+	for _, entry := range r.data {
+		if entry.UserID == userID && entry.State == TrashStateReady {
+			entries = append(entries, *copyTrashEntry(entry))
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].DeletedAt.Equal(entries[j].DeletedAt) {
+			return entries[i].ID > entries[j].ID
+		}
+		return entries[i].DeletedAt.After(entries[j].DeletedAt)
+	})
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(entries) {
+		return []TrashEntry{}, nil
+	}
+	entries = entries[offset:]
+	if limit <= 0 || limit > 500 {
+		limit = 100
+	}
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+	return entries, nil
+}
+
+func (r *memTrashRepo) ListRecoverable() ([]TrashEntry, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entries := make([]TrashEntry, 0)
+	for _, entry := range r.data {
+		if entry.State != TrashStateReady {
+			entries = append(entries, *copyTrashEntry(entry))
+		}
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].UpdatedAt.Before(entries[j].UpdatedAt) })
+	return entries, nil
+}
+
+func (r *memTrashRepo) Transition(userID, id, fromState, toState string, operationInode int64, operationPath, targetPath string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	entry, exists := r.data[trashKey(userID, id)]
+	if !exists || entry.State != fromState {
+		return ErrTrashStateConflict
+	}
+	entry.State = toState
+	entry.OperationInode = operationInode
+	entry.OperationPath = operationPath
+	entry.TargetPath = targetPath
+	entry.UpdatedAt = time.Now().UTC()
+	return nil
+}
+
+func (r *memTrashRepo) MarkReady(userID, id, fromState string) error {
+	return r.Transition(userID, id, fromState, TrashStateReady, 0, "", "")
+}
+
+func (r *memTrashRepo) Delete(userID, id string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.data, trashKey(userID, id))
+	return nil
+}
+
+func (r *memTrashRepo) DeleteByUserID(userID string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, entry := range r.data {
+		if entry.UserID == userID {
+			delete(r.data, key)
+		}
+	}
+	return nil
 }
 
 // ---------------------------------------------------------------------------
@@ -415,6 +555,14 @@ func (r *memFileRepo) ListAllChildren(userID, parent string) ([]FileRecord, erro
 }
 
 func (r *memFileRepo) Move(userID, oldPath, newPath, newName string) error {
+	return r.move(userID, oldPath, newPath, newName, false)
+}
+
+func (r *memFileRepo) MoveNoReplace(userID, oldPath, newPath, newName string) error {
+	return r.move(userID, oldPath, newPath, newName, true)
+}
+
+func (r *memFileRepo) move(userID, oldPath, newPath, newName string, noReplace bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	oldKey := fileKey(userID, oldPath)
@@ -422,18 +570,33 @@ func (r *memFileRepo) Move(userID, oldPath, newPath, newName string) error {
 	if !ok {
 		return gorm.ErrRecordNotFound
 	}
+	newKey := fileKey(userID, newPath)
+	if _, exists := r.data[newKey]; noReplace && exists && newKey != oldKey {
+		return gorm.ErrDuplicatedKey
+	}
 	delete(r.data, oldKey)
 	rec.Path = newPath
 	rec.Parent = memParentOf(newPath)
 	rec.Name = newName
 	rec.UpdatedAt = time.Now()
-	r.data[fileKey(userID, newPath)] = rec
+	r.data[newKey] = rec
 	return nil
 }
 
 func (r *memFileRepo) MoveByPrefix(userID, oldPrefix, newPrefix string) error {
+	return r.moveByPrefix(userID, oldPrefix, newPrefix, false)
+}
+
+func (r *memFileRepo) MoveByPrefixNoReplace(userID, oldPrefix, newPrefix string) error {
+	return r.moveByPrefix(userID, oldPrefix, newPrefix, true)
+}
+
+func (r *memFileRepo) moveByPrefix(userID, oldPrefix, newPrefix string, noReplace bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if _, exists := r.data[fileKey(userID, newPrefix)]; noReplace && exists && oldPrefix != newPrefix {
+		return gorm.ErrDuplicatedKey
+	}
 	var toMove []*FileRecord
 	for k, rec := range r.data {
 		if rec.UserID == userID && strings.HasPrefix(rec.Path, oldPrefix) {
@@ -1064,6 +1227,7 @@ func (r *memAuditRepo) ListLogs(_ AuditFilter) ([]AuditLog, int64, error) {
 type memUserCleanupRepo struct {
 	users     *memUserRepo
 	files     *memFileRepo
+	trash     *memTrashRepo
 	sessions  *memSessionRepo
 	tasks     *memTaskRepo
 	shares    *memShareRepo
@@ -1088,6 +1252,8 @@ func (r *memUserCleanupRepo) DeleteUserAndRelatedData(userID string) error {
 		}
 	}
 	r.files.mu.Unlock()
+
+	_ = r.trash.DeleteByUserID(userID)
 
 	// Delete tasks
 	r.tasks.mu.Lock()

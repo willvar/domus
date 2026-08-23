@@ -18,6 +18,8 @@ type FileRepo interface {
 	ListAllChildren(userID, parent string) ([]FileRecord, error)
 	Move(userID, oldPath, newPath, newName string) error
 	MoveByPrefix(userID, oldPrefix, newPrefix string) error
+	MoveNoReplace(userID, oldPath, newPath, newName string) error
+	MoveByPrefixNoReplace(userID, oldPrefix, newPrefix string) error
 	UpdateThumbnail(userID, path, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) error
 	UpdateThumbnailIfGeneration(userID, path string, fileID, generation int64, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) (bool, error)
 	UpdateContentType(userID, path, contentType string) error

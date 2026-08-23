@@ -186,6 +186,10 @@ export function showDuplicateDialog(
           { default: () => t('upload.duplicate_skip') }),
         h(NButton, { onClick: () => choose('rename') },
           { default: () => t('upload.duplicate_rename') }),
+        ...(options.allowMerge
+          ? [h(NButton, { type: 'primary', onClick: () => choose('merge') },
+              { default: () => t('upload.duplicate_merge') })]
+          : []),
         h(NButton, { type: 'primary', onClick: () => choose('replace') },
           { default: () => t('upload.duplicate_replace') }),
       ]),

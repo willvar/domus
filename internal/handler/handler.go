@@ -98,6 +98,18 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	fileUpload.Post("/cancel", h.handleUploadCancel)
 	fileUpload.Post("/cleanup", h.handleUploadCleanup)
 
+	// /trash — deletion events are addressed by opaque IDs, never by a
+	// reserved path in the user's visible namespace.
+	trash := authed.Group("/trash")
+	trash.Use(rejectFileContentPayload)
+	trash.Post("/", h.handleCreateTrashEntry)
+	trash.Get("/", h.handleListTrash)
+	trash.Delete("/", h.handleEmptyTrash)
+	trash.Get("/:id/list", h.handleListTrashDirectory)
+	trash.Get("/:id/access", h.handleTrashAccess)
+	trash.Post("/:id/restore", h.handleRestoreTrash)
+	trash.Delete("/:id", h.handleDeleteTrashItem)
+
 	// /task
 	task := authed.Group("/task")
 	task.Get("/", h.handleListTasks)

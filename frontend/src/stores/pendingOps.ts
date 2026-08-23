@@ -54,11 +54,42 @@ export const usePendingOpsStore = defineStore('pendingOps', () => {
       && typeof op.apiMethod === 'string'
   }
 
+  function isUnsafeTrashReplay(op: PendingOp): boolean {
+    const data = op.apiData && typeof op.apiData === 'object'
+      ? op.apiData as Record<string, unknown>
+      : {}
+    // Empty Trash applies to a changing set rather than a stable inode. It is
+    // never safe to replay after an offline interval, including records made
+    // by an intermediate Trash v2 build.
+    if (op.apiUrl === '/trash/' && op.apiMethod === 'delete' && op.type === 'emptyTrash') {
+      return true
+    }
+    if (op.schemaVersion === 2) return false
+    if (op.apiUrl === '/file/delete' && op.apiMethod === 'delete' && data.permanent !== true) {
+      return true
+    }
+    if (op.apiUrl === '/file/delete'
+      && op.apiMethod === 'delete'
+      && typeof data.path === 'string'
+      && (data.path === '/__trash__' || data.path.startsWith('/__trash__/'))) {
+      return true
+    }
+    return op.apiUrl === '/file/move'
+      && op.type === 'restore'
+      && typeof data.src_path === 'string'
+      && (data.src_path === '/__trash__' || data.src_path.startsWith('/__trash__/'))
+  }
+
   async function discardInvalidRecords(records: unknown[]): Promise<PendingOp[]> {
     const valid: PendingOp[] = []
 
     for (const record of records) {
       if (isPendingOpRecord(record)) {
+        if (isUnsafeTrashReplay(record)) {
+          console.warn('Discarding unsafe Trash pending operation:', record.id)
+          try { await deleteOp(record.id) } catch { /* ignored */ }
+          continue
+        }
         valid.push(record)
         continue
       }
@@ -91,6 +122,7 @@ export const usePendingOpsStore = defineStore('pendingOps', () => {
   async function enqueue(record: PendingOpInput): Promise<PendingOp> {
     const op = {
       ...record,
+      schemaVersion: 2,
       id: crypto?.randomUUID?.() || (Math.random().toString(36).slice(2) + Date.now().toString(36)),
       createdAt: Date.now(),
       lastAttempt: null,
@@ -117,6 +149,11 @@ export const usePendingOpsStore = defineStore('pendingOps', () => {
 
     if (!isPendingOpRecord(op)) {
       console.error('Discarding invalid pending operation record:', op)
+      await discard(id)
+      return
+    }
+    if (isUnsafeTrashReplay(op)) {
+      console.warn('Discarding unsafe Trash pending operation:', op.id)
       await discard(id)
       return
     }

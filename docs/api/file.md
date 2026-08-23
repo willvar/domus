@@ -32,7 +32,8 @@
 
 用户名不属于路径。服务端从会话中的不可变用户 ID 选择 DOFS namespace，因此两个用户
 可以同时拥有 `/a.txt`，但会解析到彼此隔离的 inode、密钥和对象。`/.domus/` 是保留的
-内部存储路径，公开接口返回 `403`；回收站使用虚拟路径 `/__trash__/`。
+内部存储路径，公开接口返回 `403`。回收站由 `/trash` API 提供，不映射或占用任何用户
+路径；`/__trash__/` 是合法的普通目录名。
 
 响应示例：
 
@@ -40,6 +41,7 @@
 {
   "files": [
     {
+      "inode": 42,
       "name": "a.txt",
       "path": "/a.txt",
       "is_dir": false,
@@ -73,12 +75,15 @@
 {
   "results": [
     {
+      "inode": 42,
       "path": "/a.txt",
       "parent": "/",
       "name": "a.txt",
       "is_dir": false,
       "size": 123,
       "content_type": "text/plain",
+      "created_at": "2026-08-18T10:00:00Z",
+      "last_modified": "2026-08-18T10:00:00Z",
       "rank": 0.42
     }
   ]
@@ -102,6 +107,7 @@
 
 ```json
 {
+  "inode": 42,
   "url": "https://object-storage.example/...",
   "size": 123,
   "name": "a.txt",
@@ -165,12 +171,82 @@ SSE 进度流。
 查询参数：
 
 - `path`：必填；
-- `permanent=true|1`：跳过回收站并永久删除。
+- `permanent=true|1`：必填；该接口只执行永久删除，普通删除使用 `POST /trash/`；
+- `expected_inode`：目标存在时必填，用于阻止离线重试误删同一路径后来创建的新 inode。
 
 普通请求返回 `{"ok":true}`；部分目录操作可返回 SSE 进度流。删除上传中条目会中止
-multipart 会话和 DOFS 预留。移入回收站仍计入用户用量；永久删除会在 DOFS 元数据
+multipart 会话和 DOFS 预留。目标已经不存在时按幂等成功处理。移入回收站仍计入用户
+用量；永久删除会在 DOFS 元数据
 事务中立即释放逻辑用量，并把源文件、所有 generation 及关联缩略图交给持久化
 reclaimer。OSS 暂时失败或 FUSE 挂载占用不会恢复目录项，后台会继续幂等重试。
+
+## 回收站 `/trash`
+
+回收站条目以删除事件 UUID 标识，不以原路径标识。同一路径重复删除会产生多个条目；
+条目记录 `original_path` 和 `deleted_at`，payload 保持原 DOFS inode 并位于隐藏命名空间。
+所有接口均按当前会话用户过滤，其他用户的条目 ID 返回 `404`。
+
+### `POST /trash/`
+
+把一个可见文件或目录移入回收站：
+
+```json
+{"path":"/project/","expected_inode":42}
+```
+
+`expected_inode` 必填。成功通常返回 `201`；如果 DOFS rename 已完成但产品状态仍等待恢复，
+返回 `202`，启动/周期恢复任务会把条目收敛为可见状态。
+
+### `GET /trash/`
+
+列出当前用户的删除事件根。支持 `limit`、`offset`，响应仍使用 `files` 数组；每项包含
+`inode`、`trash_id`、`relative_path`、`original_path`、`deleted_at` 和普通文件元数据。
+
+### `GET /trash/:id/list`
+
+浏览已删除目录的直接子项。查询参数 `path` 是条目根内的相对绝对路径，默认为 `/`。
+响应子项继续携带相同的 `trash_id`，但拥有各自的 `relative_path`、`original_path` 和 inode。
+`..` 路径会被拒绝。
+
+### `GET /trash/:id/access`
+
+读取回收站中的文件。查询参数 `path` 与目录浏览相同；响应格式与 `GET /file/access`
+一致，浏览器仍然从 OSS 读取密文并在本地解密。
+
+### `POST /trash/:id/restore`
+
+还原条目根或某个后代：
+
+```json
+{
+  "path": "/report.txt",
+  "expected_inode": 51,
+  "conflict": "rename",
+  "nested_conflict": "skip"
+}
+```
+
+- `path` 默认为 `/`，`expected_inode` 必填；
+- 缺失的原父目录会自动创建；
+- 顶层冲突且未给策略时返回 `409 restore_conflict`；`conflict` 可为 `skip`、`replace`、
+  `rename`，目录对目录还可为 `merge`；
+- 合并目录存在后代冲突且未给策略时，响应的 `conflicts` 列出冲突；
+  `nested_conflict` 可为 `skip`、`replace`、`rename`；
+- 单独还原后代后，剩余内容继续留在原条目中；最后一个后代离开后，空条目自动移除。
+
+### `DELETE /trash/:id`
+
+永久删除条目根或后代。查询参数：
+
+- `path`：默认为 `/`；
+- `expected_inode`：必填。
+
+最后一个后代被删除后，空条目自动移除。
+
+### `DELETE /trash/`
+
+清空当前用户的全部回收站条目。若个别条目失败，返回 `500 empty_trash_partial` 和失败 ID；
+已完成的条目不会回滚，未完成状态由恢复任务继续处理。
 
 ## 浏览器直传 `/file/upload`
 
