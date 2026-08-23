@@ -3,13 +3,11 @@ package handler
 import (
 	"bytes"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/willvar/dofs"
 	metadatamemory "github.com/willvar/dofs/metadata/memory"
 	objectmemory "github.com/willvar/dofs/object/memory"
-	"gorm.io/gorm"
 
 	"domus/internal/dofsbridge"
 	"domus/internal/model"
@@ -61,36 +59,44 @@ func TestDOFSReclaimerDeletesOrphanNamespaceAndObjects(t *testing.T) {
 	}
 }
 
-func TestPruneEmptyTrashParentsPreservesTrashRootAndNonEmptyAncestors(t *testing.T) {
+func TestFinishTrashMutationRemovesEmptyEntryButPreservesItemsRoot(t *testing.T) {
 	repositories := model.NewMemRepos(nil)
 	user, err := repositories.Users.Create("owner", "password", "user", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, directory := range []string{
-		"/.domus/", "/.domus/trash/", "/.domus/trash/project/", "/.domus/trash/project/empty/",
-	} {
-		name := directory[:len(directory)-1]
-		name = name[strings.LastIndex(name, "/")+1:]
-		if err := repositories.Files.Upsert(user.ID, directory, name, true, 0, "", ""); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := repositories.Files.Upsert(user.ID, "/.domus/trash/project/keep.txt", "keep.txt", false, 1, "text/plain", ""); err != nil {
+	if err := repositories.Files.Upsert(user.ID, trashItemsStorageRootPath, "items", true, 0, "", ""); err != nil {
 		t.Fatal(err)
 	}
+	entry := &model.TrashEntry{
+		ID: "entry", UserID: user.ID, RootInode: 2, OriginalPath: "/project/",
+		OriginalName: "project", IsDir: true, State: model.TrashStateReady,
+	}
+	entryPath := trashItemsStorageRootPath + entry.ID + "/"
+	if err := repositories.Files.Upsert(user.ID, entryPath, entry.ID, true, 0, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	root, err := repositories.Files.Get(user.ID, entryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.RootInode = root.ID
+	if err := repositories.Trash.Create(entry); err != nil {
+		t.Fatal(err)
+	}
+	if err := repositories.Trash.Transition(user.ID, entry.ID, model.TrashStateReady, model.TrashStateRestoring, root.ID, "/child.txt", "/project/child.txt"); err != nil {
+		t.Fatal(err)
+	}
+	entry.OperationPath = "/child.txt"
 
 	handler := &Handler{Repos: repositories}
-	if err := handler.pruneEmptyTrashParents(user.ID, "/.domus/trash/project/empty/restored.txt"); err != nil {
+	if err := handler.finishTrashMutation(user.ID, entry, model.TrashStateRestoring); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := repositories.Files.Get(user.ID, "/.domus/trash/project/empty/"); !errors.Is(err, gorm.ErrRecordNotFound) {
-		t.Fatalf("empty trash directory remained: %v", err)
+	if _, err := repositories.Trash.Get(user.ID, entry.ID); err == nil {
+		t.Fatal("empty trash entry remained")
 	}
-	if _, err := repositories.Files.Get(user.ID, "/.domus/trash/project/"); err != nil {
-		t.Fatalf("non-empty trash ancestor was deleted: %v", err)
-	}
-	if _, err := repositories.Files.Get(user.ID, trashStorageRootPath); err != nil {
-		t.Fatalf("trash root was deleted: %v", err)
+	if _, err := repositories.Files.Get(user.ID, trashItemsStorageRootPath); err != nil {
+		t.Fatalf("trash items root was deleted: %v", err)
 	}
 }

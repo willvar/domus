@@ -4,6 +4,7 @@ import { useWebSocket } from './useWebSocket'
 import { usePreferences } from './usePreferences'
 import { getFileIcon } from './useFileIcon'
 import type { WorkspaceSnapshot, SerializedWindow, SerializedTab, WorkspaceEvent, ViewerCallbackFn, UserPreferences } from '../types'
+import { TRASH_ROOT_LOCATION } from '../utils/trashLocation'
 
 // Re-export icon constants so windowManager can use them for restore
 import { IconFolderHome, IconAccountCircle, IconConsole } from '../barrels/icons'
@@ -135,7 +136,25 @@ function buildSnapshot(wm: WindowManagerLike, fs: FileSystemLike): WorkspaceSnap
 
   const activeTabIndex: number = fs.tabs.findIndex(t => t.id === fs.activeTabId)
 
-  return { version: 1, windows, tabs, activeTabIndex: Math.max(activeTabIndex, 0) }
+  return { version: 2, windows, tabs, activeTabIndex: Math.max(activeTabIndex, 0) }
+}
+
+function migrateWorkspaceSnapshot(snapshot: WorkspaceSnapshot): WorkspaceSnapshot | null {
+  if (snapshot.version === 2) return snapshot
+  if (snapshot.version !== 1) return null
+
+  const legacyTrashPath = (value: unknown): boolean =>
+    typeof value === 'string' && (value === '/__trash__' || value.startsWith('/__trash__/'))
+  const tabs = (snapshot.tabs || []).map(tab => ({
+    ...tab,
+    // Path-shaped Trash v1 entries cannot be mapped to opaque v2 IDs. Keep
+    // the place open, but intentionally discard the stale descendant path.
+    path: legacyTrashPath(tab.path) ? TRASH_ROOT_LOCATION : tab.path,
+  }))
+  const windows = (snapshot.windows || []).filter(window =>
+    window.type !== 'viewer' || !legacyTrashPath(window.data?.filePath),
+  )
+  return { ...snapshot, version: 2, tabs, windows }
 }
 
 /**
@@ -147,11 +166,11 @@ async function load(): Promise<WorkspaceSnapshot | null> {
   try {
     const { data: res } = await api.get<{ state?: WorkspaceSnapshot | string }>('/workspace/')
     if (res?.state && typeof res.state === 'object') {
-      return res.state as WorkspaceSnapshot
+      return migrateWorkspaceSnapshot(res.state as WorkspaceSnapshot)
     }
     // Could be a JSON string
     if (res?.state && typeof res.state === 'string') {
-      return JSON.parse(res.state) as WorkspaceSnapshot
+      return migrateWorkspaceSnapshot(JSON.parse(res.state) as WorkspaceSnapshot)
     }
   } catch { /* silent */ }
   return null
@@ -301,7 +320,7 @@ function setupPushHandler(wm: WindowManagerLike, fs: FileSystemLike): void {
     // On reconnect, load full state if sync is enabled
     if (!prefs.sessionIsolation) {
       load().then((saved: WorkspaceSnapshot | null) => {
-        if (saved?.version === 1 && saved.windows?.length > 0) {
+        if (saved?.version === 2 && (saved.windows?.length > 0 || saved.tabs?.length > 0)) {
           // Close existing and restore
           wm.windows.splice(0)
           fs.init({ skipRestore: true })

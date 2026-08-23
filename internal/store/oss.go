@@ -25,6 +25,7 @@ type ObjectInfo struct {
 // FileInfo is the browser-facing file listing projection assembled from DOFS
 // metadata. It is not populated by listing object-storage paths.
 type FileInfo struct {
+	Inode         int64     `json:"inode"`
 	Name          string    `json:"name"`
 	Path          string    `json:"path"`
 	IsDir         bool      `json:"is_dir"`

@@ -11,6 +11,9 @@ type gormUserCleanupRepo struct{ db *gorm.DB }
 
 func (r *gormUserCleanupRepo) DeleteUserAndRelatedData(userID string) error {
 	return r.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("user_id = ?", userID).Delete(&TrashEntry{}).Error; err != nil {
+			return err
+		}
 		if err := tx.Where("owner_id = ? OR target_user_id = ?", userID, userID).Delete(&Share{}).Error; err != nil {
 			return err
 		}

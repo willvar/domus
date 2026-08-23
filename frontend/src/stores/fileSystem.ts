@@ -14,6 +14,14 @@ import { useServiceWorker } from '../composables/useServiceWorker'
 import { registerFileDecrypt } from '../composables/useFileAccess'
 import { readMigratedStorage } from '../utils/storageCompat'
 import { writeEncryptedFile } from '../composables/useCryptoUpload'
+import {
+  TRASH_ROOT_LOCATION,
+  isTrashLocation,
+  normalizeTrashDirectoryLocation,
+  parseTrashLocation,
+  trashItemLocation,
+  trashParentLocation,
+} from '../utils/trashLocation'
 import type {
   FileListItem,
   FileTab,
@@ -35,7 +43,6 @@ import type {
 
 const TEXT_CHUNK_SIZE: number = 256 * 1024 // 256KB — aligns with 4 encryption chunks
 const NON_CHUNKABLE_TYPES: Set<string> = new Set(['notebook', 'archive'])
-const TRASH_ROOT_PATH = '/__trash__/'
 
 function getLargeFileLimit(): number {
   const { prefs } = usePreferences()
@@ -49,53 +56,10 @@ function normalizeAppPath(path: string): string {
 }
 
 function normalizeDirPath(path: string): string {
+  if (isTrashLocation(path)) return normalizeTrashDirectoryLocation(path)
   path = normalizeAppPath(path)
   if (path !== '/' && !path.endsWith('/')) path += '/'
   return path
-}
-
-function isTrashPath(path: string): boolean {
-  const normalized = normalizeAppPath(path)
-  return normalized === '/__trash__' || normalized === TRASH_ROOT_PATH || normalized.startsWith(TRASH_ROOT_PATH)
-}
-
-function toTrashPath(path: string): string {
-  const normalized = normalizeAppPath(path)
-  if (normalized === '/') return TRASH_ROOT_PATH
-  return TRASH_ROOT_PATH + normalized.replace(/^\/+/, '')
-}
-
-function restorePathFromTrash(path: string): string {
-  const normalized = normalizeAppPath(path)
-  if (!isTrashPath(normalized)) return normalized
-  const restored = '/' + normalized.slice(TRASH_ROOT_PATH.length)
-  if (restored === '//') return '/'
-  if (normalized.endsWith('/') && restored !== '/' && !restored.endsWith('/')) return restored + '/'
-  return restored
-}
-
-function appParentPath(path: string): string {
-  const normalized = normalizeAppPath(path)
-  if (normalized === '/') return '/'
-  const trimmed = normalized !== '/' && normalized.endsWith('/') ? normalized.slice(0, -1) : normalized
-  const idx = trimmed.lastIndexOf('/')
-  return idx <= 0 ? '/' : trimmed.slice(0, idx + 1)
-}
-
-function splitFileName(name: string): { base: string; ext: string } {
-  const dot = name.lastIndexOf('.')
-  if (dot <= 0) return { base: name, ext: '' }
-  return { base: name.slice(0, dot), ext: name.slice(dot) }
-}
-
-function nextAvailableName(name: string, usedNames: Set<string>): string {
-  const { base, ext } = splitFileName(name)
-  let index = 1
-  while (true) {
-    const candidate = `${base} (${index})${ext}`
-    if (!usedNames.has(candidate)) return candidate
-    index++
-  }
 }
 
 function formatFileSize(bytes: number): string {
@@ -220,10 +184,12 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   // Directory cache (global, shared across tabs)
   const cache: Map<string, { data: FileListItem[]; timestamp: number }> = new Map()
+  const trashEntryNames: Map<string, string> = new Map()
   const CACHE_TTL: number = 30000
 
   async function performSearch(query: string): Promise<void> {
     if (!query || query.length < 2) return
+    clearSelection()
     searchMode.value = true
     searchLoading.value = true
     try {
@@ -241,6 +207,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   function exitSearch(): void {
+    clearSelection()
     searchMode.value = false
     searchResults.value = []
     searchQuery.value = ''
@@ -281,8 +248,8 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     return undefined
   })
 
-  const isTrash: ComputedRef<boolean> = computed(() => isTrashPath(currentPath.value))
-  const isTrashRoot: ComputedRef<boolean> = computed(() => normalizeDirPath(currentPath.value) === TRASH_ROOT_PATH)
+  const isTrash: ComputedRef<boolean> = computed(() => isTrashLocation(currentPath.value))
+  const isTrashRoot: ComputedRef<boolean> = computed(() => currentPath.value === TRASH_ROOT_LOCATION)
   const isShared: ComputedRef<boolean> = computed(() => currentPath.value === '__shared__/')
 
   const canGoBack: ComputedRef<boolean> = computed(() => historyIndex.value > 0)
@@ -290,6 +257,21 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const canGoUp: ComputedRef<boolean> = computed(() => currentPath.value !== '/' && !isShared.value && !isTrashRoot.value)
 
   const pathSegments: ComputedRef<PathSegment[]> = computed(() => {
+    if (isTrash.value) {
+      const location = parseTrashLocation(currentPath.value)
+      if (!location?.id) return []
+      const segments: PathSegment[] = [{
+        name: trashEntryNames.get(location.id) || t('places.trash'),
+        path: trashItemLocation(location.id, '/', true),
+      }]
+      const parts = location.relativePath.replace(/^\//, '').replace(/\/$/, '').split('/').filter(Boolean)
+      let relative = '/'
+      for (const part of parts) {
+        relative += part + '/'
+        segments.push({ name: part, path: trashItemLocation(location.id, relative, true) })
+      }
+      return segments
+    }
     if (!currentPath.value || currentPath.value === '/') return []
     const trimmed: string = currentPath.value.replace(/^\//, '').replace(/\/$/, '')
     const parts: string[] = trimmed.split('/')
@@ -297,7 +279,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     let accumulated: string = '/'
     for (const part of parts) {
       accumulated += part + '/'
-      segments.push({ name: part === '__trash__' ? t('places.trash') : part, path: accumulated })
+      segments.push({ name: part, path: accumulated })
     }
     return segments
   })
@@ -325,9 +307,12 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     tabs.value.push(tab)
     activeTabId.value = id
 
-    // Subscribe to directory changes for this tab
-    tabSubs.set(id, initialPath)
-    ws.request('subscribe.directory', { path: initialPath }).catch(() => {})
+    // Trash is an ID-addressed product view, not a DOFS directory
+    // subscription. It is invalidated through trash.changed instead.
+    if (initialPath !== '__shared__/' && !isTrashLocation(initialPath)) {
+      tabSubs.set(id, initialPath)
+      ws.request('subscribe.directory', { path: initialPath }).catch(() => {})
+    }
 
     loadFiles(initialPath)
 
@@ -399,8 +384,9 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     // Unsubscribe old directory for this tab
     const tabId: string = activeTabId.value
     const oldSub = tabSubs.get(tabId)
-    if (oldSub && oldSub !== path && path !== '__shared__/') {
+    if (oldSub && oldSub !== path) {
       ws.request('unsubscribe.directory', { path: oldSub }).catch(() => {})
+      tabSubs.delete(tabId)
     }
 
     currentPath.value = path
@@ -414,7 +400,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     }
 
     // Subscribe to new directory
-    if (path !== '__shared__/') {
+    if (path !== '__shared__/' && !isTrashLocation(path)) {
       tabSubs.set(tabId, path)
       ws.request('subscribe.directory', { path }).catch(() => {})
     }
@@ -444,6 +430,10 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         cache.set(path, { data, timestamp: Date.now() })
       }
     } catch (e: any) {
+      if (currentPath.value === path && parseTrashLocation(path)?.id && e?.response?.status === 404) {
+        await navigate(TRASH_ROOT_LOCATION)
+        return
+      }
       error.value = te(e)
     } finally {
       loading.value = false
@@ -451,6 +441,45 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   async function fetchFiles(path: string): Promise<FileListItem[]> {
+    if (isTrashLocation(path)) {
+      const location = parseTrashLocation(path)
+      if (!location?.id) {
+        const entries: FileListItem[] = []
+        for (let offset = 0; ; offset += 500) {
+          const res = await api.get<{ files?: FileListItem[] }>('/trash/', {
+            params: { limit: 500, offset },
+          })
+          const page = res.data.files || []
+          entries.push(...page)
+          if (page.length < 500) break
+        }
+        const list = entries.flatMap(file => {
+          if (!file.trash_id) return []
+          trashEntryNames.set(file.trash_id, file.name)
+          return {
+            ...file,
+            path: trashItemLocation(file.trash_id, file.relative_path || '/', file.is_dir),
+            last_modified: file.deleted_at || file.last_modified,
+          }
+        })
+        registerThumbnails(list)
+        await useServiceWorker().flush()
+        return list
+      }
+      const res = await api.get<{ files?: FileListItem[]; trash?: { id: string; name: string } }>(
+        `/trash/${encodeURIComponent(location.id)}/list`,
+        { params: { path: location.relativePath } },
+      )
+      const trashID = location.id
+      if (res.data.trash?.name) trashEntryNames.set(trashID, res.data.trash.name)
+      const list = (res.data.files || []).map(file => ({
+        ...file,
+        path: trashItemLocation(trashID, file.relative_path || '/', file.is_dir),
+      }))
+      registerThumbnails(list)
+      await useServiceWorker().flush()
+      return list
+    }
     if (path === '__shared__/') {
       const res = await api.get<Array<{
         id: number
@@ -485,39 +514,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     registerThumbnails(list)
     await useServiceWorker().flush()
     return list
-  }
-
-  async function listFilesAtPath(path: string): Promise<FileListItem[]> {
-    if (path === '__shared__/') return []
-    const res = await api.get<{ files?: FileListItem[] }>('/file/', { params: { path } })
-    return res.data.files || []
-  }
-
-  async function findExistingPath(path: string): Promise<FileListItem | undefined> {
-    const parentPath = appParentPath(path)
-    const entries = await listFilesAtPath(parentPath)
-    return entries.find(entry => entry.path === path)
-  }
-
-  async function resolveRestoreTarget(file: FileListItem, action: 'skip' | 'replace' | 'rename'): Promise<string | null> {
-    const sourcePath = normalizeAppPath(file.path)
-    let targetPath = restorePathFromTrash(sourcePath)
-    const existing = await findExistingPath(targetPath)
-
-    if (existing) {
-      if (action === 'skip') return ''
-      if (action === 'replace') {
-        await api.delete('/file/delete', { params: { path: existing.path, permanent: true } })
-      } else if (action === 'rename') {
-        const parentPath = appParentPath(targetPath)
-        const siblings = await listFilesAtPath(parentPath)
-        const usedNames = new Set(siblings.map(entry => entry.name))
-        const renamed = nextAvailableName(file.name, usedNames)
-        targetPath = parentPath + renamed + (file.is_dir ? '/' : '')
-      }
-    }
-
-    return targetPath
   }
 
   function notifyDecryptUnavailable(): void {
@@ -557,6 +553,10 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   function goUp(): void {
     if (!canGoUp.value) return
+    if (isTrash.value) {
+      navigate(trashParentLocation(currentPath.value))
+      return
+    }
     const parts: string[] = currentPath.value.replace(/\/$/, '').split('/')
     parts.pop()
     const parent: string = parts.join('/') + '/'
@@ -773,127 +773,181 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     }
   }
 
-  async function deleteSelected(): Promise<void> {
+  async function deleteSelected(permanent: boolean = false): Promise<void> {
     if (selectedFiles.value.length === 0) return
-    const count: number = selectedFiles.value.length
+    const paths: string[] = [...selectedFiles.value]
+    const count: number = paths.length
+    const failedPaths: string[] = []
+    const wasSelectMode: boolean = selectMode.value
 
-    if (isTrash.value) {
-      if (!await showConfirm(t('dialog.permanent_delete_title'), t('dialog.confirm_permanent_delete', { n: count }), { icon: 'warning', positiveType: 'error' })) return
-      for (const path of selectedFiles.value) {
-        const file = getFileByPath(path)
-        try {
-          await api.delete('/file/delete', { params: { path, permanent: true } })
-        } catch (e: any) {
-          const queued = await maybeQueuePendingOp(e, {
-            apiUrl: '/file/delete',
-            apiMethod: 'delete',
-            apiData: { path, permanent: true },
-            type: 'deleteTrash',
-            description: pendingDescription('deleteTrash', file?.name || path),
-          })
-          if (queued) continue
-          console.error('Permanent delete failed:', e)
-        }
-      }
-    } else if (isShared.value) {
+    if (isShared.value) {
       if (!await showConfirm(t('share.stop_share'), t('share.confirm_stop'), { icon: 'warning', positiveType: 'error' })) return
-      for (const path of selectedFiles.value) {
+      for (const path of paths) {
         const file = getFileByPath(path)
         if (!file?._shareDbId) continue
         try {
           await api.delete('/file/share/' + file._shareDbId)
         } catch (e: any) {
           console.error('Stop share failed:', e)
+          failedPaths.push(path)
+        }
+      }
+    } else if (isTrash.value || permanent) {
+      if (!await showConfirm(t('dialog.permanent_delete_title'), t('dialog.confirm_permanent_delete', { n: count }), { icon: 'warning', positiveType: 'error' })) return
+      for (const path of paths) {
+        const file = getFileByPath(path)
+        if (!file?.inode) {
+          failedPaths.push(path)
+          continue
+        }
+        const apiUrl = isTrash.value && file.trash_id
+          ? `/trash/${encodeURIComponent(file.trash_id)}`
+          : '/file/delete'
+        const apiData = isTrash.value && file.trash_id
+          ? { path: file.relative_path || '/', expected_inode: file.inode }
+          : { path, permanent: true, expected_inode: file.inode }
+        try {
+          await api.delete(apiUrl, { params: apiData })
+        } catch (e: any) {
+          const queued = await maybeQueuePendingOp(e, {
+            apiUrl,
+            apiMethod: 'delete',
+            apiData,
+            type: 'deleteTrash',
+            description: pendingDescription('deleteTrash', file?.name || path),
+          })
+          if (queued) continue
+          console.error('Permanent delete failed:', e)
+          failedPaths.push(path)
         }
       }
     } else {
       if (!await showConfirm(t('dialog.delete_title'), t('dialog.confirm_delete', { n: count }), { icon: 'warning', positiveType: 'error' })) return
-      await Promise.allSettled(selectedFiles.value.map(async path => {
+      await Promise.all(paths.map(async path => {
         const file = getFileByPath(path)
+        if (!file?.inode) {
+          failedPaths.push(path)
+          return
+        }
+        const apiData = { path, expected_inode: file.inode }
         try {
-          await api.delete('/file/delete', { params: { path } })
+          await api.post('/trash/', apiData)
         } catch (e: any) {
           const queued = await maybeQueuePendingOp(e, {
-            apiUrl: '/file/delete',
-            apiMethod: 'delete',
-            apiData: { path },
+            apiUrl: '/trash/',
+            apiMethod: 'post',
+            apiData,
             type: 'delete',
             description: pendingDescription('delete', file?.name || path),
           })
-          if (!queued) throw e
+          if (!queued) {
+            console.error('Delete failed:', e)
+            failedPaths.push(path)
+          }
         }
       }))
     }
 
-    clearSelection()
     await reloadCurrentDir()
+    if (isTrash.value && error.value && parseTrashLocation(currentPath.value)?.id) {
+      await navigate(TRASH_ROOT_LOCATION)
+    }
+    if (failedPaths.length > 0) {
+      selectedFiles.value = failedPaths.filter(path => getFileByPath(path) !== undefined)
+      selectMode.value = wasSelectMode && selectedFiles.value.length > 0
+      lastSelectedIndex.value = selectedFiles.value.length > 0
+        ? sortedFiles.value.findIndex(file => file.path === selectedFiles.value[selectedFiles.value.length - 1])
+        : -1
+      message.error(t('files.delete_failed', { n: failedPaths.length }))
+      return
+    }
+    clearSelection()
   }
 
   async function restoreSelected(): Promise<void> {
     if (!isTrash.value || selectedFiles.value.length === 0) return
-    let applyAction: 'skip' | 'replace' | 'rename' | undefined
+    let applyAction: 'skip' | 'replace' | 'rename' | 'merge' | undefined
+    let applyNestedAction: 'skip' | 'replace' | 'rename' | undefined
     for (const path of selectedFiles.value) {
       const file = getFileByPath(path)
-      if (!file) continue
+      if (!file?.trash_id || !file.inode) continue
+      const apiUrl = `/trash/${encodeURIComponent(file.trash_id)}/restore`
+      const baseData = { path: file.relative_path || '/', expected_inode: file.inode }
+      let conflict = applyAction
+      let nestedConflict = applyNestedAction
       try {
-        const originalPath = restorePathFromTrash(path)
-        const existing = await findExistingPath(originalPath)
-        let action = applyAction
-        if (existing && !action) {
-          const decision = await showDuplicateDialog({
-            title: t('upload.duplicate_title'),
-            incomingName: file.name,
-            incomingSize: file.size,
-            existingName: existing.name,
-            existingSize: existing.size,
-            existingIsDir: existing.is_dir,
-          })
-          if (!decision) break
-          action = decision.action
-          if (decision.applyToAll) applyAction = action
-        }
-        const targetPath = action ? await resolveRestoreTarget(file, action) : originalPath
-        if (targetPath === null) break
-        if (targetPath === '') continue
-        const apiData = {
-          src_path: path,
-          dst_path: targetPath,
-          is_dir: file.is_dir,
-        }
-        try {
-          await api.post('/file/move', apiData)
-        } catch (e: any) {
-          const queued = await maybeQueuePendingOp(e, {
-            apiUrl: '/file/move',
-            apiMethod: 'post',
-            apiData,
-            type: 'restore',
-            description: pendingDescription('restore', file.name),
-          })
-          if (!queued) throw e
+        while (true) {
+          const apiData = { ...baseData, conflict, nested_conflict: nestedConflict }
+          try {
+            await api.post(apiUrl, apiData)
+            break
+          } catch (e: any) {
+            const detail = e?.response?.data
+            if (e?.response?.status === 400 && detail?.error === 'merge_not_available' && conflict === 'merge') {
+              conflict = undefined
+              if (applyAction === 'merge') applyAction = undefined
+              continue
+            }
+            if (e?.response?.status !== 409 || detail?.error !== 'restore_conflict') {
+              const queued = await maybeQueuePendingOp(e, {
+                apiUrl,
+                apiMethod: 'post',
+                apiData,
+                type: 'restore',
+                description: pendingDescription('restore', file.name),
+              })
+              if (!queued) throw e
+              break
+            }
+            const nested = conflict === 'merge' && Array.isArray(detail.conflicts) && detail.conflicts.length > 0
+            const incoming = nested ? detail.conflicts[0] : detail.incoming
+            const existing = nested ? {
+              name: detail.conflicts[0].existing_name,
+              size: detail.conflicts[0].existing_size,
+              is_dir: detail.conflicts[0].existing_is_dir,
+            } : detail.existing
+            const decision = await showDuplicateDialog({
+              title: t('upload.duplicate_title'),
+              incomingName: incoming?.name || file.name,
+              incomingSize: incoming?.size || file.size,
+              existingName: existing?.name || file.name,
+              existingSize: existing?.size || 0,
+              existingIsDir: !!existing?.is_dir,
+              allowMerge: !nested && !!detail.merge_available,
+            })
+            if (!decision) return
+            if (nested) {
+              if (decision.action === 'merge') continue
+              nestedConflict = decision.action
+              if (decision.applyToAll) applyNestedAction = nestedConflict
+            } else {
+              conflict = decision.action
+              if (decision.applyToAll) applyAction = conflict
+            }
+          }
         }
       } catch (e: any) {
         console.error('Restore failed:', e)
+        message.error(te(e))
       }
     }
     clearSelection()
     await reloadCurrentDir()
+    if (error.value && parseTrashLocation(currentPath.value)?.id) {
+      await navigate(TRASH_ROOT_LOCATION)
+    }
   }
 
   async function emptyTrash(): Promise<void> {
     if (!await showConfirm(t('dialog.empty_trash_title'), t('dialog.confirm_empty_trash'), { icon: 'warning', positiveType: 'error' })) return
     try {
-      await api.delete('/file/delete', { params: { path: TRASH_ROOT_PATH, permanent: true } })
+      await api.delete('/trash/')
     } catch (e: any) {
-      const queued = await maybeQueuePendingOp(e, {
-        apiUrl: '/file/delete',
-        apiMethod: 'delete',
-        apiData: { path: TRASH_ROOT_PATH, permanent: true },
-        type: 'emptyTrash',
-        description: pendingDescription('emptyTrash'),
-      })
-      if (queued) return
+      // Emptying Trash is an unbounded destructive command. Replaying it
+      // after connectivity returns could also delete entries created after
+      // the user's confirmation, so it must never enter the offline queue.
       console.error('Empty trash failed:', e)
+      message.error(te(e))
     }
     await reloadCurrentDir()
   }
@@ -1213,7 +1267,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   async function saveViewer(windowId: string): Promise<void> {
     const state = findApp(windowId)
-    if (!state || state.saving) return
+    if (!state || state.saving || isTrashLocation(state.file.path)) return
     state.saving = true
     try {
       const newContent: string = state.content!
@@ -1270,8 +1324,13 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       const sw = useServiceWorker()
       const path: string = typeof pathOrFile === 'string' ? pathOrFile : pathOrFile.path
       const shareId: string | undefined = typeof pathOrFile === 'object' ? pathOrFile._shareId : undefined
+      const trash = parseTrashLocation(path)
       const res = shareId
         ? await api.get<FileAccessResponse>('/file/shared/' + shareId)
+        : trash?.id
+          ? await api.get<FileAccessResponse>(`/trash/${encodeURIComponent(trash.id)}/access`, {
+              params: { path: trash.relativePath },
+            })
         : await api.get<FileAccessResponse>('/file/access', { params: { path } })
       const { url, size, name, content_type, chunk_size, dek, content_hash } = res.data
       decryptUrl = sw.registerDecrypt({
@@ -1335,6 +1394,15 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     }
   })
 
+  ws.on('trash.changed', () => {
+    for (const key of cache.keys()) {
+      if (isTrashLocation(key)) cache.delete(key)
+    }
+    for (const tab of tabs.value) {
+      if (isTrashLocation(tab.path)) loadFilesForTab(tab, tab.path)
+    }
+  })
+
   // Load files directly into a specific tab (works for any tab, not just active)
   async function loadFilesForTab(tab: FileTab, path: string): Promise<void> {
     try {
@@ -1343,7 +1411,27 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         tab.files = data
         cache.set(path, { data, timestamp: Date.now() })
       }
-    } catch { /* ignore refresh errors */ }
+    } catch (e: any) {
+      if (!isTrashLocation(path) || !parseTrashLocation(path)?.id || e?.response?.status !== 404) return
+      // Another device may have restored or emptied the entry currently open
+      // in this tab. Move that tab back to the still-valid Trash root instead
+      // of leaving stale children on screen.
+      tab.path = TRASH_ROOT_LOCATION
+      tab.selectedFiles = []
+      tab.lastSelectedIndex = -1
+      tab.history = tab.history.slice(0, tab.historyIndex + 1)
+      tab.history.push(TRASH_ROOT_LOCATION)
+      tab.historyIndex = tab.history.length - 1
+      try {
+        const rootData = await fetchFiles(TRASH_ROOT_LOCATION)
+        tab.files = rootData
+        tab.error = null
+        cache.set(TRASH_ROOT_LOCATION, { data: rootData, timestamp: Date.now() })
+      } catch (rootError: any) {
+        tab.files = []
+        tab.error = te(rootError)
+      }
+    }
   }
 
   // Re-subscribe directories and reload files after WS (re)connection
@@ -1398,8 +1486,10 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         error: null,
       }
       tabs.value.push(tab)
-      tabSubs.set(id, tab.path)
-      ws.request('subscribe.directory', { path: tab.path }).catch(() => {})
+      if (tab.path !== '__shared__/' && !isTrashLocation(tab.path)) {
+        tabSubs.set(id, tab.path)
+        ws.request('subscribe.directory', { path: tab.path }).catch(() => {})
+      }
       loadFilesForTab(tab, tab.path)
     }
 
@@ -1541,6 +1631,5 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     init,
     restoreTabs,
     restoreViewers,
-    listFilesAtPath,
   }
 })

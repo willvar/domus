@@ -19,7 +19,7 @@ Domus 是对象存储原生、应用层加密、多租户隔离的浏览器文�
 | 产品数据库 | PostgreSQL |
 | 文件命名空间 | DOFS；单机默认 SQLite，多主机可选 PostgreSQL |
 | 文件对象 | S3-compatible 对象存储（包括阿里云 OSS） |
-| 前端 | Vue 3、Vue Router、Pinia、Vite、Breeze |
+| 前端 | Vue 3、Vue Router、Pinia、Vite、Naive UI |
 | 实时通信 | WebSocket（目录通知与上传任务进度） |
 | 浏览器测试 | Playwright |
 
@@ -114,14 +114,15 @@ HTTP 负责 query/command，WebSocket 只负责目录订阅、`task.update` 与 
 
 文件路径始终是当前认证用户的 namespace 相对绝对路径：`/` 对应 DOFS 根 inode，用户
 名不得拼进路径，也不得重新创建 `/home/<username>`。`/.domus/` 是保留的应用内部目录，
-公开 API 和文件列表必须隐藏；回收站公开路径固定为 `/__trash__/`。
+公开 API 和文件列表必须隐藏。回收站是 Domus 的 ID 寻址产品视图，不占用用户路径；
+`/__trash__/` 与其他合法名称一样属于普通用户数据。
 
 ## 代码规范
 
 - Go 使用 `gofmt`；Handler 负责鉴权与封闭请求解析，文件语义由 DOFS/fileview 提供。
 - 用户文件操作不得绕过 DOFS 直接读写对象正文。
 - 上传控制字段使用 allowlist，不得加入正文、base64 或客户端自报 ETag 路径。
-- Vue 使用 Composition API、Pinia 和现有 Breeze 组件。
+- Vue 使用 Composition API、Pinia 和 Naive UI；能由 Naive UI 提供的基础组件不重复实现。
 - 桌面/移动端复用 `FileShell`；预览使用 `/preview` 路由。
 - 文案同时更新英文和中文；交互变化同步更新 Playwright。
 

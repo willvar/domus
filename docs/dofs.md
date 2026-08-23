@@ -8,7 +8,10 @@ generation、大小、包装密钥、对象键和配额以 DOFS 为权威。
 就是根下的 `Documents/a.txt`。用户名不进入路径，也不会创建 `/home/<username>`。租户
 隔离来自已认证用户 ID 到 namespace 的绑定，而不是路径前缀。`/.domus/` 是 Domus 保留
 的隐藏目录，当前保存 `trash/`、`thumbnails/` 和 `user/`；公开文件 API 不允许直接访问。
-界面中的虚拟路径 `/__trash__/` 映射到 `/.domus/trash/`。
+回收站不是用户目录的路径别名：Domus 为每次删除建立不透明 ID，并把稳定 inode 移到
+`/.domus/trash/items/<entry-id>`；原路径、删除时间和恢复状态保存在产品数据库中。
+因此同一路径可以保留多个删除版本，目录内子项也可以单独浏览、还原或永久删除。
+用户创建的 `/__trash__/` 是普通目录，不会与产品回收站重叠。
 
 旧路径表、逻辑路径对象键和服务端正文上传没有双读回退。检测到未迁移的旧文件表时
 服务会拒绝启动，避免静默丢失或重解释数据。
@@ -54,11 +57,14 @@ Domus HTTP 只接收路径、明文长度、DEK、上传 ID、哈希和完成确
 ## 元数据职责
 
 DOFS 保存 namespace、inode/目录、generation、大小、mode、对象键、包装 DEK、上传
-reservation、writer/mount/reclaim lease、事件游标和配额。`used_bytes` 只统计当前可见
-文件；永久删除会在元数据事务中立即把相应大小移入 `pending_reclaim_bytes`。
+reservation、writer/mount/reclaim lease、事件游标和配额。`used_bytes` 统计当前未 unlink
+的活动文件（包括 Domus 隐藏回收站中的 payload）；永久删除会在元数据事务中立即把
+相应大小移入 `pending_reclaim_bytes`。
 
 Domus PostgreSQL 保存产品数据；其中 `domus_file_metadata` 只补充 MIME、内容哈希、
-媒体尺寸及缩略图 inode，`domus_file_uploads` 保存上传任务与恢复状态。
+媒体尺寸及缩略图 inode，`domus_file_uploads` 保存上传任务与恢复状态，
+`domus_trash_entries` 保存删除事件及跨数据库操作状态。删除、还原和清空回收站先持久化
+状态，再修改 DOFS；启动和周期恢复任务会收敛中断在途的操作。
 
 单服务器默认使用本地 SQLite 保存 DOFS 元数据：
 
@@ -90,7 +96,8 @@ inode 的全部 OSS generation 后清除元数据；失败、重启或挂载占�
 旧内容 generation 会至少保留 4 小时 15 分钟，以覆盖 Domus 的 4 小时 presigned GET，
 随后回收；明确的永久删除会立即使旧读取失效，不等待该宽限期。
 
-`pending_reclaim_bytes` 是待回收文件的明文逻辑大小，不是 OSS 账单中的精确密文字节。
+回收站 payload 仍是 namespace 中的活动文件，因此继续计入用户用量；永久删除后才进入
+回收流程。`pending_reclaim_bytes` 是待回收文件的明文逻辑大小，不是 OSS 账单中的精确密文字节。
 bucket 应关闭版本控制；否则普通 DeleteObject 可能只产生 delete marker，必须另配非
 当前版本生命周期清理。直接分片上传还应配置 incomplete multipart 生命周期规则。
 
@@ -98,6 +105,12 @@ Domus Web 直接使用 DOFS backend，不需要 FUSE。`domus dofs serve` 仅在
 把同一 namespace 的根 inode 挂到管理员选择的挂载点，供 Domus 之外的本机程序接入；
 挂载点本身决定 Linux 路径，不会额外生成 `home/<username>`。FUSE writeback
 state 可能含明文，必须放在权限 0700 的加密本地卷；不能放进 OSS、NFS 或容器层。
+通过 FUSE/Unix `rm` 的删除保持原生永久删除语义；只有 Domus 文件管理 UI/API 的删除
+命令会创建产品回收站条目。
+
+本次 Trash v2 升级不保留旧版按路径组织的 `/.domus/trash/` 内容。启动时只保留拥有
+`domus_trash_entries` 记录且 inode 匹配的 `items/<entry-id>` 根，其余旧版或孤儿 payload
+会被永久清理；`items/` 结构目录本身在后续重启中保持稳定。
 
 DOFS 不适合作为数据库、包管理器状态或高频构建缓存，也不承诺 symlink、hard link、
 特殊节点、mmap 数据库、POSIX lock 等完整本地文件系统语义。

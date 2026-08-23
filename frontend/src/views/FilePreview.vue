@@ -27,6 +27,12 @@ import { showConfirm } from '../composables/useNativeDialog'
 import api from '../composables/useApi'
 import { useFileSystemStore } from '../stores/fileSystem'
 import type { FileListItem, ViewerType } from '../types'
+import {
+  isTrashLocation,
+  parseTrashLocation,
+  trashLocationRouteQuery,
+  trashParentLocation,
+} from '../utils/trashLocation'
 
 const TEXT_PREVIEW_LIMIT = 2 * 1024 * 1024
 const ARCHIVE_PREVIEW_LIMIT = 128 * 1024 * 1024
@@ -56,8 +62,10 @@ let loadedFont: FontFace | null = null
 const name = computed(() => file.value?.name || (typeof route.query.name === 'string' ? route.query.name : t('files.preview')))
 const viewerType = computed<ViewerType | null>(() => fs.getViewerType(name.value))
 const previewKind = computed(() => viewerType.value || 'unsupported')
+const inTrash = computed(() => isTrashLocation(file.value?.path || ''))
 const parentPath = computed(() => {
   const path = file.value?.path || (typeof route.query.path === 'string' ? route.query.path : '/')
+  if (isTrashLocation(path)) return trashParentLocation(path)
   const trimmed = path.replace(/\/$/, '')
   const index = trimmed.lastIndexOf('/')
   return index <= 0 ? '/' : `${trimmed.slice(0, index)}/`
@@ -74,6 +82,9 @@ onMounted(async () => {
   file.value = {
     path,
     name: typeof route.query.name === 'string' ? route.query.name : path.split('/').pop() || '',
+    inode: typeof route.query.inode === 'string' && Number.isSafeInteger(Number(route.query.inode))
+      ? Number(route.query.inode)
+      : undefined,
     is_dir: false,
     size: 0,
     created_at: '',
@@ -86,6 +97,7 @@ onMounted(async () => {
     file.value = {
       ...file.value,
       name: registered.access.name || file.value.name,
+      inode: registered.access.inode || file.value.inode,
       size: registered.access.size,
       content_type: registered.access.content_type,
     }
@@ -174,7 +186,11 @@ function goBack(): void {
 }
 
 function openContainingFolder(): void {
-  void router.replace({ path: '/files', query: { path: parentPath.value } })
+  if (isTrashLocation(parentPath.value)) {
+    void router.replace({ path: '/files', query: trashLocationRouteQuery(parentPath.value) })
+    return
+  }
+  void router.replace({ path: '/files', query: parentPath.value === '/' ? {} : { path: parentPath.value } })
 }
 
 async function download(): Promise<void> {
@@ -182,14 +198,27 @@ async function download(): Promise<void> {
 }
 
 async function remove(): Promise<void> {
-  if (!file.value) return
-  const ok = await showConfirm(t('dialog.delete_title'), t('dialog.confirm_delete', { n: 1 }), {
+  if (!file.value?.inode) return
+  const ok = await showConfirm(
+    inTrash.value ? t('dialog.permanent_delete_title') : t('dialog.delete_title'),
+    inTrash.value ? t('dialog.confirm_permanent_delete', { n: 1 }) : t('dialog.confirm_delete', { n: 1 }), {
     icon: 'warning',
     positiveType: 'error',
   })
   if (!ok) return
-  await api.delete('/file/delete', { params: { path: file.value.path } })
-  openContainingFolder()
+  const trash = parseTrashLocation(file.value.path)
+  if (trash?.id) {
+    const response = await api.delete<{ entry_removed?: boolean }>(`/trash/${encodeURIComponent(trash.id)}`, {
+      params: { path: trash.relativePath, expected_inode: file.value.inode },
+    })
+    if (response.data.entry_removed) {
+      void router.replace({ path: '/files', query: { place: 'trash' } })
+      return
+    }
+  } else {
+    await api.post('/trash/', { path: file.value.path, expected_inode: file.value.inode })
+  }
+  goBack()
 }
 
 function formatSize(bytes: number): string {
@@ -218,8 +247,8 @@ function formatSize(bytes: number): string {
         <NButton @click="download">
           <template #icon><IconDownload /></template><span>{{ t('menu.download') }}</span>
         </NButton>
-        <NButton type="error" secondary class="danger" @click="remove">
-          <template #icon><IconDeleteOutline /></template><span>{{ t('menu.delete') }}</span>
+        <NButton type="error" secondary class="danger" :disabled="!file?.inode" @click="remove">
+          <template #icon><IconDeleteOutline /></template><span>{{ inTrash ? t('menu.permanent_delete') : t('menu.delete') }}</span>
         </NButton>
       </div>
     </header>

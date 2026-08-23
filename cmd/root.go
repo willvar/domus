@@ -661,8 +661,12 @@ func runServer(cfg *config.Config, configPath string) {
 		}
 		logger.Info("Root user initialized from bootstrap password source")
 	}
+	if err := h.PrepareTrashStorage(); err != nil {
+		logger.Fatal("Failed to prepare Trash v2 storage: %v", err)
+	}
 	dofsEventContext, cancelDOFSEvents := context.WithCancel(context.Background())
 	defer cancelDOFSEvents()
+	h.StartTrashRecovery(dofsEventContext)
 	if err := h.StartDOFSEventRelay(dofsEventContext); err != nil {
 		logger.Fatal("Failed to start DOFS event relay: %v", err)
 	}

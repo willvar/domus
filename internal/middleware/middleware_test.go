@@ -153,7 +153,7 @@ func TestResolvePath_PathSegmentIsNotATenantSelector(t *testing.T) {
 	}
 }
 
-func TestResolvePath_MapsVirtualTrashToReservedStorage(t *testing.T) {
+func TestResolvePath_AllowsTrashNamedUserDirectory(t *testing.T) {
 	app := resolvePathTestApp()
 	req := httptest.NewRequest("GET", "/resolve?path=/__trash__/docs/file.txt", nil)
 	resp, err := app.Test(req)
@@ -161,11 +161,11 @@ func TestResolvePath_MapsVirtualTrashToReservedStorage(t *testing.T) {
 		t.Fatal(err)
 	}
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK || string(body) != "/.domus/trash/docs/file.txt" {
-		t.Fatalf("trash mapping status=%d body=%q", resp.StatusCode, body)
+	if resp.StatusCode != http.StatusOK || string(body) != "/__trash__/docs/file.txt" {
+		t.Fatalf("ordinary path status=%d body=%q", resp.StatusCode, body)
 	}
 	if got := ToAppPath(string(body), "ignored"); got != "/__trash__/docs/file.txt" {
-		t.Fatalf("trash reverse mapping = %q", got)
+		t.Fatalf("ordinary reverse path = %q", got)
 	}
 }
 

@@ -4,14 +4,17 @@ import (
 	"bufio"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/willvar/dofs"
+	"gorm.io/gorm"
 
 	"domus/internal/auth"
 	"domus/internal/middleware"
@@ -94,6 +97,7 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 			continue
 		}
 		fi := store.FileInfo{
+			Inode:         r.ID,
 			Name:          r.Name,
 			Path:          middleware.ToAppPath(r.Path, session.Username),
 			IsDir:         r.IsDir,
@@ -140,13 +144,16 @@ func (h *Handler) handleSearch(c *fiber.Ctx) error {
 	items := make([]fiber.Map, 0, len(results))
 	for _, r := range results {
 		items = append(items, fiber.Map{
-			"path":         middleware.ToAppPath(r.Path, session.Username),
-			"parent":       middleware.ToAppPath(r.Parent, session.Username),
-			"name":         r.Name,
-			"is_dir":       r.IsDir,
-			"size":         r.Size,
-			"content_type": r.ContentType,
-			"rank":         r.Rank,
+			"inode":         r.ID,
+			"path":          middleware.ToAppPath(r.Path, session.Username),
+			"parent":        middleware.ToAppPath(r.Parent, session.Username),
+			"name":          r.Name,
+			"is_dir":        r.IsDir,
+			"size":          r.Size,
+			"content_type":  r.ContentType,
+			"created_at":    r.CreatedAt,
+			"last_modified": r.UpdatedAt,
+			"rank":          r.Rank,
 		})
 	}
 
@@ -341,11 +348,6 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 	if err := h.ensureParentDirRecords(session.UserID, dstResolved, body.IsDir); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "move_failed"})
 	}
-	if isTrashAppPath(body.DstPath) {
-		if err := h.permanentlyDeletePath(session.UserID, dstResolved, body.IsDir); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "move_failed"})
-		}
-	}
 
 	if c.Get("Accept") == "text/event-stream" {
 		c.Set("Content-Type", "text/event-stream")
@@ -398,98 +400,53 @@ func (h *Handler) handleMove(c *fiber.Ctx) error {
 }
 
 func (h *Handler) handleDelete(c *fiber.Ctx) error {
-	path := c.Query("path", "")
-	if path == "" {
+	requestedPath := c.Query("path", "")
+	if requestedPath == "" {
 		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
 	}
-	if normalizeAppPath(path) == "/" {
+	if normalizeAppPath(requestedPath) == "/" {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
 	}
-	permanent := c.Query("permanent") == "1" || strings.EqualFold(c.Query("permanent"), "true")
-
-	resolvedPath, err := middleware.ResolvePath(c, path)
+	if c.Query("permanent") != "1" && !strings.EqualFold(c.Query("permanent"), "true") {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "use_trash_endpoint"})
+	}
+	resolvedPath, err := middleware.ResolvePath(c, requestedPath)
 	if err != nil {
 		return err
 	}
-
-	session := c.Locals("session").(*model.Session)
-	isDir := strings.HasSuffix(path, "/")
-	inTrash := isTrashAppPath(path)
-
-	// For non-ready files: abort multipart upload, delete OSS object, delete record — no trash needed
-	if !isDir {
-		fileRecord, err := h.Repos.Files.Get(session.UserID, resolvedPath)
-		if err != nil {
-			return c.Status(404).JSON(fiber.Map{"error": "not_found"})
-		}
-		if fileRecord.Status != "ready" {
-			// Abort multipart upload if still in progress
-			if fileRecord.OSSUploadID != "" {
-				_ = h.Store.AbortMultipartUpload(fileRecord.StorageKey(), fileRecord.OSSUploadID)
-			}
-			if h.FileSystem != nil {
-				_ = h.FileSystem.AbortDirectUpload(c.UserContext(), session.UserID, fileRecord.UploadID)
-			}
-			h.Audit.LogFromCtx(c, "file_delete", path, "", "success", 0)
-			return c.JSON(fiber.Map{"ok": true})
-		}
+	if resolvedPath == "/" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_path"})
 	}
-
-	if permanent || inTrash {
-		if c.Get("Accept") == "text/event-stream" && isDir {
-			c.Set("Content-Type", "text/event-stream")
-			c.Set("Cache-Control", "no-cache")
-			c.Set("Connection", "keep-alive")
-			c.Context().SetBodyStreamWriter(func(w *bufio.Writer) {
-				progress := func(done, total int, current string) {
-					data, _ := json.Marshal(fiber.Map{"done": done, "total": total, "current": current})
-					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-					_ = w.Flush()
-				}
-				if err := h.permanentlyDeletePathWithProgress(session.UserID, resolvedPath, true, progress); err != nil {
-					data, _ := json.Marshal(fiber.Map{"error": err.Error()})
-					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-				} else {
-					if inTrash {
-						h.pruneEmptyTrashParentsBestEffort(session.UserID, resolvedPath)
-					}
-					data, _ := json.Marshal(fiber.Map{"done": true})
-					_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-				}
-				_ = w.Flush()
-			})
-			return nil
-		}
-
-		if err := h.permanentlyDeletePath(session.UserID, resolvedPath, isDir); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
-		}
-		if inTrash {
-			h.pruneEmptyTrashParentsBestEffort(session.UserID, resolvedPath)
-		}
-		if path == trashRootPath {
-			h.Hub.PushDirChanged(session.UserID, resolvedPath, trashRootPath, "refresh")
-		} else if parent := parentDirOf(resolvedPath); parent != "" {
-			appPath := toAppPath(parent, session.Username)
-			h.Hub.PushDirChanged(session.UserID, parent, appPath, "refresh")
-		}
-		h.Audit.LogFromCtx(c, "file_delete", path, "", "success", 0)
+	session := c.Locals("session").(*model.Session)
+	record, err := h.Repos.Files.Get(session.UserID, resolvedPath)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		// Idempotent cleanup remains useful after a completed retry. If a new
+		// inode appears at this path it is protected by the check below.
 		return c.JSON(fiber.Map{"ok": true})
 	}
-
-	dstAppPath := trashAppPath(path)
-	dstResolved, err := middleware.ResolvePath(c, dstAppPath)
 	if err != nil {
-		return err
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "delete_failed"})
 	}
-	if err := h.ensureParentDirRecords(session.UserID, dstResolved, isDir); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
+	expectedInode, parseErr := strconv.ParseInt(c.Query("expected_inode"), 10, 64)
+	if parseErr != nil || expectedInode <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "expected_inode_required"})
 	}
-	if err := h.permanentlyDeletePath(session.UserID, dstResolved, isDir); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
+	if record.ID != expectedInode {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "stale_file"})
 	}
-
-	if c.Get("Accept") == "text/event-stream" {
+	if record.Status != "ready" {
+		if record.OSSUploadID != "" {
+			_ = h.Store.AbortMultipartUpload(record.StorageKey(), record.OSSUploadID)
+		}
+		if h.FileSystem != nil {
+			_ = h.FileSystem.AbortDirectUpload(c.UserContext(), session.UserID, record.UploadID)
+		} else {
+			_ = h.Repos.Files.Delete(session.UserID, resolvedPath)
+		}
+		h.Audit.LogFromCtx(c, "file_delete", requestedPath, "upload_aborted", "success", 0)
+		return c.JSON(fiber.Map{"ok": true})
+	}
+	if c.Get("Accept") == "text/event-stream" && record.IsDir {
 		c.Set("Content-Type", "text/event-stream")
 		c.Set("Cache-Control", "no-cache")
 		c.Set("Connection", "keep-alive")
@@ -499,12 +456,8 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 				_ = w.Flush()
 			}
-			moveErr := movePathViaStore(h, session.UserID, resolvedPath, dstResolved, isDir, progress)
-			if moveErr != nil {
-				data, _ := json.Marshal(fiber.Map{"error": moveErr.Error()})
-				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
-			} else if syncErr := syncMovedFileRecords(h, session.UserID, resolvedPath, dstResolved, path, dstAppPath, isDir); syncErr != nil {
-				data, _ := json.Marshal(fiber.Map{"error": syncErr.Error()})
+			if deleteErr := h.permanentlyDeletePathWithProgress(session.UserID, resolvedPath, true, progress); deleteErr != nil {
+				data, _ := json.Marshal(fiber.Map{"error": deleteErr.Error()})
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", data)
 			} else {
 				data, _ := json.Marshal(fiber.Map{"done": true})
@@ -514,22 +467,14 @@ func (h *Handler) handleDelete(c *fiber.Ctx) error {
 		})
 		return nil
 	}
-
-	if err := movePathViaStore(h, session.UserID, resolvedPath, dstResolved, isDir, nil); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
-	}
-	if err := syncMovedFileRecords(h, session.UserID, resolvedPath, dstResolved, path, dstAppPath, isDir); err != nil {
+	if err := h.permanentlyDeletePath(session.UserID, resolvedPath, record.IsDir); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "delete_failed"})
 	}
 	if parent := parentDirOf(resolvedPath); parent != "" {
 		appPath := toAppPath(parent, session.Username)
 		h.Hub.PushDirChanged(session.UserID, parent, appPath, "refresh")
 	}
-	if parent := parentDirOf(dstResolved); parent != "" {
-		appPath := toAppPath(parent, session.Username)
-		h.Hub.PushDirChanged(session.UserID, parent, appPath, "refresh")
-	}
-	h.Audit.LogFromCtx(c, "file_delete", path, "", "success", 0)
+	h.Audit.LogFromCtx(c, "file_delete", requestedPath, "", "success", 0)
 	return c.JSON(fiber.Map{"ok": true})
 }
 
@@ -561,7 +506,13 @@ func (h *Handler) handleFileAccess(c *fiber.Ctx) error {
 	if fileRecord.Status != "ready" {
 		return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
 	}
+	return h.sendFileAccessResponse(c, session, fileRecord, filepath.Base(resolvedPath), path)
+}
 
+func (h *Handler) sendFileAccessResponse(c *fiber.Ctx, session *model.Session, fileRecord *model.FileRecord, fileName, auditResource string) error {
+	if fileRecord == nil || fileRecord.Status != "ready" || fileRecord.IsDir {
+		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "file_not_ready"})
+	}
 	presignedURL, err := h.Store.GeneratePresignedURL(fileRecord.StorageKey(), 4*time.Hour)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "presign_failed"})
@@ -582,11 +533,14 @@ func (h *Handler) handleFileAccess(c *fiber.Ctx) error {
 	}
 	defer dofs.Clear(dek)
 
-	fileName := filepath.Base(resolvedPath)
-	ct := mime.TypeByExtension(filepath.Ext(fileName))
+	ct := fileRecord.ContentType
+	if ct == "" {
+		ct = mime.TypeByExtension(filepath.Ext(fileName))
+	}
 
-	h.Audit.LogFromCtx(c, "file_access", path, "", "success", 0)
+	h.Audit.LogFromCtx(c, "file_access", auditResource, "", "success", 0)
 	return c.JSON(fiber.Map{
+		"inode":        fileRecord.ID,
 		"url":          presignedURL,
 		"size":         fileRecord.Size,
 		"name":         fileName,

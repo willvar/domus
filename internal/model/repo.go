@@ -6,6 +6,7 @@ import "gorm.io/gorm"
 type Repos struct {
 	Users     UserRepo
 	Files     FileRepo
+	Trash     TrashRepo
 	Sessions  SessionRepo
 	Tasks     TaskRepo
 	Audit     AuditRepo
@@ -20,6 +21,7 @@ func NewRepos(db *gorm.DB, onTaskUpdate TaskUpdateFunc) *Repos {
 	return &Repos{
 		Users:     &gormUserRepo{db: db},
 		Files:     nil, // wired once to internal/fileview after DOFS opens
+		Trash:     &gormTrashRepo{db: db},
 		Sessions:  NewSessionStore(db),
 		Tasks:     taskRepo,
 		Audit:     &gormAuditRepo{db: db},

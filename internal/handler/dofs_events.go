@@ -3,10 +3,12 @@ package handler
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/willvar/dofs"
 
+	"domus/internal/middleware"
 	"domus/internal/model"
 )
 
@@ -118,6 +120,12 @@ func (h *Handler) publishDOFSEvent(user *model.User, event dofs.Event) {
 		}
 		parent, err := h.Repos.Files.GetByID(user.ID, int64(inode))
 		if err != nil || !parent.IsDir {
+			continue
+		}
+		if middleware.IsInternalStoragePath(parent.Path) {
+			if strings.HasPrefix(parent.Path, trashStorageRootPath) {
+				h.notifyTrashChanged(user.ID)
+			}
 			continue
 		}
 		h.Hub.PushDirChanged(user.ID, parent.Path, toAppPath(parent.Path, user.Username), "refresh")
