@@ -40,7 +40,7 @@ deploy/systemd/              Web 与可选 DOFS FUSE unit
 
 ## 开发环境
 
-需要 Go 1.26+、Node.js 22.13+、PostgreSQL 和一个专用 S3-compatible bucket。运行 Domus
+需要 Go 1.26+、Node.js 22.13+、PostgreSQL 和一个带唯一 prefix 的 S3-compatible bucket。运行 Domus
 文件管理产品不需要 Docker、FUSE 或 `user_allow_other`；只有测试/使用可选 Linux FUSE
 挂载时才需要 FUSE 3。
 
@@ -74,6 +74,13 @@ E2E 使用真实 PostgreSQL、OSS 和浏览器，覆盖加密直传/读回、文
 ```bash
 E2E_REUSE_SERVERS=1 make test-e2e
 DOMUS_E2E_BROWSER_EXECUTABLE=/opt/google/chrome/chrome DOMUS_E2E_HEADED=1 make test-e2e
+```
+
+共享 bucket 的 prefix 删除边界使用固定版本、一次性 SeaweedFS 容器和生产同款对象存储
+构造器验证，不读取真实 OSS 配置，也不会接触开发或生产 bucket：
+
+```bash
+make test-oss-prefix
 ```
 
 独立 DOFS 的真实 Linux FUSE 测试由 sibling `dofs` 仓库提供：
@@ -138,7 +145,8 @@ Web/控制面可以跨平台构建。`domus dofs serve` 的 FUSE 挂载仍只支
 供外部普通 I/O 消费者使用的可选服务，不是 Domus Web 的启动依赖。生产说明见
 `docs/dofs-production.md`。
 
-`backup`、`restore --yes` 和 `reset --yes` 以整个配置 bucket 为边界；执行前必须停止
+`backup`、`restore --yes` 和 `reset --yes` 以配置的 `oss.prefix` 为边界；prefix 为空时
+保持旧版整 bucket 行为。执行前必须停止
 Web 以及任何共享该 DOFS 元数据的可选挂载服务。
 
 ## 提交规范

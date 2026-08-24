@@ -83,10 +83,10 @@ dofs:
 
 ## 对象、一致性与可选 FUSE
 
-对象位于不可变前缀：
+对象位于实例配置的 OSS 前缀下；`oss.prefix` 为空时保持旧版 bucket 根行为：
 
 ```text
-.dofs/v1/namespaces/<user-id>/objects/<inode>/<generation>-<transaction>.dofs
+<oss.prefix>/.dofs/v1/namespaces/<user-id>/objects/<inode>/<generation>-<transaction>.dofs
 ```
 
 rename 只改目录元数据；copy 使用对象存储侧密文复制；replace/unlink 用 tombstone 保护

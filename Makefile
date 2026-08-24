@@ -1,4 +1,4 @@
-.PHONY: help build build-win build-prod dev dev-web clean tidy lint test test-e2e test-dofs
+.PHONY: help build build-win build-prod dev dev-web clean tidy lint test test-e2e test-dofs test-oss-prefix
 
 BUILD_DIR := dist
 VERSION := $(shell cat VERSION 2>/dev/null || echo "dev")
@@ -20,6 +20,7 @@ help:
 	@echo "  make test         Run all tests"
 	@echo "  make test-e2e     Run the controlled real-browser file manager suite"
 	@echo "  make test-dofs    Run the real Linux FUSE integration test"
+	@echo "  make test-oss-prefix  Verify OSS prefix isolation with disposable SeaweedFS"
 	@echo "  make lint         Run golangci-lint + vue-tsc"
 	@echo "  make clean        Remove build artifacts"
 
@@ -75,6 +76,9 @@ test-e2e:
 
 test-dofs:
 	$(MAKE) -C ../dofs test-fuse
+
+test-oss-prefix:
+	bash scripts/test-oss-prefix.sh
 
 tidy:
 	GOWORK=off go mod tidy

@@ -235,7 +235,7 @@ func reset(configPath string, confirmed bool) {
 	if err := resetInstance(cfg, configPath, confirmed, resetDeps{
 		getStatus: bootstrap.GetStatus,
 		resetDB:   model.ResetDatabase,
-		newStore:  store.NewOSSClient,
+		newStore:  store.NewOSSClientFromConfig,
 	}); err != nil {
 		logger.Fatal("%v", err)
 	}
@@ -260,13 +260,14 @@ func resetInstance(cfg *config.Config, configPath string, confirmed bool, deps r
 		return err
 	}
 	if !confirmed {
-		return fmt.Errorf("reset is destructive. Re-run with --yes to clear database %q and bucket %q", cfg.Database.DBName, cfg.OSS.Bucket)
+		return fmt.Errorf("reset is destructive. Re-run with --yes to clear database %q and %s", cfg.Database.DBName, objectStoreScope(cfg.OSS))
 	}
 
 	logger.Info("Resetting Domus instance")
 	logger.Info("  Config file: %s", configPath)
 	logger.Info("  Database: %s", cfg.Database.DBName)
 	logger.Info("  Bucket: %s", cfg.OSS.Bucket)
+	logger.Info("  Object prefix: %s", displayObjectPrefix(cfg.OSS.Prefix))
 
 	// Resolve every independently configured destructive target before the
 	// first mutation. Reset cannot be globally atomic across PostgreSQL,
@@ -302,10 +303,24 @@ func resetInstance(cfg *config.Config, configPath string, confirmed bool, deps r
 	}
 	logger.Info("DOFS runtime state reset complete")
 	if err := fileStore.DeleteAllObjects(nil); err != nil {
-		return fmt.Errorf("database reset completed, but failed to clear bucket %q: %w", cfg.OSS.Bucket, err)
+		return fmt.Errorf("database reset completed, but failed to clear %s: %w", objectStoreScope(cfg.OSS), err)
 	}
-	logger.Info("Bucket cleanup complete")
+	logger.Info("Object prefix cleanup complete")
 	return nil
+}
+
+func displayObjectPrefix(prefix string) string {
+	if prefix == "" {
+		return "<bucket root>"
+	}
+	return prefix
+}
+
+func objectStoreScope(cfg config.OSSConfig) string {
+	if cfg.Prefix == "" {
+		return fmt.Sprintf("entire bucket %q", cfg.Bucket)
+	}
+	return fmt.Sprintf("object prefix %q in bucket %q", cfg.Prefix, cfg.Bucket)
 }
 
 func clearDOFSMetadata(cfg *config.Config) error {
@@ -594,7 +609,7 @@ func runServer(cfg *config.Config, configPath string) {
 	}()
 
 	// Initialize OSS
-	fileStore, err := store.NewOSSClient(cfg.OSS)
+	fileStore, err := store.NewOSSClientFromConfig(cfg.OSS)
 	if err != nil {
 		logger.Fatal("Failed to init OSS: %v", err)
 	}
@@ -827,9 +842,9 @@ func printHelp() {
 	fmt.Println("  stop      停止服务")
 	fmt.Println("  restart   重启服务")
 	fmt.Println("  status    查看服务状态")
-	fmt.Println("  backup    备份数据库和整个 bucket（需先停服务）")
-	fmt.Println("  reset     清空数据库并清空整个 bucket（危险）")
-	fmt.Println("  restore   从备份恢复数据库和整个 bucket（危险，需先停服务）")
+	fmt.Println("  backup    备份数据库和配置的 OSS prefix（需先停服务）")
+	fmt.Println("  reset     清空数据库和配置的 OSS prefix（危险）")
+	fmt.Println("  restore   恢复数据库和配置的 OSS prefix（危险，需先停服务）")
 	fmt.Println("  dofs      管理 DOFS 挂载服务或执行单用户挂载（Linux）")
 	fmt.Println("  dev       启动本地 Web 开发服务")
 	fmt.Println()

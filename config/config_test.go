@@ -10,11 +10,13 @@ import (
 func validConfig() *Config {
 	return &Config{
 		OSS: OSSConfig{
-			ClientUploadEndpoint: "https://upload.example.com",
+			ServerEndpoint:       "s3.example.com",
+			ClientUploadEndpoint: "upload.example.com",
 			AccessKeyID:          "ak",
 			AccessKeySecret:      "sk",
 			Bucket:               "bucket",
 			Region:               "cn-test-1",
+			Prefix:               "domus/test",
 		},
 		Server: ServerConfig{
 			Port:             8080,
@@ -56,7 +58,7 @@ func TestLoadAppliesConfigDevOverlayForDefaultConfigPath(t *testing.T) {
 		}
 	}()
 
-	base := []byte("server:\n  port: 8080\n  session_secret: base-secret\n  encryption_secret: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\ndatabase:\n  host: db-base\noss:\n  client_upload_endpoint: https://upload-base.example.com\n  access_key_id: ak-base\n  access_key_secret: sk-base\n  bucket: bucket-base\n  region: cn-base-1\n")
+	base := []byte("server:\n  port: 8080\n  session_secret: base-secret\n  encryption_secret: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\ndatabase:\n  host: db-base\noss:\n  client_upload_endpoint: upload-base.example.com\n  access_key_id: ak-base\n  access_key_secret: sk-base\n  bucket: bucket-base\n  region: cn-base-1\n  prefix: /domus/load-test/\n")
 	if err := os.WriteFile(filepath.Join(dir, defaultConfigPath), base, 0600); err != nil {
 		t.Fatalf("WriteFile(config.yaml) error = %v", err)
 	}
@@ -79,8 +81,8 @@ func TestLoadAppliesConfigDevOverlayForDefaultConfigPath(t *testing.T) {
 	if cfg.Database.DBName != "domus_dev" {
 		t.Fatalf("Database.DBName = %q, want %q", cfg.Database.DBName, "domus_dev")
 	}
-	if cfg.OSS.ClientUploadEndpoint != "https://upload-base.example.com" {
-		t.Fatalf("OSS.ClientUploadEndpoint = %q", cfg.OSS.ClientUploadEndpoint)
+	if cfg.OSS.ClientUploadEndpoint != "upload-base.example.com" || cfg.OSS.ServerEndpoint != "upload-base.example.com" || cfg.OSS.Prefix != "domus/load-test" {
+		t.Fatalf("unexpected OSS config: %+v", cfg.OSS)
 	}
 }
 
@@ -99,7 +101,7 @@ func TestLoadSkipsConfigDevOverlayForExplicitConfigPath(t *testing.T) {
 		}
 	}()
 
-	custom := []byte("server:\n  port: 8081\n  session_secret: custom-secret\n  encryption_secret: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\ndatabase:\n  host: db-custom\noss:\n  client_upload_endpoint: https://upload-custom.example.com\n  access_key_id: ak-custom\n  access_key_secret: sk-custom\n  bucket: bucket-custom\n  region: cn-custom-1\n")
+	custom := []byte("server:\n  port: 8081\n  session_secret: custom-secret\n  encryption_secret: 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff\ndatabase:\n  host: db-custom\noss:\n  client_upload_endpoint: upload-custom.example.com\n  access_key_id: ak-custom\n  access_key_secret: sk-custom\n  bucket: bucket-custom\n  region: cn-custom-1\n")
 	if err := os.WriteFile(filepath.Join(dir, "custom.yaml"), custom, 0600); err != nil {
 		t.Fatalf("WriteFile(custom.yaml) error = %v", err)
 	}
@@ -271,6 +273,13 @@ func TestConfigValidate(t *testing.T) {
 			wantErr: "",
 		},
 		{
+			name: "missing server endpoint",
+			mutate: func(cfg *Config) {
+				cfg.OSS.ServerEndpoint = ""
+			},
+			wantErr: "config: oss.server_endpoint is required",
+		},
+		{
 			name: "missing upload endpoint",
 			mutate: func(cfg *Config) {
 				cfg.OSS.ClientUploadEndpoint = ""
@@ -304,6 +313,20 @@ func TestConfigValidate(t *testing.T) {
 				cfg.OSS.Region = ""
 			},
 			wantErr: "config: oss.region is required",
+		},
+		{
+			name: "upload endpoint with URL scheme",
+			mutate: func(cfg *Config) {
+				cfg.OSS.ClientUploadEndpoint = "https://upload.example.com"
+			},
+			wantErr: "config: oss.client_upload_endpoint must be a host name without scheme, path, query, fragment, or credentials",
+		},
+		{
+			name: "unsafe object prefix",
+			mutate: func(cfg *Config) {
+				cfg.OSS.Prefix = "domus/../other-app"
+			},
+			wantErr: "config: oss.prefix must be a clean relative object prefix",
 		},
 		{
 			name: "invalid port",

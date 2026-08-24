@@ -166,6 +166,9 @@ func TestBackupInstanceWritesManifestDatabaseAndObjects(t *testing.T) {
 	if manifest.Bucket != "domus-bucket" {
 		t.Fatalf("unexpected bucket: %s", manifest.Bucket)
 	}
+	if manifest.ObjectPrefix != "domus/test" {
+		t.Fatalf("unexpected object prefix: %s", manifest.ObjectPrefix)
+	}
 	if manifest.ObjectCount != 2 {
 		t.Fatalf("unexpected object count: %d", manifest.ObjectCount)
 	}

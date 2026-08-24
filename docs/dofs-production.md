@@ -13,16 +13,17 @@ browser <-> Domus HTTP/WS <-> PostgreSQL / DOFS metadata / OSS
 ## 必需依赖
 
 - PostgreSQL；
-- 专用 S3-compatible bucket 与 HTTPS endpoint；
+- S3-compatible bucket 与 HTTPS endpoint；共享 bucket 时还需要唯一的非空 `oss.prefix`；
 - 持久的 `server.encryption_secret`、`server.session_secret` 和 root bootstrap secret；
 - 单机默认的本地 DOFS SQLite 元数据目录，或多主机部署使用 PostgreSQL metadata；
 - 静态前端产物与 Domus binary。
 
 OSS CORS 必须允许产品 origin 对 presigned URL 执行 `PUT`、`GET` 和 `Range`。浏览器
-不需要读取上传 ETag；Domus 使用服务器端 `ListParts` 获取权威结果。bucket 应专供
-当前实例，因为 backup/reset/restore 以整个 bucket 为边界。bucket 必须关闭版本控制，
-或配置规则及时清除非当前版本；同时配置 incomplete multipart 生命周期清理，否则
-DeleteObject/中断上传不一定马上降低供应商计费空间。
+不需要读取上传 ETag；Domus 使用服务器端 `ListParts` 获取权威结果。不同实例可以使用
+同一 bucket，但必须配置互不重叠的 `oss.prefix`；backup/reset/restore 只处理该 prefix。
+prefix 为空保留旧版整 bucket 行为。bucket 级版本控制、CORS 和生命周期策略仍由所有
+实例共享：版本控制应关闭或及时清除非当前版本，并配置 incomplete multipart 清理，
+否则 DeleteObject/中断上传不一定马上降低供应商计费空间。
 
 Domus Web 内置 DOFS reclaimer：永久删除在事务内立即释放用户逻辑用量，密文删除失败
 则由持久化 tombstone 每 30 秒重试。`pending_reclaim_bytes` 可用于判断物理回收积压；它
