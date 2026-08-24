@@ -13,6 +13,10 @@ oss:
   access_key_secret: ""
   bucket: ""
   region: "cn-hangzhou"
+  # Optional instance boundary inside a shared bucket. Do not change this after
+  # storing objects without first migrating them: changing the value switches
+  # namespaces and does not move existing objects automatically.
+  prefix: "domus/development"
   max_presign_batch: 100  # max presigned URLs returned per presign request
 
 server:

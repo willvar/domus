@@ -66,7 +66,7 @@ func testResetConfig() *config.Config {
 	return &config.Config{
 		Server:   config.ServerConfig{PidFile: "domus.pid"},
 		Database: config.DatabaseConfig{DBName: "domus_test"},
-		OSS:      config.OSSConfig{Bucket: "domus-bucket"},
+		OSS:      config.OSSConfig{Bucket: "domus-bucket", Prefix: "domus/test"},
 		DOFS: config.DOFSConfig{Metadata: config.DOFSMetadataConfig{
 			Driver: "postgres",
 		}, StateRoot: filepath.Join(runtimeRoot, "dofs"), ControlSocket: filepath.Join(runtimeRoot, "run", "dofs.sock")},

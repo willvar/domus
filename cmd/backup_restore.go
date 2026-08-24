@@ -44,6 +44,7 @@ type backupManifest struct {
 	DatabaseName                string                 `json:"database_name"`
 	DOFSMetadataDriver          string                 `json:"dofs_metadata_driver"`
 	Bucket                      string                 `json:"bucket"`
+	ObjectPrefix                string                 `json:"object_prefix,omitempty"`
 	EncryptionSecretFingerprint string                 `json:"encryption_secret_fingerprint"`
 	ObjectCount                 int                    `json:"object_count"`
 	TotalSize                   int64                  `json:"total_size"`
@@ -78,7 +79,7 @@ func backup(configPath, outputPath string) {
 
 	if err := runBackup(cfg, configPath, outputPath, backupDeps{
 		getStatus: bootstrap.GetStatus,
-		newStore:  store.NewOSSClient,
+		newStore:  store.NewOSSClientFromConfig,
 		dumpDB:    dumpDatabase,
 		now:       time.Now,
 	}); err != nil {
@@ -96,7 +97,7 @@ func restore(configPath, inputPath string, confirmed bool) {
 	if err := runRestore(cfg, configPath, inputPath, confirmed, restoreDeps{
 		getStatus: bootstrap.GetStatus,
 		resetDB:   model.ResetDatabase,
-		newStore:  store.NewOSSClient,
+		newStore:  store.NewOSSClientFromConfig,
 		importDB:  importDatabase,
 	}); err != nil {
 		logger.Fatal("%v", err)
@@ -156,6 +157,7 @@ func backupInstance(cfg *config.Config, configPath, backupDir string, deps backu
 	logger.Info("  Config file: %s", configPath)
 	logger.Info("  Database: %s", cfg.Database.DBName)
 	logger.Info("  Bucket: %s", cfg.OSS.Bucket)
+	logger.Info("  Object prefix: %s", displayObjectPrefix(cfg.OSS.Prefix))
 	logger.Info("  Output: %s", backupDir)
 
 	if err := os.MkdirAll(backupDir, 0o700); err != nil {
@@ -168,7 +170,7 @@ func backupInstance(cfg *config.Config, configPath, backupDir string, deps backu
 	}
 	objects, err := fileStore.ListAllObjects("")
 	if err != nil {
-		return fmt.Errorf("list bucket objects: %w", err)
+		return fmt.Errorf("list configured object prefix: %w", err)
 	}
 
 	manifest := backupManifest{
@@ -178,6 +180,7 @@ func backupInstance(cfg *config.Config, configPath, backupDir string, deps backu
 		DatabaseName:                cfg.Database.DBName,
 		DOFSMetadataDriver:          cfg.DOFS.Metadata.Driver,
 		Bucket:                      cfg.OSS.Bucket,
+		ObjectPrefix:                cfg.OSS.Prefix,
 		EncryptionSecretFingerprint: encryptionSecretFingerprint(cfg.Server.EncryptionSecret),
 		ObjectCount:                 len(objects),
 	}
@@ -240,7 +243,7 @@ func backupInstance(cfg *config.Config, configPath, backupDir string, deps backu
 	if err := writeManifest(filepath.Join(backupDir, "manifest.json"), manifest); err != nil {
 		return fmt.Errorf("write manifest: %w", err)
 	}
-	logger.Info("Bucket export complete (%d objects, %d bytes)", manifest.ObjectCount, manifest.TotalSize)
+	logger.Info("Object prefix export complete (%d objects, %d bytes)", manifest.ObjectCount, manifest.TotalSize)
 	return nil
 }
 
@@ -256,7 +259,7 @@ func restoreInstance(cfg *config.Config, configPath, backupDir string, confirmed
 		return err
 	}
 	if !confirmed {
-		return fmt.Errorf("restore is destructive. Re-run with --yes to replace database %q and bucket %q", cfg.Database.DBName, cfg.OSS.Bucket)
+		return fmt.Errorf("restore is destructive. Re-run with --yes to replace database %q and %s", cfg.Database.DBName, objectStoreScope(cfg.OSS))
 	}
 
 	manifest, err := readManifest(filepath.Join(backupDir, "manifest.json"))
@@ -286,6 +289,7 @@ func restoreInstance(cfg *config.Config, configPath, backupDir string, confirmed
 	logger.Info("  Config file: %s", configPath)
 	logger.Info("  Database: %s", cfg.Database.DBName)
 	logger.Info("  Bucket: %s", cfg.OSS.Bucket)
+	logger.Info("  Object prefix: %s", displayObjectPrefix(cfg.OSS.Prefix))
 	logger.Info("  Input: %s", backupDir)
 
 	// Construct and validate the object-store client before the first
@@ -311,9 +315,9 @@ func restoreInstance(cfg *config.Config, configPath, backupDir string, confirmed
 	}
 	logger.Info("DOFS runtime state reset complete")
 	if err := fileStore.DeleteAllObjects(nil); err != nil {
-		return fmt.Errorf("clear bucket %q: %w", cfg.OSS.Bucket, err)
+		return fmt.Errorf("clear %s: %w", objectStoreScope(cfg.OSS), err)
 	}
-	logger.Info("Bucket cleanup complete")
+	logger.Info("Object prefix cleanup complete")
 
 	dirs := sortManifestObjects(manifest.Objects, true)
 	for i, obj := range dirs {
@@ -357,7 +361,7 @@ func restoreInstance(cfg *config.Config, configPath, backupDir string, confirmed
 		}
 		logObjectProgress("restore files", i+1, len(files), obj.Key)
 	}
-	logger.Info("Bucket restore complete (%d objects)", manifest.ObjectCount)
+	logger.Info("Object prefix restore complete (%d objects)", manifest.ObjectCount)
 
 	if err := deps.importDB(cfg.Database, filepath.Join(backupDir, "database.sql")); err != nil {
 		return fmt.Errorf("import database: %w", err)

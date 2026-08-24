@@ -46,6 +46,7 @@ func Open(ctx context.Context, database *gorm.DB, cfg *config.Config, serverKey 
 		SecretKey: cfg.OSS.AccessKeySecret,
 		Bucket:    cfg.OSS.Bucket,
 		Region:    cfg.OSS.Region,
+		Prefix:    cfg.OSS.Prefix,
 		Secure:    true,
 	})
 	if err != nil {

@@ -2,9 +2,11 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -101,14 +103,68 @@ type OSSClient struct {
 	serverCore         minio.Core
 	clientUploadClient *minio.Client
 	bucketName         string
+	objectPrefix       string
 	clientDownloadBase string // CDN or public download base URL (empty = presigned GET via clientUploadClient)
 }
 
-func NewOSSClient(cfg config.OSSConfig) (FileStore, error) {
-	creds := credentials.NewStaticV4(cfg.AccessKeyID, cfg.AccessKeySecret, "")
+// OSSOptions is the transport-level object-store configuration shared by
+// production and protocol integration tests. Endpoint URLs must be absolute
+// HTTP(S) URLs; the production config adapter below always supplies HTTPS.
+type OSSOptions struct {
+	ServerEndpointURL       string
+	ClientUploadEndpointURL string
+	ClientDownloadBaseURL   string
+	AccessKeyID             string
+	AccessKeySecret         string
+	Bucket                  string
+	Region                  string
+	Prefix                  string
+}
 
-	serverClient, err := minio.New(cfg.ServerEndpoint, &minio.Options{
-		Creds: creds, Secure: true, Region: cfg.Region,
+type ossEndpoint struct {
+	host   string
+	secure bool
+}
+
+// NewOSSClient constructs the same S3-compatible client used in production.
+// Keeping transport URLs here, rather than an insecure flag in Config, lets a
+// disposable local S3 service exercise this constructor without weakening the
+// production configuration contract.
+func NewOSSClient(options OSSOptions) (*OSSClient, error) {
+	if strings.TrimSpace(options.ServerEndpointURL) == "" ||
+		strings.TrimSpace(options.ClientUploadEndpointURL) == "" ||
+		options.AccessKeyID == "" || options.AccessKeySecret == "" ||
+		strings.TrimSpace(options.Bucket) == "" || strings.TrimSpace(options.Region) == "" {
+		return nil, errors.New("object store configuration is incomplete")
+	}
+
+	serverEndpoint, err := parseOSSEndpoint(options.ServerEndpointURL)
+	if err != nil {
+		return nil, fmt.Errorf("server endpoint: %w", err)
+	}
+	uploadEndpoint, err := parseOSSEndpoint(options.ClientUploadEndpointURL)
+	if err != nil {
+		return nil, fmt.Errorf("client upload endpoint: %w", err)
+	}
+	downloadBase := ""
+	if strings.TrimSpace(options.ClientDownloadBaseURL) != "" {
+		downloadEndpoint, err := parseOSSEndpoint(options.ClientDownloadBaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("client download endpoint: %w", err)
+		}
+		downloadBase = downloadEndpoint.url()
+	}
+	objectPrefix := strings.Trim(strings.TrimSpace(options.Prefix), "/")
+	if objectPrefix != "" {
+		if clean := path.Clean(objectPrefix); clean != objectPrefix || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "\x00") {
+			return nil, errors.New("object store prefix is invalid")
+		}
+	}
+
+	creds := credentials.NewStaticV4(options.AccessKeyID, options.AccessKeySecret, "")
+
+	serverClient, err := minio.New(serverEndpoint.host, &minio.Options{
+		Creds: creds, Secure: serverEndpoint.secure, Region: options.Region,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("server client: %w", err)
@@ -116,11 +172,11 @@ func NewOSSClient(cfg config.OSSConfig) (FileStore, error) {
 
 	// clientUploadClient may share the same endpoint in dev/single-machine setups
 	var uploadClient *minio.Client
-	if cfg.ClientUploadEndpoint == cfg.ServerEndpoint {
+	if uploadEndpoint == serverEndpoint {
 		uploadClient = serverClient
 	} else {
-		uploadClient, err = minio.New(cfg.ClientUploadEndpoint, &minio.Options{
-			Creds: creds, Secure: true, Region: cfg.Region,
+		uploadClient, err = minio.New(uploadEndpoint.host, &minio.Options{
+			Creds: creds, Secure: uploadEndpoint.secure, Region: options.Region,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("client upload client: %w", err)
@@ -131,10 +187,48 @@ func NewOSSClient(cfg config.OSSConfig) (FileStore, error) {
 		serverClient:       serverClient,
 		serverCore:         minio.Core{Client: serverClient},
 		clientUploadClient: uploadClient,
-		bucketName:         cfg.Bucket,
-		clientDownloadBase: cfg.ClientDownloadEndpoint,
+		bucketName:         options.Bucket,
+		objectPrefix:       objectPrefix,
+		clientDownloadBase: downloadBase,
 	}
 	return c, nil
+}
+
+// NewOSSClientFromConfig maps Domus' host-only endpoint configuration onto the
+// HTTPS-only production transport contract before invoking NewOSSClient.
+func NewOSSClientFromConfig(cfg config.OSSConfig) (FileStore, error) {
+	downloadBaseURL := ""
+	if strings.TrimSpace(cfg.ClientDownloadEndpoint) != "" {
+		downloadBaseURL = "https://" + strings.TrimSpace(cfg.ClientDownloadEndpoint)
+	}
+	return NewOSSClient(OSSOptions{
+		ServerEndpointURL:       "https://" + strings.TrimSpace(cfg.ServerEndpoint),
+		ClientUploadEndpointURL: "https://" + strings.TrimSpace(cfg.ClientUploadEndpoint),
+		ClientDownloadBaseURL:   downloadBaseURL,
+		AccessKeyID:             cfg.AccessKeyID,
+		AccessKeySecret:         cfg.AccessKeySecret,
+		Bucket:                  cfg.Bucket,
+		Region:                  cfg.Region,
+		Prefix:                  cfg.Prefix,
+	})
+}
+
+func parseOSSEndpoint(raw string) (ossEndpoint, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || parsed.User != nil ||
+		(parsed.Scheme != "http" && parsed.Scheme != "https") ||
+		(parsed.Path != "" && parsed.Path != "/") || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return ossEndpoint{}, errors.New("must be an absolute HTTP(S) URL without path, query, fragment, or credentials")
+	}
+	return ossEndpoint{host: parsed.Host, secure: parsed.Scheme == "https"}, nil
+}
+
+func (e ossEndpoint) url() string {
+	scheme := "http"
+	if e.secure {
+		scheme = "https"
+	}
+	return scheme + "://" + e.host
 }
 
 // Check verifies that the configured bucket exists and the administrative
@@ -151,12 +245,56 @@ func (c *OSSClient) Check(ctx context.Context) error {
 	return nil
 }
 
+func (c *OSSClient) physicalKey(key string) (string, error) {
+	if key == "" || strings.HasPrefix(key, "/") || strings.Contains(key, "\x00") {
+		return "", fmt.Errorf("invalid object key %q", key)
+	}
+	base := strings.TrimSuffix(key, "/")
+	if base == "" {
+		return "", fmt.Errorf("invalid object key %q", key)
+	}
+	for _, segment := range strings.Split(base, "/") {
+		if segment == "." || segment == ".." {
+			return "", fmt.Errorf("invalid object key %q", key)
+		}
+	}
+	if c.objectPrefix == "" {
+		return key, nil
+	}
+	return c.objectPrefix + "/" + key, nil
+}
+
+func (c *OSSClient) physicalListPrefix(prefix string) (string, error) {
+	if prefix == "" {
+		if c.objectPrefix == "" {
+			return "", nil
+		}
+		return c.objectPrefix + "/", nil
+	}
+	return c.physicalKey(prefix)
+}
+
+func (c *OSSClient) logicalKey(key string) (string, error) {
+	if c.objectPrefix == "" {
+		return key, nil
+	}
+	root := c.objectPrefix + "/"
+	if !strings.HasPrefix(key, root) {
+		return "", fmt.Errorf("object key %q is outside configured prefix %q", key, c.objectPrefix)
+	}
+	return strings.TrimPrefix(key, root), nil
+}
+
 // CreateDirectory creates a directory marker object
 func (c *OSSClient) CreateDirectory(key string) error {
 	if !strings.HasSuffix(key, "/") {
 		key += "/"
 	}
-	_, err := c.serverClient.PutObject(context.Background(), c.bucketName, key, strings.NewReader(""), 0, minio.PutObjectOptions{})
+	physical, err := c.physicalKey(key)
+	if err != nil {
+		return err
+	}
+	_, err = c.serverClient.PutObject(context.Background(), c.bucketName, physical, strings.NewReader(""), 0, minio.PutObjectOptions{})
 	return err
 }
 
@@ -164,9 +302,17 @@ func (c *OSSClient) deleteObjects(keys []string) error {
 	if len(keys) == 0 {
 		return nil
 	}
-	objectsCh := make(chan minio.ObjectInfo, len(keys))
-	for _, k := range keys {
-		objectsCh <- minio.ObjectInfo{Key: k}
+	physicalKeys := make([]string, 0, len(keys))
+	for _, key := range keys {
+		physical, err := c.physicalKey(key)
+		if err != nil {
+			return err
+		}
+		physicalKeys = append(physicalKeys, physical)
+	}
+	objectsCh := make(chan minio.ObjectInfo, len(physicalKeys))
+	for _, key := range physicalKeys {
+		objectsCh <- minio.ObjectInfo{Key: key}
 	}
 	close(objectsCh)
 
@@ -180,16 +326,27 @@ func (c *OSSClient) deleteObjects(keys []string) error {
 
 // ListAllObjects lists all objects under a prefix recursively (no delimiter)
 func (c *OSSClient) ListAllObjects(prefix string) ([]ObjectInfo, error) {
+	physicalPrefix, err := c.physicalListPrefix(prefix)
+	if err != nil {
+		return nil, err
+	}
 	var allObjects []ObjectInfo
 	for obj := range c.serverClient.ListObjects(context.Background(), c.bucketName, minio.ListObjectsOptions{
-		Prefix:    prefix,
+		Prefix:    physicalPrefix,
 		Recursive: true,
 	}) {
 		if obj.Err != nil {
 			return nil, obj.Err
 		}
+		logical, err := c.logicalKey(obj.Key)
+		if err != nil {
+			return nil, err
+		}
+		if logical == "" {
+			continue
+		}
 		allObjects = append(allObjects, ObjectInfo{
-			Key:  obj.Key,
+			Key:  logical,
 			Size: obj.Size,
 		})
 	}
@@ -231,7 +388,8 @@ func (c *OSSClient) deleteObjectsWithPrefix(prefix string, progress func(done, t
 	return nil
 }
 
-// DeleteAllObjects deletes every object in the configured bucket.
+// DeleteAllObjects deletes every object inside the configured object prefix.
+// An empty configured prefix preserves the legacy whole-bucket behavior.
 func (c *OSSClient) DeleteAllObjects(progress func(done, total int, current string)) error {
 	return c.deleteObjectsWithPrefix("", progress)
 }
@@ -241,10 +399,14 @@ func (c *OSSClient) DeleteAllObjects(progress func(done, total int, current stri
 // (requires private bucket origin-pull enabled in the CDN console).
 // Otherwise falls back to S3 presigned URL via the client upload endpoint.
 func (c *OSSClient) GeneratePresignedURL(key string, expires time.Duration) (string, error) {
-	if c.clientDownloadBase != "" {
-		return "https://" + c.clientDownloadBase + "/" + key, nil
+	physical, err := c.physicalKey(key)
+	if err != nil {
+		return "", err
 	}
-	u, err := c.clientUploadClient.PresignedGetObject(context.Background(), c.bucketName, key, expires, url.Values{})
+	if c.clientDownloadBase != "" {
+		return c.clientDownloadBase + "/" + physical, nil
+	}
+	u, err := c.clientUploadClient.PresignedGetObject(context.Background(), c.bucketName, physical, expires, url.Values{})
 	if err != nil {
 		return "", err
 	}
@@ -253,7 +415,11 @@ func (c *OSSClient) GeneratePresignedURL(key string, expires time.Duration) (str
 
 // GetObjectContent reads an object's content and returns it as a ReadCloser
 func (c *OSSClient) GetObjectContent(key string) (io.ReadCloser, error) {
-	obj, err := c.serverClient.GetObject(context.Background(), c.bucketName, key, minio.GetObjectOptions{})
+	physical, err := c.physicalKey(key)
+	if err != nil {
+		return nil, err
+	}
+	obj, err := c.serverClient.GetObject(context.Background(), c.bucketName, physical, minio.GetObjectOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -266,8 +432,12 @@ func (c *OSSClient) PutObject(key string, reader io.Reader, size int64) error {
 	if size < 0 {
 		return fmt.Errorf("invalid object size %d", size)
 	}
-	_, err := c.serverClient.PutObject(
-		context.Background(), c.bucketName, key, reader, size, minio.PutObjectOptions{},
+	physical, err := c.physicalKey(key)
+	if err != nil {
+		return err
+	}
+	_, err = c.serverClient.PutObject(
+		context.Background(), c.bucketName, physical, reader, size, minio.PutObjectOptions{},
 	)
 	return err
 }
@@ -278,7 +448,11 @@ func (c *OSSClient) PutObject(key string, reader io.Reader, size int64) error {
 
 // PresignedPutObject returns a presigned PUT URL for a single-object upload.
 func (c *OSSClient) PresignedPutObject(key string, expires time.Duration) (string, error) {
-	u, err := c.clientUploadClient.PresignedPutObject(context.Background(), c.bucketName, key, expires)
+	physical, err := c.physicalKey(key)
+	if err != nil {
+		return "", err
+	}
+	u, err := c.clientUploadClient.PresignedPutObject(context.Background(), c.bucketName, physical, expires)
 	if err != nil {
 		return "", err
 	}
@@ -287,7 +461,11 @@ func (c *OSSClient) PresignedPutObject(key string, expires time.Duration) (strin
 
 // PresignedDeleteObject returns a presigned DELETE URL (e.g. for CORS probe cleanup).
 func (c *OSSClient) PresignedDeleteObject(key string, expires time.Duration) (string, error) {
-	u, err := c.clientUploadClient.Presign(context.Background(), "DELETE", c.bucketName, key, expires, nil)
+	physical, err := c.physicalKey(key)
+	if err != nil {
+		return "", err
+	}
+	u, err := c.clientUploadClient.Presign(context.Background(), "DELETE", c.bucketName, physical, expires, nil)
 	if err != nil {
 		return "", err
 	}
@@ -296,7 +474,11 @@ func (c *OSSClient) PresignedDeleteObject(key string, expires time.Duration) (st
 
 // CreateMultipartUpload initiates a multipart upload and returns the upload ID.
 func (c *OSSClient) CreateMultipartUpload(key string) (string, error) {
-	uploadID, err := c.serverCore.NewMultipartUpload(context.Background(), c.bucketName, key, minio.PutObjectOptions{})
+	physical, err := c.physicalKey(key)
+	if err != nil {
+		return "", err
+	}
+	uploadID, err := c.serverCore.NewMultipartUpload(context.Background(), c.bucketName, physical, minio.PutObjectOptions{})
 	if err != nil {
 		return "", err
 	}
@@ -305,10 +487,14 @@ func (c *OSSClient) CreateMultipartUpload(key string) (string, error) {
 
 // PresignedUploadPart returns a presigned PUT URL for uploading a specific part.
 func (c *OSSClient) PresignedUploadPart(key, uploadID string, partNumber int, expires time.Duration) (string, error) {
+	physical, err := c.physicalKey(key)
+	if err != nil {
+		return "", err
+	}
 	params := make(url.Values)
 	params.Set("partNumber", strconv.Itoa(partNumber))
 	params.Set("uploadId", uploadID)
-	u, err := c.clientUploadClient.Presign(context.Background(), "PUT", c.bucketName, key, expires, params)
+	u, err := c.clientUploadClient.Presign(context.Background(), "PUT", c.bucketName, physical, expires, params)
 	if err != nil {
 		return "", err
 	}
@@ -317,6 +503,10 @@ func (c *OSSClient) PresignedUploadPart(key, uploadID string, partNumber int, ex
 
 // CompleteMultipartUpload finalizes a multipart upload.
 func (c *OSSClient) CompleteMultipartUpload(key, uploadID string, parts []CompletePart) error {
+	physical, err := c.physicalKey(key)
+	if err != nil {
+		return err
+	}
 	completeParts := make([]minio.CompletePart, len(parts))
 	for i, p := range parts {
 		completeParts[i] = minio.CompletePart{
@@ -324,21 +514,29 @@ func (c *OSSClient) CompleteMultipartUpload(key, uploadID string, parts []Comple
 			ETag:       p.ETag,
 		}
 	}
-	_, err := c.serverCore.CompleteMultipartUpload(context.Background(), c.bucketName, key, uploadID, completeParts, minio.PutObjectOptions{})
+	_, err = c.serverCore.CompleteMultipartUpload(context.Background(), c.bucketName, physical, uploadID, completeParts, minio.PutObjectOptions{})
 	return err
 }
 
 // AbortMultipartUpload cancels an in-progress multipart upload.
 func (c *OSSClient) AbortMultipartUpload(key, uploadID string) error {
-	return c.serverCore.AbortMultipartUpload(context.Background(), c.bucketName, key, uploadID)
+	physical, err := c.physicalKey(key)
+	if err != nil {
+		return err
+	}
+	return c.serverCore.AbortMultipartUpload(context.Background(), c.bucketName, physical, uploadID)
 }
 
 // ListParts returns the parts that have been uploaded for a multipart upload.
 func (c *OSSClient) ListParts(key, uploadID string) ([]PartInfo, error) {
+	physical, err := c.physicalKey(key)
+	if err != nil {
+		return nil, err
+	}
 	var allParts []PartInfo
 	partMarker := 0
 	for {
-		result, err := c.serverCore.ListObjectParts(context.Background(), c.bucketName, key, uploadID, partMarker, 1000)
+		result, err := c.serverCore.ListObjectParts(context.Background(), c.bucketName, physical, uploadID, partMarker, 1000)
 		if err != nil {
 			return nil, err
 		}
@@ -359,7 +557,11 @@ func (c *OSSClient) ListParts(key, uploadID string) ([]PartInfo, error) {
 
 // HeadObject returns the size and ETag of an object without downloading it.
 func (c *OSSClient) HeadObject(key string) (*HeadResult, error) {
-	info, err := c.serverClient.StatObject(context.Background(), c.bucketName, key, minio.StatObjectOptions{})
+	physical, err := c.physicalKey(key)
+	if err != nil {
+		return nil, err
+	}
+	info, err := c.serverClient.StatObject(context.Background(), c.bucketName, physical, minio.StatObjectOptions{})
 	if err != nil {
 		return nil, err
 	}

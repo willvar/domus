@@ -3,7 +3,9 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -67,6 +69,7 @@ type OSSConfig struct {
 	AccessKeySecret        string `yaml:"access_key_secret"`
 	Bucket                 string `yaml:"bucket"`
 	Region                 string `yaml:"region"`
+	Prefix                 string `yaml:"prefix"`            // Optional instance boundary inside a shared bucket
 	MaxPresignBatch        int    `yaml:"max_presign_batch"` // Max presigned URLs per request; default 100
 }
 
@@ -111,6 +114,9 @@ type SMTPConfig struct {
 
 // Validate checks that required configuration fields are set.
 func (c *Config) Validate() error {
+	if c.OSS.ServerEndpoint == "" {
+		return fmt.Errorf("config: oss.server_endpoint is required")
+	}
 	if c.OSS.ClientUploadEndpoint == "" {
 		return fmt.Errorf("config: oss.client_upload_endpoint is required")
 	}
@@ -125,6 +131,21 @@ func (c *Config) Validate() error {
 	}
 	if c.OSS.Region == "" {
 		return fmt.Errorf("config: oss.region is required")
+	}
+	for _, endpoint := range []struct {
+		name  string
+		value string
+	}{
+		{name: "oss.server_endpoint", value: c.OSS.ServerEndpoint},
+		{name: "oss.client_upload_endpoint", value: c.OSS.ClientUploadEndpoint},
+		{name: "oss.client_download_endpoint", value: c.OSS.ClientDownloadEndpoint},
+	} {
+		if err := validateOSSEndpoint(endpoint.name, endpoint.value); err != nil {
+			return err
+		}
+	}
+	if err := validateOSSPrefix(c.OSS.Prefix); err != nil {
+		return err
 	}
 	if c.Server.Port <= 0 {
 		return fmt.Errorf("config: server.port must be greater than 0")
@@ -168,6 +189,12 @@ func (c *Config) ValidateDOFS() error {
 	}
 	if c.OSS.Region == "" {
 		return fmt.Errorf("config: oss.region is required")
+	}
+	if err := validateOSSEndpoint("oss.server_endpoint", c.OSS.ServerEndpoint); err != nil {
+		return err
+	}
+	if err := validateOSSPrefix(c.OSS.Prefix); err != nil {
+		return err
 	}
 	if err := c.validateDOFSMetadata(); err != nil {
 		return err
@@ -259,6 +286,28 @@ func validateAbsoluteNonRootPath(name, value string) error {
 	return nil
 }
 
+func validateOSSPrefix(prefix string) error {
+	if prefix == "" {
+		return nil
+	}
+	if clean := path.Clean(prefix); clean != prefix || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "\x00") {
+		return fmt.Errorf("config: oss.prefix must be a clean relative object prefix")
+	}
+	return nil
+}
+
+func validateOSSEndpoint(name, endpoint string) error {
+	if endpoint == "" {
+		return nil
+	}
+	parsed, err := url.Parse("https://" + endpoint)
+	if err != nil || strings.TrimSpace(endpoint) != endpoint || parsed.Host == "" || parsed.User != nil ||
+		parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("config: %s must be a host name without scheme, path, query, fragment, or credentials", name)
+	}
+	return nil
+}
+
 func pathsOverlapConfig(first, second string) bool {
 	return first == second || pathContains(first, second) || pathContains(second, first)
 }
@@ -316,6 +365,7 @@ func Load(path string) (*Config, error) {
 	if cfg.OSS.ServerEndpoint == "" {
 		cfg.OSS.ServerEndpoint = cfg.OSS.ClientUploadEndpoint
 	}
+	cfg.OSS.Prefix = strings.Trim(strings.TrimSpace(cfg.OSS.Prefix), "/")
 	if cfg.OSS.MaxPresignBatch <= 0 {
 		cfg.OSS.MaxPresignBatch = 100
 	}
