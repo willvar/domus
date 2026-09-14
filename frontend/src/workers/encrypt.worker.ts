@@ -19,7 +19,8 @@
  *   { type: 'need-urls', from: number, count: number }  // request more presigned URLs
  */
 
-const CRYPTO_VERSION = 0x01
+import { WIRE_HEADER_SIZE, WireEncoder } from '@willvar/escrow-vue'
+
 const CHUNK_SIZE = 65536 // 64 KB plaintext per encryption chunk
 const NONCE_SIZE = 12
 const TAG_SIZE = 16
@@ -29,6 +30,67 @@ let cancelled = false
 let paused = false
 let resumeResolve: (() => void) | null = null
 let urlQueue: string[] = []
+let preferXHR = false
+
+const PUT_TIMEOUT_MS = 120000
+const PUT_MAX_ATTEMPTS = 5
+const PUT_RETRY_BACKOFF_MS = 3000
+
+async function putPart(url: string, data: Uint8Array<ArrayBuffer>, onProgress?: (loaded: number) => void): Promise<void> {
+  if (!preferXHR) {
+    try {
+      const resp = await fetch(url, { method: 'PUT', body: data })
+      if (!resp.ok) {
+        throw new Error(`Upload part failed: ${resp.status}`)
+      }
+      onProgress?.(data.length)
+      return
+    } catch (err) {
+      // fetch() rejecting at the network layer (TypeError on iOS: "Load
+      // failed") falls back to XHR; HTTP status errors are real failures.
+      if (!(err instanceof TypeError)) throw err
+      preferXHR = true
+    }
+  }
+  await xhrPutWithRetry(url, data, onProgress)
+}
+
+function xhrPut(url: string, data: Uint8Array<ArrayBuffer>, onProgress?: (loaded: number) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    xhr.open('PUT', url, true)
+    xhr.timeout = PUT_TIMEOUT_MS
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) resolve()
+      else reject(new HttpPartError(`Upload part failed: ${xhr.status}`))
+    }
+    xhr.onerror = () => reject(new Error('Upload part failed: network error'))
+    xhr.ontimeout = () => reject(new Error(`Upload part timed out after ${PUT_TIMEOUT_MS / 1000}s`))
+    if (onProgress) {
+      xhr.upload.onprogress = (e) => onProgress(e.loaded)
+    }
+    xhr.send(data)
+  })
+}
+
+async function xhrPutWithRetry(url: string, data: Uint8Array<ArrayBuffer>, onProgress?: (loaded: number) => void): Promise<void> {
+  let lastError: Error = new Error('Upload part failed')
+  for (let attempt = 1; attempt <= PUT_MAX_ATTEMPTS; attempt++) {
+    try {
+      await xhrPut(url, data, onProgress)
+      return
+    } catch (err) {
+      lastError = err instanceof Error ? err : new Error(String(err))
+      if (err instanceof HttpPartError) throw lastError
+      if (attempt < PUT_MAX_ATTEMPTS && !cancelled) {
+        await new Promise((resolve) => setTimeout(resolve, PUT_RETRY_BACKOFF_MS * attempt))
+      }
+    }
+  }
+  throw lastError
+}
+
+class HttpPartError extends Error {}
 
 self.onmessage = async (e: MessageEvent) => {
   const msg = e.data
@@ -81,12 +143,6 @@ async function waitIfPaused(): Promise<void> {
   })
 }
 
-function uint64BE(n: number): Uint8Array {
-  const buf = new Uint8Array(8)
-  new DataView(buf.buffer).setBigUint64(0, BigInt(n), false)
-  return buf
-}
-
 async function encryptAndUpload(
   file: File,
   dekRaw: ArrayBuffer,
@@ -97,7 +153,7 @@ async function encryptAndUpload(
   const hasher = await createSHA256()
   hasher.init()
 
-  const key = await crypto.subtle.importKey('raw', dekRaw as ArrayBuffer, { name: 'AES-GCM' }, false, ['encrypt'])
+  const encoder = await WireEncoder.create(new Uint8Array(dekRaw as ArrayBuffer))
 
   const totalPlain = file.size
   const numEncChunks = Math.ceil(totalPlain / CHUNK_SIZE)
@@ -110,13 +166,11 @@ async function encryptAndUpload(
   let partNumber = 1
   let partBuffer = new Uint8Array(partSize)
   let partOffset = 0
-  let encChunkIdx = 0
   let uploaded = 0
 
   // Write 5-byte header into partBuffer
-  partBuffer[0] = CRYPTO_VERSION
-  new DataView(partBuffer.buffer).setUint32(1, CHUNK_SIZE, false)
-  partOffset = 5
+  partBuffer.set(WireEncoder.header(), 0)
+  partOffset = WIRE_HEADER_SIZE
 
   // Stream-read the file
   const reader = file.stream().getReader()
@@ -152,14 +206,12 @@ async function encryptAndUpload(
     if (cancelled) return
 
     const url = urlQueue.shift()!
-    const resp = await fetch(url, { method: 'PUT', body: data })
-    if (!resp.ok) {
-      throw new Error(`Upload part ${partNumber} failed: ${resp.status}`)
-    }
+    await putPart(url, data, (loaded) => {
+      self.postMessage({ type: 'progress', uploaded: uploaded + loaded, total: encryptedSize })
+    })
     completedPartCount++
     uploaded += data.length
     self.postMessage({ type: 'part', partNumber, size: data.length })
-    self.postMessage({ type: 'progress', uploaded, total: encryptedSize })
 
     partNumber++
     partOffset = 0
@@ -200,47 +252,33 @@ async function encryptAndUpload(
 
       hasher.update(chunk)
 
-      // Encrypt this chunk
-      const nonce = crypto.getRandomValues(new Uint8Array(NONCE_SIZE))
-      const aad = uint64BE(encChunkIdx) as BufferSource
-      const ciphertext = new Uint8Array(
-        await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: aad }, key, chunk.slice().buffer),
-      )
-      encChunkIdx++
+      // Encrypt this chunk via the shared DOFS v1 encoder
+      const segment = await encoder.encryptChunk(chunk)
 
       // Write nonce + ciphertext to part buffer
-      const encChunkLen = NONCE_SIZE + ciphertext.length
+      const encChunkLen = segment.length
       if (partOffset + encChunkLen > partSize) {
         // Flush current part first
         await flushPart()
         partBuffer = new Uint8Array(partSize)
       }
-      partBuffer.set(nonce, partOffset)
-      partOffset += NONCE_SIZE
-      partBuffer.set(ciphertext, partOffset)
-      partOffset += ciphertext.length
+      partBuffer.set(segment, partOffset)
+      partOffset += encChunkLen
     }
   }
 
   // Process any leftover data (last incomplete encryption chunk)
   if (leftover.length > 0 && !cancelled) {
     hasher.update(leftover)
-    const nonce = crypto.getRandomValues(new Uint8Array(NONCE_SIZE))
-    const aad = uint64BE(encChunkIdx) as BufferSource
-    const ciphertext = new Uint8Array(
-      await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: aad }, key, leftover.slice().buffer),
-    )
-    encChunkIdx++
+    const segment = await encoder.encryptChunk(leftover)
 
-    const encChunkLen = NONCE_SIZE + ciphertext.length
+    const encChunkLen = segment.length
     if (partOffset + encChunkLen > partSize) {
       await flushPart()
       partBuffer = new Uint8Array(partSize)
     }
-    partBuffer.set(nonce, partOffset)
-    partOffset += NONCE_SIZE
-    partBuffer.set(ciphertext, partOffset)
-    partOffset += ciphertext.length
+    partBuffer.set(segment, partOffset)
+    partOffset += encChunkLen
   }
 
   // Flush remaining data as last part

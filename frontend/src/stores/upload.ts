@@ -105,7 +105,8 @@ export const useUploadStore = defineStore('upload', () => {
 
     for (const file of files) {
       const strategy = strategies.get(file.name) || null
-      startUpload(file, targetPath, zeroByteFiles.length > 0, strategy)
+      const entry = createSession(file, targetPath)
+      startUpload(entry, zeroByteFiles.length > 0, strategy)
     }
   }
 
@@ -197,7 +198,7 @@ export const useUploadStore = defineStore('upload', () => {
     }
   }
 
-  async function startUpload(file: File, targetPath: string, allowZeroByte = false, conflictStrategy: string | null = null): Promise<void> {
+  function createSession(file: File, targetPath: string): UploadSession {
     const entry: UploadSession = {
       id: crypto?.randomUUID?.() || (Math.random().toString(36).slice(2) + Date.now().toString(36)),
       fileName: file.name,
@@ -205,7 +206,7 @@ export const useUploadStore = defineStore('upload', () => {
       progress: 0,
       speed: 0,
       status: 'uploading',
-      phase: 'generating',
+      phase: 'queued',
       uploadId: null,
       taskId: null,
       targetPath,
@@ -224,7 +225,16 @@ export const useUploadStore = defineStore('upload', () => {
     }
     uploads.value.push(entry)
     try { activityStore.show() } catch { /* ignore */ }
-    const upload = uploads.value[uploads.value.length - 1]
+    return entry
+  }
+
+  async function startUpload(entry: UploadSession, allowZeroByte = false, conflictStrategy: string | null = null): Promise<void> {
+    if (entry.status === 'cancelled') return
+    const file = entry._file as File
+    const targetPath = entry.targetPath
+    const upload = entry
+    upload.phase = 'generating'
+    upload.startTime = Date.now()
 
     try {
       if (!file.size && !allowZeroByte) {
@@ -544,7 +554,8 @@ export const useUploadStore = defineStore('upload', () => {
     const file: File = u._file
     const targetPath: string = u.targetPath
     removeUploadSession(id)
-    startUpload(file, targetPath)
+    const entry = createSession(file, targetPath)
+    startUpload(entry)
   }
 
   function abortUploads(reason: 'page_unload' | 'startup_reconcile'): void {
