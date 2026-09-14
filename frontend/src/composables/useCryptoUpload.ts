@@ -14,6 +14,7 @@
 
 import { createSHA256 } from 'hash-wasm'
 import pdfWorkerURL from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import { decryptBlob as decryptWireBlob, encryptBlob as encryptWireBlob, keyFromHex, keyToHex } from '@willvar/escrow-vue'
 
 const CRYPTO_VERSION = 0x01
 const CHUNK_SIZE = 65536 // 64 KB — must match auth.DefaultChunkSize
@@ -62,42 +63,9 @@ export async function generateDEK(): Promise<DEKBundle> {
 
 // ── Encrypt blob (small, in-memory — for thumbnails etc.) ───────────────────
 
-/**
- * Encrypt a Blob/ArrayBuffer using the same chunked AES-GCM wire format as
- * the server. Returns the encrypted bytes as Uint8Array.
- */
-export async function encryptBlob(dekRaw: Uint8Array, data: ArrayBuffer): Promise<Uint8Array> {
-  const key = await crypto.subtle.importKey('raw', dekRaw.buffer as ArrayBuffer, { name: 'AES-GCM' }, false, ['encrypt'])
-  const plain = new Uint8Array(data)
-
-  // Calculate output size
-  const numChunks = Math.ceil(plain.length / CHUNK_SIZE)
-  const outputSize = 5 + plain.length + numChunks * (NONCE_SIZE + TAG_SIZE)
-  const output = new Uint8Array(outputSize)
-
-  // Header: [version][chunk_size BE]
-  output[0] = CRYPTO_VERSION
-  new DataView(output.buffer).setUint32(1, CHUNK_SIZE, false)
-
-  let offset = 5
-  for (let i = 0; i < numChunks; i++) {
-    const start = i * CHUNK_SIZE
-    const end = Math.min(start + CHUNK_SIZE, plain.length)
-    const chunk = plain.subarray(start, end)
-
-    const nonce = crypto.getRandomValues(new Uint8Array(NONCE_SIZE))
-    const aad = uint64BE(i) as BufferSource
-    const ciphertext = new Uint8Array(
-      await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: aad }, key, chunk),
-    )
-
-    output.set(nonce, offset)
-    offset += NONCE_SIZE
-    output.set(ciphertext, offset)
-    offset += ciphertext.length
-  }
-
-  return output.subarray(0, offset)
+/** Wire-format codec delegated to @willvar/escrow-vue (DOFS v1). */
+export function encryptBlob(dekRaw: Uint8Array, data: ArrayBuffer): Promise<Uint8Array> {
+  return encryptWireBlob(dekRaw, data)
 }
 
 // ── Thumbnail generation (canvas API) ───────────────────────────────────────
@@ -131,7 +99,22 @@ function thumbnailScale(width: number, height: number): number {
   return Math.min(1, THUMB_MAX_DIMENSION / width, THUMB_MAX_DIMENSION / height)
 }
 
-export async function generateThumbnail(file: File): Promise<ThumbnailResult | null> {
+let thumbnailQueue: Promise<unknown> = Promise.resolve()
+
+const THUMB_TIMEOUT_MS = 15000
+
+export function generateThumbnail(file: File): Promise<ThumbnailResult | null> {
+  const run = (): Promise<ThumbnailResult | null> => generateThumbnailNow(file)
+  const withTimeout = (): Promise<ThumbnailResult | null> => Promise.race([
+    run(),
+    new Promise<null>((resolve) => { setTimeout(() => resolve(null), THUMB_TIMEOUT_MS) }),
+  ])
+  const result = thumbnailQueue.then(withTimeout, withTimeout)
+  thumbnailQueue = result.catch(() => {})
+  return result
+}
+
+async function generateThumbnailNow(file: File): Promise<ThumbnailResult | null> {
   try {
     if (file.type.startsWith('image/')) {
       return await generateImageThumbnail(file)
@@ -183,10 +166,14 @@ async function generateVideoThumbnail(file: File): Promise<ThumbnailResult> {
       video.onloadedmetadata = () => resolve()
       video.onerror = () => reject(new Error('video metadata load failed'))
     })
-    // Seek to 1s or half duration, whichever is smaller
+    // Seek to 1s or half duration, whichever is smaller. Some iOS codecs never
+    // fire `seeked` — bail out instead of hanging the pipeline forever.
     video.currentTime = Math.min(1, video.duration / 2)
-    await new Promise<void>((resolve) => {
+    await new Promise<void>((resolve, reject) => {
+      const fail = () => reject(new Error('video seek failed'))
       video.onseeked = () => resolve()
+      video.onerror = fail
+      setTimeout(fail, 3000)
     })
 
     const scale = thumbnailScale(video.videoWidth, video.videoHeight)
@@ -243,44 +230,8 @@ async function generatePDFThumbnail(file: File): Promise<ThumbnailResult> {
  * Returns plaintext as ArrayBuffer.
  */
 export async function decryptBlob(dekRaw: Uint8Array, encrypted: ArrayBuffer): Promise<ArrayBuffer> {
-  const data = new Uint8Array(encrypted)
-  if (data.length < 5 || data[0] !== CRYPTO_VERSION) {
-    throw new Error('Invalid encrypted data')
-  }
-  const chunkSize = new DataView(data.buffer).getUint32(1, false)
-  if (chunkSize !== CHUNK_SIZE) {
-    throw new Error(`Unexpected chunk size: expected ${CHUNK_SIZE}, got ${chunkSize}`)
-  }
-  const key = await crypto.subtle.importKey('raw', dekRaw.buffer as ArrayBuffer, { name: 'AES-GCM' }, false, ['decrypt'])
-
-  const chunks: Uint8Array[] = []
-  let offset = 5
-  let idx = 0
-  while (offset < data.length) {
-    const nonce = data.subarray(offset, offset + NONCE_SIZE)
-    offset += NONCE_SIZE
-    // Remaining encrypted chunk: ciphertext + tag. Last chunk may be smaller.
-    const encChunkMax = chunkSize + TAG_SIZE
-    const remaining = data.length - offset
-    const encChunkLen = Math.min(encChunkMax, remaining)
-    const ciphertext = data.subarray(offset, offset + encChunkLen)
-    offset += encChunkLen
-    const aad = uint64BE(idx) as BufferSource
-    const plainChunk = new Uint8Array(
-      await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce, additionalData: aad }, key, ciphertext.slice().buffer),
-    )
-    chunks.push(plainChunk)
-    idx++
-  }
-
-  const totalLen = chunks.reduce((s, c) => s + c.length, 0)
-  const result = new Uint8Array(totalLen)
-  let pos = 0
-  for (const c of chunks) {
-    result.set(c, pos)
-    pos += c.length
-  }
-  return result.buffer
+  const plain = await decryptWireBlob(dekRaw, new Uint8Array(encrypted))
+  return plain.buffer as ArrayBuffer
 }
 
 // ── Small encrypted file read/write helpers ─────────────────────────────────
@@ -397,20 +348,9 @@ export async function writeEncryptedFile(
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 function bytesToHex(bytes: Uint8Array): string {
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  return keyToHex(bytes)
 }
 
 function hexToBytes(hex: string): Uint8Array {
-  if (!/^[0-9a-fA-F]{64}$/.test(hex)) throw new Error('Invalid encryption key')
-  const bytes = new Uint8Array(hex.length / 2)
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16)
-  }
-  return bytes
-}
-
-function uint64BE(n: number): Uint8Array {
-  const buf = new Uint8Array(8)
-  new DataView(buf.buffer).setBigUint64(0, BigInt(n), false)
-  return buf
+  return keyFromHex(hex)
 }

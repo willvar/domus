@@ -24,6 +24,7 @@ const { t } = useI18n()
 
 function phaseLabel(phase?: string): string {
   const labels: Record<string, string> = {
+    queued: t('files.phase_waiting'),
     generating: t('files.phase_preparing'),
     encrypting: t('files.phase_encrypting'),
     uploading: t('files.phase_uploading'),
@@ -63,7 +64,7 @@ function phaseLabel(phase?: string): string {
     <NScrollbar v-else :style="{ maxHeight }">
       <div class="activity-list">
         <article v-for="item in uploads" :key="item.id">
-          <div><strong>{{ item.fileName }}</strong><span>{{ phaseLabel(item.phase) }}</span></div>
+          <div><strong>{{ item.fileName }}</strong><span :class="{ 'error-text': item.error }">{{ item.error || phaseLabel(item.phase) }}</span></div>
           <span>{{ Math.round(item.progress) }}%</span>
           <NProgress class="progress" type="line" :percentage="item.progress" :show-indicator="false" />
           <NButton
@@ -106,6 +107,7 @@ function phaseLabel(phase?: string): string {
 .activity-list article span { display: block; }
 .activity-list article strong { overflow: hidden; color: #172033; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
 .activity-list article div span { margin-top: 3px; color: #657087; }
+.activity-list article div span.error-text { color: #d03050; }
 .progress { grid-column: 1 / -1; }
 .activity-list article > .n-button { grid-column: 1 / -1; justify-self: start; }
 </style>

@@ -765,6 +765,7 @@ function displayDate(value: string): string {
 
 function phaseLabel(phase?: string): string {
   const labels: Record<string, string> = {
+    queued: t('files.phase_waiting'),
     generating: t('files.phase_preparing'),
     encrypting: t('files.phase_encrypting'),
     uploading: t('files.phase_uploading'),
