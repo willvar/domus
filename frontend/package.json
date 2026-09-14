@@ -33,7 +33,7 @@
     "@codemirror/legacy-modes": "^6.5.2",
     "@codemirror/state": "^6.6.0",
     "@codemirror/view": "^6.40.0",
-    "@willvar/escrow-vue": "https://github.com/willvar/escrow/releases/download/v0.1.2/willvar-escrow-vue-0.1.2.tgz",
+    "@willvar/escrow-vue": "https://github.com/willvar/escrow/releases/download/v0.2.0/willvar-escrow-vue-0.2.0.tgz",
     "axios": "^1.13.6",
     "axios-retry": "^4.5.0",
     "codemirror": "^6.0.2",
