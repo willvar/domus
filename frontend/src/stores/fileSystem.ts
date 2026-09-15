@@ -635,7 +635,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const idx: number = selectedFiles.value.indexOf(path)
     if (idx >= 0) {
       selectedFiles.value.splice(idx, 1)
-      if (selectedFiles.value.length === 0) clearSelection()
     } else {
       selectedFiles.value.push(path)
       lastSelectedIndex.value = sortedFiles.value.findIndex(file => file.path === path)
