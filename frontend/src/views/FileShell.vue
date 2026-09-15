@@ -397,16 +397,35 @@ function beginLongPress(file: FileListItem, event: PointerEvent): void {
   if (event.pointerType !== 'touch' && event.pointerType !== 'pen') return
   if (fs.selectMode || fs.searchMode) return
   if (longPressTimer !== null) window.clearTimeout(longPressTimer)
-  longPressTimer = window.setTimeout(() => {
-    suppressClickPath = file.path
-    fs.enterSelectMode(file.path)
-    navigator.vibrate?.(18)
-  }, 520)
+  longPressTimer = window.setTimeout(() => openTouchMenu(file, event), 520)
 }
 
 function endLongPress(): void {
   if (longPressTimer !== null) window.clearTimeout(longPressTimer)
   longPressTimer = null
+}
+
+let touchMenuAt = 0
+let touchMenuPath = ''
+
+function openTouchMenu(file: FileListItem, event: MouseEvent): void {
+  endLongPress()
+  const now = Date.now()
+  if (now - touchMenuAt < 900 && touchMenuPath === file.path) return
+  touchMenuAt = now
+  touchMenuPath = file.path
+  suppressClickPath = file.path
+  navigator.vibrate?.(18)
+  openActionMenu(file, event, false)
+}
+
+function handleContextMenu(file: FileListItem, event: MouseEvent): void {
+  if (longPressTimer !== null) {
+    openTouchMenu(file, event)
+    return
+  }
+  if (Date.now() - touchMenuAt < 900 && touchMenuPath === file.path) return
+  openActionMenu(file, event)
 }
 
 function rubberBandPoint(event: PointerEvent): { x: number; y: number } | null {
@@ -525,7 +544,6 @@ function endRubberBand(event: PointerEvent): void {
   }
 
   if (!used) return
-  if (fs.selectedFiles.length === 0) fs.exitSelectMode()
   suppressSurfaceClick = true
   if (suppressSurfaceClickTimer !== null) window.clearTimeout(suppressSurfaceClickTimer)
   suppressSurfaceClickTimer = window.setTimeout(() => {
@@ -544,10 +562,10 @@ function handleSurfaceClick(): void {
   fs.exitSelectMode()
 }
 
-function openActionMenu(file: FileListItem, event?: MouseEvent): void {
+function openActionMenu(file: FileListItem, event?: MouseEvent, select = true): void {
   showActionMenu.value = false
   actionMenuEpoch.value++
-  if (!fs.searchMode && !fs.selectedFiles.includes(file.path)) fs.selectedFiles = [file.path]
+  if (select && !fs.searchMode && !fs.selectedFiles.includes(file.path)) fs.selectedFiles = [file.path]
   actionFile.value = file
   detailsFile.value = file
   if (event) {
@@ -1125,7 +1143,7 @@ function phaseLabel(phase?: string): string {
               tabindex="0"
               @click.stop="handleItemClick(file, $event)"
               @dblclick.stop="openItem(file)"
-              @contextmenu.prevent.stop="openActionMenu(file, $event)"
+              @contextmenu.prevent.stop="handleContextMenu(file, $event)"
               @pointerdown="beginLongPress(file, $event)"
               @pointerup="endLongPress"
               @pointercancel="endLongPress"
@@ -1175,7 +1193,7 @@ function phaseLabel(phase?: string): string {
               tabindex="0"
               @click.stop="handleItemClick(file, $event)"
               @dblclick.stop="openItem(file)"
-              @contextmenu.prevent.stop="openActionMenu(file, $event)"
+              @contextmenu.prevent.stop="handleContextMenu(file, $event)"
               @pointerdown="beginLongPress(file, $event)"
               @pointerup="endLongPress"
               @pointercancel="endLongPress"
@@ -1725,19 +1743,6 @@ button, input, select { font: inherit; }
 }
 
 @media (max-width: 420px) {
-  .file-header {
-    display: grid;
-    height: 118px;
-    min-height: 118px;
-    grid-template-columns: auto minmax(0, 1fr);
-    grid-template-rows: 40px 44px;
-    column-gap: 12px;
-    row-gap: 10px;
-  }
-  .mobile-brand { grid-row: 1; grid-column: 1; }
-  .header-actions { grid-row: 1; grid-column: 2; justify-self: end; }
-  .global-search { grid-row: 2; grid-column: 1 / -1; order: initial; }
-  .file-workspace { height: calc(100dvh - 118px); min-height: 0; }
   .file-card__preview { aspect-ratio: 1.08; }
 }
 
