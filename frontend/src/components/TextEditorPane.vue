@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useCodeEditor } from '../composables/useCodeEditor'
+import { useTheme } from '../composables/useTheme'
 
 const props = defineProps<{
   modelValue: string
@@ -20,6 +21,8 @@ const emit = defineEmits<{
 
 const container = ref<HTMLElement | null>(null)
 const editor = useCodeEditor()
+const { isDark } = useTheme()
+watch(isDark, (value) => editor.setDark(value), { immediate: false })
 let scrollElement: HTMLElement | null = null
 let scrollFrame = 0
 
@@ -62,6 +65,7 @@ defineExpose({ scrollToLine, scrollToProgress })
 
 onMounted(async () => {
   if (!container.value) return
+  editor.setDark(isDark.value)
   await editor.create(container.value, props.modelValue, props.language, {
     onChange: (content) => {
       emit('update:modelValue', content)
@@ -91,7 +95,7 @@ onBeforeUnmount(() => {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: #fff;
+  background: var(--domus-surface);
   user-select: text;
 }
 

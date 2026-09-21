@@ -108,3 +108,53 @@ export const domusThemeOverrides: GlobalThemeOverrides = {
     tabFontWeightActive: '700',
   },
 }
+
+const darkCommon: NonNullable<GlobalThemeOverrides['common']> = {
+  primaryColor: '#6d7df2',
+  primaryColorHover: '#8290f6',
+  primaryColorPressed: '#5a6ae0',
+  primaryColorSuppl: '#8290f6',
+  infoColor: '#6d7df2',
+  infoColorHover: '#8290f6',
+  infoColorPressed: '#5a6ae0',
+  successColor: '#4fb08d',
+  warningColor: '#c99a4a',
+  errorColor: '#e06a78',
+  bodyColor: '#12151d',
+  cardColor: '#1a1f2b',
+  modalColor: '#1a1f2b',
+  popoverColor: '#1a1f2b',
+  avatarColor: '#6d7df2',
+  textColorBase: '#e7ebf3',
+  borderColor: '#2b3243',
+  textColor2: '#cdd4e0',
+  textColor3: '#9aa4b8',
+  placeholderColor: '#7d8798',
+  iconColor: '#9aa4b8',
+}
+
+export const domusDarkThemeOverrides: GlobalThemeOverrides = {
+  ...domusThemeOverrides,
+  common: { ...domusThemeOverrides.common, ...darkCommon },
+  Input: { ...domusThemeOverrides.Input, placeholderColor: '#7d8798' },
+  InternalSelection: { ...domusThemeOverrides.InternalSelection, placeholderColor: '#7d8798' },
+  Menu: {
+    ...domusThemeOverrides.Menu,
+    itemColorHover: '#232936',
+    itemColorActive: '#28304f',
+    itemColorActiveHover: '#2c3558',
+    itemTextColorActive: '#a9b6ff',
+    itemIconColorActive: '#8b9bff',
+  },
+  DataTable: {
+    ...domusThemeOverrides.DataTable,
+    thColor: '#1e242f',
+    thTextColor: '#9aa4b8',
+    borderColor: '#2b3243',
+    tdColorHover: '#222836',
+  },
+  Popover: {
+    ...domusThemeOverrides.Popover,
+    boxShadow: '0 20px 60px rgba(0, 0, 0, 0.5), 0 2px 10px rgba(0, 0, 0, 0.35)',
+  },
+}

@@ -55,6 +55,8 @@ const zh: MessageMap = {
   "files.font_sample": "输入文字预览字体",
   "files.font_sample_text": "你好，Domus",
   "files.path": "路径",
+  "files.dark_mode": "深色模式",
+  "files.dark_mode_hint": "跟随系统或手动切换",
   "files.show_thumbnails": "显示缩略图",
   "files.show_thumbnails_hint": "显示时会产生额外流量，默认关闭",
   "files.open_containing_folder": "打开所在文件夹",

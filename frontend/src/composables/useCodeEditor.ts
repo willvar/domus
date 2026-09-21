@@ -1,10 +1,12 @@
 import { shallowRef } from 'vue'
 import type { ShallowRef } from 'vue'
 import { basicSetup } from 'codemirror'
-import { EditorState } from '@codemirror/state'
+import { Compartment, EditorState } from '@codemirror/state'
 import type { Extension } from '@codemirror/state'
 import { EditorView, keymap } from '@codemirror/view'
 import type { KeyBinding, ViewUpdate } from '@codemirror/view'
+import { HighlightStyle, syntaxHighlighting } from '@codemirror/language'
+import { tags } from '@lezer/highlight'
 
 interface CodeEditorCallbacks {
   onChange?: (content: string) => void
@@ -122,6 +124,58 @@ const editorTheme = EditorView.theme({
   },
 })
 
+const editorDarkTheme = EditorView.theme({
+  '&': {
+    height: '100%',
+    color: '#e7ebf3',
+    backgroundColor: '#1a1f2b',
+    fontSize: '13px',
+  },
+  '&.cm-focused': { outline: 'none' },
+  '.cm-scroller': {
+    fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", monospace',
+    lineHeight: '1.65',
+  },
+  '.cm-content': { padding: '14px 0', caretColor: '#8b9bff' },
+  '.cm-gutters': {
+    color: '#7e8899',
+    backgroundColor: '#161a24',
+    borderRight: '1px solid #2b3243',
+  },
+  '.cm-activeLine': { backgroundColor: '#222836' },
+  '.cm-activeLineGutter': { color: '#a9b6ff', backgroundColor: '#28304f' },
+  '.cm-selectionBackground, &.cm-focused .cm-selectionBackground, ::selection': {
+    backgroundColor: '#3a4680 !important',
+  },
+  '.cm-cursor, .cm-dropCursor': { borderLeftColor: '#8b9bff' },
+}, { dark: true })
+
+const darkHighlightStyle = HighlightStyle.define([
+  { tag: tags.comment, color: '#7e8899', fontStyle: 'italic' },
+  { tag: [tags.keyword, tags.operatorKeyword, tags.modifier], color: '#c792ea' },
+  { tag: [tags.string, tags.special(tags.string), tags.regexp], color: '#a5d6a7' },
+  { tag: [tags.number, tags.bool, tags.null, tags.atom], color: '#f5b880' },
+  { tag: [tags.function(tags.variableName), tags.labelName], color: '#8bb9ff' },
+  { tag: [tags.typeName, tags.className, tags.namespace], color: '#7fd6c2' },
+  { tag: [tags.propertyName, tags.attributeName], color: '#e2c08d' },
+  { tag: [tags.variableName, tags.definition(tags.variableName)], color: '#dfe6f2' },
+  { tag: [tags.tagName, tags.angleBracket], color: '#f08d7f' },
+  { tag: [tags.meta, tags.processingInstruction], color: '#9aa4b8' },
+  { tag: tags.heading, color: '#8bb9ff', fontWeight: '700' },
+  { tag: [tags.emphasis], fontStyle: 'italic' },
+  { tag: [tags.strong], fontWeight: '700' },
+  { tag: [tags.link, tags.url], color: '#7fd6c2', textDecoration: 'underline' },
+  { tag: tags.invalid, color: '#e06a78' },
+])
+
+const themeCompartment = new Compartment()
+let editorDark = false
+
+function themeExtensions(): Extension {
+  if (!editorDark) return editorTheme
+  return [editorDarkTheme, syntaxHighlighting(darkHighlightStyle)]
+}
+
 export function useCodeEditor(): {
   view: ShallowRef<EditorView | null>
   create: (
@@ -130,6 +184,7 @@ export function useCodeEditor(): {
     language: string | null,
     callbacks?: CodeEditorCallbacks,
   ) => Promise<void>
+  setDark: (value: boolean) => void
   destroy: () => void
 } {
   const view = shallowRef<EditorView | null>(null)
@@ -143,6 +198,13 @@ export function useCodeEditor(): {
   function destroy(): void {
     revision += 1
     destroyView()
+  }
+
+  function setDark(value: boolean): void {
+    editorDark = value
+    view.value?.dispatch({
+      effects: themeCompartment.reconfigure(themeExtensions()),
+    })
   }
 
   async function create(
@@ -170,7 +232,7 @@ export function useCodeEditor(): {
       : []
     const extensions: Extension[] = [
       basicSetup,
-      editorTheme,
+      themeCompartment.of(themeExtensions()),
       EditorView.lineWrapping,
       EditorState.tabSize.of(2),
       keymap.of(bindings),
@@ -189,5 +251,5 @@ export function useCodeEditor(): {
     view.value.focus()
   }
 
-  return { view, create, destroy }
+  return { view, create, setDark, destroy }
 }

@@ -5,6 +5,9 @@ import router from './router'
 import AppComponent from './App.vue'
 import './styles/global.scss'
 import { useServiceWorker } from './composables/useServiceWorker'
+import { useTheme } from './composables/useTheme'
+
+useTheme()
 
 const app: App = createApp(AppComponent)
 app.use(createPinia())

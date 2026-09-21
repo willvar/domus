@@ -95,19 +95,19 @@ function phaseLabel(phase?: string): string {
 .activity-center { min-width: 0; }
 .panel-heading span,
 .panel-heading strong { display: block; }
-.panel-heading span { color: #657087; font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
-.panel-heading strong { margin-top: 5px; color: #172033; font-size: 16px; }
-.activity-summary { margin: 0 0 10px; color: #657087; font-size: 12px; font-weight: 650; }
+.panel-heading span { color: var(--domus-muted); font-size: 11px; font-weight: 800; letter-spacing: .1em; text-transform: uppercase; }
+.panel-heading strong { margin-top: 5px; color: var(--domus-ink); font-size: 16px; }
+.activity-summary { margin: 0 0 10px; color: var(--domus-muted); font-size: 12px; font-weight: 650; }
 .panel-empty { display: flex; min-height: 210px; align-items: center; justify-content: center; flex-direction: column; gap: 8px; color: #289471; text-align: center; }
-.panel-empty strong { color: #172033; font-size: 15px; }
-.panel-empty span { color: #657087; font-size: 12px; }
+.panel-empty strong { color: var(--domus-ink); font-size: 15px; }
+.panel-empty span { color: var(--domus-muted); font-size: 12px; }
 .activity-list { display: grid; gap: 10px; margin-top: 17px; }
-.activity-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 14px; border-radius: 13px; background: #f6f7fa; font-size: 11px; }
+.activity-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px 12px; padding: 14px; border-radius: 13px; background: var(--domus-surface-2); font-size: 11px; }
 .activity-list article strong,
 .activity-list article span { display: block; }
-.activity-list article strong { overflow: hidden; color: #172033; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
-.activity-list article div span { margin-top: 3px; color: #657087; }
-.activity-list article div span.error-text { color: #d03050; }
+.activity-list article strong { overflow: hidden; color: var(--domus-ink); font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }
+.activity-list article div span { margin-top: 3px; color: var(--domus-muted); }
+.activity-list article div span.error-text { color: var(--domus-danger); }
 .progress { grid-column: 1 / -1; }
 .activity-list article > .n-button { grid-column: 1 / -1; justify-self: start; }
 </style>

@@ -322,7 +322,7 @@ function resetTo(newTab: string) {
   min-height: 100dvh;
   grid-template-columns: minmax(480px, 1.05fr) minmax(480px, .95fr);
   overflow: auto;
-  background: #f7f8fb;
+  background: var(--domus-canvas);
 }
 
 .login-story {
@@ -527,7 +527,7 @@ function resetTo(newTab: string) {
 
   h2 {
     margin: 18px 0 0;
-    color: #172033;
+    color: var(--domus-ink);
     font-size: 30px;
     font-weight: 720;
     letter-spacing: -.035em;
@@ -535,7 +535,7 @@ function resetTo(newTab: string) {
 
   p {
     margin: 8px 0 0;
-    color: #626d82;
+    color: var(--domus-muted);
     font-size: 14px;
     line-height: 1.55;
   }
@@ -569,7 +569,7 @@ function resetTo(newTab: string) {
 
 .verify-hint {
   text-align: center;
-  color: #626d82;
+  color: var(--domus-muted);
   margin-bottom: 16px;
 }
 
@@ -591,7 +591,7 @@ function resetTo(newTab: string) {
   .login-story__copy ul { display: none; }
   .login-story__copy h1 { max-width: 310px; font-size: 31px; line-height: 1.08; }
   .login-panel { min-height: auto; place-items: start stretch; margin-top: -20px; padding: 0; }
-  .login-card { width: 100%; border-radius: 22px 22px 0 0; background: #fff; }
+  .login-card { width: 100%; border-radius: 22px 22px 0 0; background: var(--domus-surface); }
   .login-card :deep(.n-card__content) { padding: 28px 24px 34px; }
   .login-icon { display: none; }
   .login-header h2 { margin-top: 0; font-size: 27px; }

@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import {
   NConfigProvider,
+  darkTheme,
   NDialogProvider,
   NGlobalStyle,
   NLoadingBarProvider,
@@ -13,17 +14,22 @@ import {
   zhCN,
 } from 'naive-ui'
 import { useI18n } from '../composables/useI18n'
-import { domusThemeOverrides } from '../ui/theme'
+import { domusDarkThemeOverrides, domusThemeOverrides } from '../ui/theme'
+import { useTheme } from '../composables/useTheme'
 import NaiveFeedbackBridge from './NaiveFeedbackBridge.vue'
 
 const { locale } = useI18n()
+const { isDark } = useTheme()
+const naiveTheme = computed(() => (isDark.value ? darkTheme : null))
+const naiveThemeOverrides = computed(() => (isDark.value ? domusDarkThemeOverrides : domusThemeOverrides))
 const naiveLocale = computed(() => (locale.value === 'zh' ? zhCN : enUS))
 const naiveDateLocale = computed(() => (locale.value === 'zh' ? dateZhCN : dateEnUS))
 </script>
 
 <template>
   <NConfigProvider
-    :theme-overrides="domusThemeOverrides"
+    :theme="naiveTheme"
+    :theme-overrides="naiveThemeOverrides"
     :locale="naiveLocale"
     :date-locale="naiveDateLocale"
   >

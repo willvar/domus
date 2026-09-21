@@ -55,6 +55,8 @@ const en: MessageMap = {
   "files.font_sample": "Type to preview this font",
   "files.font_sample_text": "Hello, Domus",
   "files.path": "Path",
+  "files.dark_mode": "Dark mode",
+  "files.dark_mode_hint": "Follow the system or switch manually",
   "files.show_thumbnails": "Show thumbnails",
   "files.show_thumbnails_hint": "Uses additional data when enabled; off by default",
   "files.open_containing_folder": "Open containing folder",
