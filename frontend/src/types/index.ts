@@ -432,6 +432,7 @@ export interface UserPreferences {
   wallpaperPath: string
   wallpaperFit: 'cover' | 'contain' | 'fill' | string
   wallpaperFiles: string[]
+  playbackQuality: string
 }
 
 // -----------------------------------------------------------------------------
@@ -570,6 +571,40 @@ export interface DecryptMetadata {
   dek: string
   download?: boolean
   contentHash?: string
+}
+
+// -----------------------------------------------------------------------------
+// 6b. Playback Renditions (server-side transcode)
+// -----------------------------------------------------------------------------
+
+/** One decryptable derived artifact (init or media segment). */
+export interface RenditionArtifact {
+  url: string
+  dek: string
+  size: number
+  duration?: number
+}
+
+/** GET /file/renditions envelope with the source geometry for menu filtering. */
+export interface RenditionsResponse {
+  source_width?: number
+  source_height?: number
+  renditions: RenditionSummary[]
+}
+
+/** Quality rendition of a video file, from GET /file/renditions. */
+export interface RenditionSummary {
+  profile: string
+  status: 'queued' | 'running' | 'cancelling' | 'ready' | 'failed' | 'cancelled'
+  task_id: string
+  codecs?: string
+  width?: number
+  height?: number
+  progress?: number
+  error?: string
+  duration?: number
+  init?: RenditionArtifact
+  segments?: RenditionArtifact[]
 }
 
 // -----------------------------------------------------------------------------

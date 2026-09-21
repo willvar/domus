@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 export default defineConfig(() => {
+  const apiTarget = process.env.VITE_API_TARGET || 'http://127.0.0.1:8088'
   return {
     plugins: [vue(), Icons({ compiler: 'vue3' })],
     build: {
@@ -26,6 +27,13 @@ export default defineConfig(() => {
     },
     server: {
       port: 8089,
+      allowedHosts: ['dev.example.test'],
+      proxy: {
+        '^/(auth|user|audit|trash|task)(/|$)': apiTarget,
+        '^/file($|/)': apiTarget,
+        '^/admin/oss': apiTarget,
+        '^/ws($|/)': { target: apiTarget, ws: true },
+      },
     },
   }
 })

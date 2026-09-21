@@ -176,6 +176,27 @@ async function encryptAndUpload(
   const reader = file.stream().getReader()
   let leftover: Uint8Array<ArrayBuffer> = new Uint8Array(0)
 
+  // Windowed encryption: WebCrypto encrypts off-thread, so keeping a window of
+  // in-flight encryptChunk calls overlaps crypto with reading/hashing. The
+  // escrow WireEncoder reserves its AAD ordinal synchronously, and segments
+  // are written in ordinal order below.
+  const ENCRYPT_WINDOW = 6
+  const inflight = new Map<number, Promise<Uint8Array>>()
+  let nextEncryptIdx = 0
+  let nextWriteIdx = 0
+  let sourceDone = false
+
+  async function writeSegment(segment: Uint8Array): Promise<void> {
+    const encChunkLen = segment.length
+    if (partOffset + encChunkLen > partSize) {
+      // Flush current part first
+      await flushPart()
+      partBuffer = new Uint8Array(partSize)
+    }
+    partBuffer.set(segment, partOffset)
+    partOffset += encChunkLen
+  }
+
   async function flushPart() {
     if (cancelled) return
     await waitIfPaused()
@@ -217,68 +238,66 @@ async function encryptAndUpload(
     partOffset = 0
   }
 
-  for (;;) {
-    if (cancelled) return
+  while (!cancelled) {
+    if (!sourceDone) {
+      const { done, value } = await reader.read()
+      if (done) {
+        sourceDone = true
+      } else {
+        // Combine leftover with new data
+        let plain: Uint8Array
+        if (leftover.length > 0) {
+          plain = new Uint8Array(leftover.length + value.length)
+          plain.set(leftover)
+          plain.set(value, leftover.length)
+          leftover = new Uint8Array(0) as Uint8Array<ArrayBuffer>
+        } else {
+          plain = value
+        }
 
-    const { done, value } = await reader.read()
-    if (done) break
+        let pos = 0
+        while (pos < plain.length) {
+          if (cancelled) return
 
-    // Combine leftover with new data
-    let plain: Uint8Array
-    if (leftover.length > 0) {
-      plain = new Uint8Array(leftover.length + value.length)
-      plain.set(leftover)
-      plain.set(value, leftover.length)
-      leftover = new Uint8Array(0) as Uint8Array<ArrayBuffer>
-    } else {
-      plain = value
+          const chunkEnd = Math.min(pos + CHUNK_SIZE, plain.length)
+          const remaining = plain.length - pos
+
+          // If this is not the last file read and we don't have a full chunk, save as leftover
+          if (remaining < CHUNK_SIZE && chunkEnd === plain.length) {
+            leftover = plain.subarray(pos) as Uint8Array<ArrayBuffer>
+            break
+          }
+
+          const chunk = plain.subarray(pos, chunkEnd)
+          pos = chunkEnd
+
+          hasher.update(chunk)
+
+          // Schedule this chunk's encryption; ordinals are reserved by the
+          // encoder in call order, segments are written in ordinal order.
+          inflight.set(nextEncryptIdx, encoder.encryptChunk(chunk))
+          nextEncryptIdx++
+        }
+      }
     }
 
-    let pos = 0
-    while (pos < plain.length) {
-      if (cancelled) return
-
-      const chunkEnd = Math.min(pos + CHUNK_SIZE, plain.length)
-      const remaining = plain.length - pos
-
-      // If this is not the last file read and we don't have a full chunk, save as leftover
-      if (remaining < CHUNK_SIZE && chunkEnd === plain.length) {
-        leftover = plain.subarray(pos) as Uint8Array<ArrayBuffer>
-        break
-      }
-
-      const chunk = plain.subarray(pos, chunkEnd)
-      pos = chunkEnd
-
-      hasher.update(chunk)
-
-      // Encrypt this chunk via the shared DOFS v1 encoder
-      const segment = await encoder.encryptChunk(chunk)
-
-      // Write nonce + ciphertext to part buffer
-      const encChunkLen = segment.length
-      if (partOffset + encChunkLen > partSize) {
-        // Flush current part first
-        await flushPart()
-        partBuffer = new Uint8Array(partSize)
-      }
-      partBuffer.set(segment, partOffset)
-      partOffset += encChunkLen
+    // Drain one encrypted segment in ordinal order (bounded by the window
+    // once the window fills, and drains fully at EOF).
+    if (inflight.size >= ENCRYPT_WINDOW || (sourceDone && inflight.size > 0)) {
+      const pending = inflight.get(nextWriteIdx)
+      inflight.delete(nextWriteIdx)
+      nextWriteIdx++
+      if (pending) await writeSegment(await pending)
     }
+
+    if (sourceDone && inflight.size === 0) break
   }
 
   // Process any leftover data (last incomplete encryption chunk)
   if (leftover.length > 0 && !cancelled) {
     hasher.update(leftover)
     const segment = await encoder.encryptChunk(leftover)
-
-    const encChunkLen = segment.length
-    if (partOffset + encChunkLen > partSize) {
-      await flushPart()
-      partBuffer = new Uint8Array(partSize)
-    }
-    partBuffer.set(segment, partOffset)
-    partOffset += encChunkLen
+    await writeSegment(segment)
   }
 
   // Flush remaining data as last part

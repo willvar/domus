@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { NAvatar, NButton, NDivider, NSwitch, NThing } from 'naive-ui'
+import { computed } from 'vue'
+import { NAvatar, NButton, NDivider, NSelect, NSwitch, NThing } from 'naive-ui'
 import { useI18n } from '../composables/useI18n'
-import { IconAccountCircle, IconArrowLeft, IconViewGridOutline } from '../barrels/icons'
+import { usePreferences } from '../composables/usePreferences'
+import { useTheme } from '../composables/useTheme'
+import { IconAccountCircle, IconArrowLeft, IconContrastCircle, IconViewGridOutline } from '../barrels/icons'
 
 const props = defineProps<{
   avatarUrl?: string
@@ -19,6 +22,18 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { isDark, toggleDark } = useTheme()
+const { prefs, update } = usePreferences()
+
+const qualityChoices = computed(() => [
+  { label: t('quality.auto'), value: 'auto' },
+  { label: t('quality.original'), value: 'original' },
+  { label: '2160p', value: '2160p' },
+  { label: '1440p', value: '1440p' },
+  { label: '1080p', value: '1080p' },
+  { label: '720p', value: '720p' },
+  { label: '480p', value: '480p' },
+])
 </script>
 
 <template>
@@ -31,6 +46,35 @@ const { t } = useI18n()
     </NThing>
 
     <NDivider />
+
+    <div class="preference-row">
+      <IconContrastCircle width="18" height="18" />
+      <span>
+        <strong>{{ t('files.dark_mode') }}</strong>
+        <small>{{ t('files.dark_mode_hint') }}</small>
+      </span>
+      <NSwitch
+        :value="isDark"
+        size="small"
+        :aria-label="t('files.dark_mode')"
+        @update:value="toggleDark"
+      />
+    </div>
+
+    <div class="preference-row preference-row--quality">
+      <span>
+        <strong>{{ t('quality.default') }}</strong>
+        <small>{{ t('quality.default_hint') }}</small>
+      </span>
+      <NSelect
+        :value="prefs.playbackQuality"
+        size="small"
+        :options="qualityChoices"
+        :aria-label="t('quality.default')"
+        class="quality-select"
+        @update:value="value => update({ playbackQuality: String(value) })"
+      />
+    </div>
 
     <div class="preference-row">
       <IconViewGridOutline width="18" height="18" />
@@ -84,6 +128,10 @@ const { t } = useI18n()
   border-radius: 11px;
   background: #f7f8fb;
 }
+
+.preference-row--quality { grid-template-columns: minmax(0, 1fr) auto; }
+
+.quality-select { min-width: 92px; }
 
 .preference-row > svg {
   color: #626d82;

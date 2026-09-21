@@ -15,6 +15,7 @@ const defaults: UserPreferences = {
   wallpaperPath: '',
   wallpaperFit: 'cover',
   wallpaperFiles: [],
+  playbackQuality: 'original',
 }
 
 const prefs: UserPreferences = reactive({ ...defaults })

@@ -197,6 +197,80 @@ async function handleDecrypt(request, meta) {
 }
 
 // --- Stream decrypt: progressive decryption returned as ReadableStream ---
+// WebCrypto decrypts are async and off-thread: with a strictly sequential
+// await loop the pipeline is serialized at ~50 MB/s. A small window of
+// in-flight decryptions (emitted strictly in order) hides the per-chunk
+// latency behind the ciphertext stream.
+const DECRYPT_WINDOW = 6
+
+async function readUntil(reader, residual, want) {
+  while (residual.length < want) {
+    const { value, done } = await reader.read()
+    if (done) break
+    residual = concat(residual, value)
+  }
+  return residual
+}
+
+// Pull one encrypted chunk from the reader. Returns the raw encrypted chunk
+// (nonce + ciphertext + tag), or null at end of stream.
+async function pullEncChunk(reader, residual, encChunk) {
+  residual.value = await readUntil(reader, residual.value ?? new Uint8Array(0), encChunk)
+  if (residual.value.length === 0) return null
+  const chunkLen = Math.min(residual.value.length, encChunk)
+  const encData = residual.value.slice(0, chunkLen)
+  residual.value = residual.value.slice(chunkLen)
+  return encData
+}
+
+// Windowed decrypt: keeps DECRYPT_WINDOW WebCrypto decryptions in flight and
+// calls back with plaintext chunks strictly in index order. onChunk(idx,
+// plaintext, chunkLen) returning false stops the pipeline early. Returns when
+// the stream is drained or the caller stops. `residual` must be an object
+// with a .value field (ciphertext accumulator across calls).
+async function decryptStreamWindowed({ reader, residual, dek, encChunk, startChunk, onChunk }) {
+  const inflight = new Map() // idx -> Promise<Uint8Array>
+  let nextIdx = startChunk
+  let readerDone = false
+  try {
+    while (true) {
+      while (!readerDone && inflight.size < DECRYPT_WINDOW) {
+        const encData = await pullEncChunk(reader, residual, encChunk)
+        if (encData === null) {
+          readerDone = true
+          break
+        }
+        const idx = nextIdx++
+        inflight.set(idx, crypto.subtle.decrypt(
+          { name: 'AES-GCM', iv: encData.slice(0, NONCE_SIZE), additionalData: uint64BE(idx) },
+          dek, encData.slice(NONCE_SIZE),
+        ).then(pt => new Uint8Array(pt)))
+      }
+      if (inflight.size === 0) return
+      const idx = startChunk
+      let plain
+      try {
+        plain = await inflight.get(idx)
+      } catch {
+        throw new Error('decrypt failed')
+      }
+      inflight.delete(idx)
+      startChunk++
+      if (!onChunk(idx, plain)) {
+        for (const pending of inflight.values()) {
+          pending.catch(() => {}) // avoid unhandled rejections while unwinding
+        }
+        return
+      }
+    }
+  } catch (err) {
+    for (const pending of inflight.values()) {
+      pending.catch(() => {}) // avoid unhandled rejections while unwinding
+    }
+    throw err
+  }
+}
+
 function streamDecryptResponse(meta) {
   let collectForCache = Boolean(
     meta.contentHash && (!meta.size || meta.size <= MAX_CACHEABLE_BYTES)
@@ -229,32 +303,11 @@ function streamDecryptResponse(meta) {
 
         const chunkSize = new DataView(residual.buffer, residual.byteOffset).getUint32(1, false)
         const encChunk = encChunkSize(chunkSize)
-        residual = residual.slice(HEADER_SIZE)
+        const residualBox = { value: residual.slice(HEADER_SIZE) }
 
-        let chunkIdx = 0
-
-        while (true) {
-          // Accumulate enough data for one encrypted chunk
-          while (residual.length < encChunk) {
-            const { value, done } = await reader.read()
-            if (done) break
-            residual = concat(residual, value)
-          }
-          if (residual.length === 0) break
-
-          const chunkLen = Math.min(residual.length, encChunk)
-          const encData = residual.slice(0, chunkLen)
-          residual = residual.slice(chunkLen)
-
-          const nonce = encData.slice(0, NONCE_SIZE)
-          const ciphertext = encData.slice(NONCE_SIZE)
-          const aad = uint64BE(chunkIdx)
-
-          try {
-            const plaintext = new Uint8Array(await crypto.subtle.decrypt(
-              { name: 'AES-GCM', iv: nonce, additionalData: aad },
-              meta.dek, ciphertext
-            ))
+        await decryptStreamWindowed({
+          reader, residual: residualBox, dek: meta.dek, encChunk, startChunk: 0,
+          onChunk: (idx, plaintext) => {
             controller.enqueue(plaintext)
             totalPlain += plaintext.length
             if (collectForCache) {
@@ -267,14 +320,9 @@ function streamDecryptResponse(meta) {
                 plainParts.length = 0
               }
             }
-            chunkIdx++
-          } catch {
-            controller.error(new Error('decrypt failed'))
-            return
-          }
-
-          if (chunkLen < encChunk && residual.length === 0) break
-        }
+            return true
+          },
+        })
 
         controller.close()
 
@@ -328,69 +376,26 @@ function streamDecryptRange(meta, pStart, pEnd) {
         }
 
         const reader = resp.body.getReader()
-        let residual = new Uint8Array(0)
-        let chunkIdx = startChunk
+        const residualBox = { value: new Uint8Array(0) }
         let emitted = 0
 
-        while (emitted < totalPlain) {
-          // If this chunk is already in the accumulator, serve from memory
-          const cached = acc?.chunks.get(chunkIdx)
-          if (cached) {
-            let sliceStart = 0, sliceEnd = cached.length
-            if (chunkIdx === startChunk) sliceStart = pStart - startChunk * chunkSize
+        await decryptStreamWindowed({
+          reader, residual: residualBox, dek: meta.dek, encChunk, startChunk,
+          onChunk: (idx, plain, chunkLen) => {
+            // Store full decrypted chunk in accumulator
+            if (acc) acc.chunks.set(idx, plain)
+
+            let sliceStart = 0, sliceEnd = plain.length
+            if (idx === startChunk) sliceStart = pStart - startChunk * chunkSize
             const remaining = totalPlain - emitted
             if (sliceEnd - sliceStart > remaining) sliceEnd = sliceStart + remaining
-            controller.enqueue(cached.subarray(sliceStart, sliceEnd))
-            emitted += sliceEnd - sliceStart
-            chunkIdx++
-
-            // Skip the corresponding encrypted chunk in the S3 stream
-            let toSkip = encChunk
-            while (toSkip > 0) {
-              if (residual.length >= toSkip) { residual = residual.slice(toSkip); break }
-              toSkip -= residual.length
-              residual = new Uint8Array(0)
-              const { value, done } = await reader.read()
-              if (done) break
-              residual = value
+            if (sliceEnd > sliceStart) {
+              controller.enqueue(plain.subarray(sliceStart, sliceEnd))
+              emitted += sliceEnd - sliceStart
             }
-            continue
-          }
-
-          while (residual.length < encChunk) {
-            const { value, done } = await reader.read()
-            if (done) break
-            residual = concat(residual, value)
-          }
-          if (residual.length === 0) break
-
-          const chunkLen = Math.min(residual.length, encChunk)
-          const encData = residual.slice(0, chunkLen)
-          residual = residual.slice(chunkLen)
-
-          const nonce = encData.slice(0, NONCE_SIZE)
-          const ciphertext = encData.slice(NONCE_SIZE)
-          const aad = uint64BE(chunkIdx)
-
-          const plain = new Uint8Array(await crypto.subtle.decrypt(
-            { name: 'AES-GCM', iv: nonce, additionalData: aad },
-            meta.dek, ciphertext,
-          ))
-
-          // Store full decrypted chunk in accumulator
-          if (acc) acc.chunks.set(chunkIdx, plain)
-
-          let sliceStart = 0, sliceEnd = plain.length
-          if (chunkIdx === startChunk) sliceStart = pStart - startChunk * chunkSize
-          const remaining = totalPlain - emitted
-          if (sliceEnd - sliceStart > remaining) sliceEnd = sliceStart + remaining
-
-          controller.enqueue(plain.subarray(sliceStart, sliceEnd))
-          emitted += sliceEnd - sliceStart
-          chunkIdx++
-
-          if (chunkLen < encChunk && residual.length === 0) break
-        }
+            return emitted < totalPlain
+          },
+        })
 
         controller.close()
 

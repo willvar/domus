@@ -8,6 +8,7 @@ import {
   NDescriptionsItem,
   NDrawer,
   NDrawerContent,
+  NDropdown,
   NInput,
   NResult,
   NSpin,
@@ -23,12 +24,14 @@ import {
   IconFolderOutline,
   IconInformationOutline,
   IconPencilOutline,
+  IconTune,
 } from '../barrels/icons'
 import { writeEncryptedFile } from '../composables/useCryptoUpload'
 import { registerFileDecrypt, unregisterFileDecrypt } from '../composables/useFileAccess'
 import { useDevice } from '../composables/useDevice'
 import { useI18n } from '../composables/useI18n'
 import { showConfirm } from '../composables/useNativeDialog'
+import { RENDITION_PROFILES, useRenditions } from '../composables/useRenditions'
 import api from '../composables/useApi'
 import { useFileSystemStore } from '../stores/fileSystem'
 import { useAppMessage } from '../ui/feedback'
@@ -72,6 +75,7 @@ const file = ref<FileListItem | null>(null)
 const decryptUrl = ref('')
 const loading = ref(true)
 const error = ref('')
+const videoEl = ref<HTMLVideoElement | null>(null)
 const textContent = ref('')
 const renderedHTML = ref('')
 const csvRows = ref<string[][]>([])
@@ -104,6 +108,32 @@ const name = computed(() => file.value?.name || (typeof route.query.name === 'st
 const viewerType = computed<ViewerType | null>(() => fs.getViewerType(name.value))
 const previewKind = computed(() => viewerType.value || 'unsupported')
 const inTrash = computed(() => isTrashLocation(file.value?.path || ''))
+const isVideoFile = computed(() => viewerType.value === 'video')
+const quality = useRenditions({ decryptUrl: () => decryptUrl.value })
+const qualityOptions = computed(() => {
+  const options: Array<{ label: string; key: string }> = [{ label: t('quality.original'), key: 'original' }]
+  // Profiles above the source height would be pointless upscales, but the
+  // same-height profile stays: a CRF re-encode of the original size is a
+  // useful fallback when the original codec refuses to play.
+  const cap = quality.sourceHeight.value
+  for (const profile of RENDITION_PROFILES) {
+    if (cap > 0 && parseInt(profile, 10) > cap) continue
+    const rendition = quality.renditions.value.find(item => item.profile === profile)
+    let suffix = ''
+    if (rendition) {
+      if (rendition.status === 'ready') suffix = '  ✓'
+      else if (rendition.status === 'running') suffix = `  ${Math.round((rendition.progress || 0) * 100)}%`
+      else if (rendition.status === 'queued') suffix = `  · ${t('quality.pending')}`
+      else if (rendition.status === 'cancelling') suffix = `  · ${t('quality.generating')}`
+      else if (rendition.status === 'failed') suffix = `  · ${t('quality.failed_short')}`
+    }
+    options.push({ label: profile.toUpperCase() + suffix, key: profile })
+  }
+  return options
+})
+const qualityLabel = computed(() => quality.activeQuality.value === 'original'
+  ? t('quality.original')
+  : quality.activeQuality.value.toUpperCase())
 const truncated = computed(() => sourceTruncated.value || viewTruncated.value)
 const isHtmlFile = computed(() => /\.html?$/i.test(name.value))
 const editableText = computed(() => ['text', 'markdown', 'csv'].includes(viewerType.value || ''))
@@ -172,11 +202,16 @@ onMounted(async () => {
     error.value = t('files.preview_retry_hint')
   } finally {
     loading.value = false
+    if (isVideoFile.value && decryptUrl.value && !error.value) {
+      await nextTick()
+      if (videoEl.value && file.value) void quality.attach(videoEl.value, file.value.path)
+    }
   }
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', preventDirtyUnload)
+  quality.detach()
   if (scrollSyncReleaseFrame) cancelAnimationFrame(scrollSyncReleaseFrame)
   unregisterFileDecrypt(decryptUrl.value)
   if (loadedFont) document.fonts.delete(loadedFont)
@@ -529,6 +564,10 @@ function formatSize(bytes: number): string {
   const value = bytes / (1024 ** index)
   return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`
 }
+
+function onQualitySelect(key: string | number): void {
+  void quality.selectQuality(String(key), { savePreference: true })
+}
 </script>
 
 <template>
@@ -560,6 +599,19 @@ function formatSize(bytes: number): string {
           </NButton>
         </template>
         <template v-else>
+          <NDropdown
+            v-if="isVideoFile && !inTrash"
+            trigger="click"
+            placement="bottom-end"
+            :options="qualityOptions"
+            data-testid="quality-dropdown"
+            @select="onQualitySelect"
+            @update:show="show => show && void quality.refresh()"
+          >
+            <NButton data-testid="quality-menu">
+              <template #icon><IconTune /></template><span>{{ qualityLabel }}</span>
+            </NButton>
+          </NDropdown>
           <NButton v-if="canEdit" :loading="preparingEdit" data-testid="preview-edit" @click="startEdit">
             <template #icon><IconPencilOutline /></template><span>{{ t('preview.edit') }}</span>
           </NButton>
@@ -663,7 +715,7 @@ function formatSize(bytes: number): string {
           </div>
         </div>
         <img v-else-if="viewerType === 'image'" :src="decryptUrl" class="preview-image" :alt="name" />
-        <video v-else-if="viewerType === 'video'" :src="decryptUrl" class="preview-media" controls playsinline preload="metadata" />
+        <video v-else-if="isVideoFile" ref="videoEl" class="preview-media" controls playsinline preload="metadata" />
         <div v-else-if="viewerType === 'audio'" class="audio-card">
           <div class="audio-art"><span>♪</span></div>
           <strong>{{ name }}</strong>
@@ -745,9 +797,12 @@ function formatSize(bytes: number): string {
   --muted: #626d82;
   --line: #e3e7ef;
   --accent: #4f5fe7;
+  --canvas: #eef1f6;
+  --surface: #ffffff;
+  --header-bg: rgba(255, 255, 255, .92);
   min-height: 100dvh;
   color: var(--ink);
-  background: #eef1f6;
+  background: var(--canvas);
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   user-select: none;
 }
@@ -761,8 +816,8 @@ function formatSize(bytes: number): string {
   align-items: center;
   gap: 14px;
   padding: 0 22px;
-  border-bottom: 1px solid rgba(224, 227, 235, .9);
-  background: rgba(255, 255, 255, .92);
+  border-bottom: 1px solid var(--line);
+  background: var(--header-bg);
   backdrop-filter: blur(22px);
 }
 .back-button { width: 42px; height: 42px; }
@@ -778,7 +833,8 @@ function formatSize(bytes: number): string {
 .preview-canvas--image, .preview-canvas--video { background: #151a24; }
 .preview-image, .preview-media { display: block; max-width: 100%; max-height: calc(100dvh - 128px); object-fit: contain; box-shadow: 0 24px 70px rgb(0 0 0 / 24%); }
 .preview-media { width: min(1120px, 100%); }
-.preview-pdf { width: min(1120px, 100%); height: calc(100dvh - 128px); border: 0; border-radius: 12px; background: #fff; box-shadow: 0 18px 58px rgb(30 38 58 / 15%); }
+.preview-media { width: min(1120px, 100%); }
+.preview-pdf { width: min(1120px, 100%); height: calc(100dvh - 128px); border: 0; border-radius: 12px; background: var(--domus-surface); box-shadow: 0 18px 58px rgb(30 38 58 / 15%); }
 .preview-state { display: flex; min-height: 280px; align-items: center; justify-content: center; flex-direction: column; gap: 9px; color: var(--muted); text-align: center; }
 .preview-state > svg { width: 38px; height: 38px; color: var(--muted); }
 .preview-state strong { color: var(--ink); font-size: 16px; }
@@ -793,8 +849,8 @@ function formatSize(bytes: number): string {
   flex-direction: column;
   border: 1px solid var(--line);
   border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 15px 45px rgb(30 38 58 / 10%);
+  background: var(--domus-surface);
+  box-shadow: var(--domus-shadow-md);
 }
 .edit-toolbar {
   display: flex;
@@ -804,7 +860,7 @@ function formatSize(bytes: number): string {
   gap: 14px;
   padding: 7px 10px;
   border-bottom: 1px solid var(--line);
-  background: #f8f9fb;
+  background: var(--domus-surface-2);
 }
 .edit-shortcut { color: var(--muted); font-size: 11px; }
 .edit-panes {
@@ -822,7 +878,7 @@ function formatSize(bytes: number): string {
   min-height: 0;
   overflow: auto;
   border: 0;
-  background: #fff;
+  background: var(--domus-surface);
   user-select: text;
 }
 .edit-render { padding: clamp(24px, 4vw, 58px); font-size: 14px; line-height: 1.78; }
@@ -835,27 +891,27 @@ function formatSize(bytes: number): string {
   min-height: calc(100dvh - 136px);
   margin: auto;
   border-radius: 16px;
-  color: #202a3d;
-  background: #fff;
-  box-shadow: 0 15px 45px rgba(30, 38, 58, .1);
+  color: var(--ink);
+  background: var(--domus-surface);
+  box-shadow: var(--domus-shadow-md);
   user-select: text;
 }
 .document-preview { width: min(860px, 100%); padding: clamp(28px, 5vw, 72px); font-size: 15px; line-height: 1.78; }
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { margin: 1.2em 0 .5em; line-height: 1.2; }
 .markdown-body :deep(h1:first-child), .markdown-body :deep(h2:first-child) { margin-top: 0; }
-.markdown-body :deep(pre) { overflow: auto; padding: 14px; border-radius: 8px; background: #f4f5f8; }
-.markdown-body :deep(code) { padding: .12em .3em; border-radius: 4px; background: #f0f1f5; }
+.markdown-body :deep(pre) { overflow: auto; padding: 14px; border-radius: 8px; background: var(--domus-surface-2); }
+.markdown-body :deep(code) { padding: .12em .3em; border-radius: 4px; background: var(--domus-surface-2); }
 .markdown-body :deep(img) { max-width: 100%; }
 .markdown-body :deep(table) { width: 100%; border-collapse: collapse; }
 .markdown-body :deep(th), .markdown-body :deep(td) { padding: 8px 10px; border: 1px solid var(--line); text-align: left; }
 .text-preview { padding: 26px; overflow: auto; font-family: "SFMono-Regular", Consolas, monospace; font-size: 13px; line-height: 1.68; white-space: pre-wrap; word-break: break-word; }
 .table-preview { overflow: auto; }
 .table-preview table { width: 100%; min-width: 640px; border-collapse: collapse; font-size: 12px; }
-.table-preview th, .table-preview td { padding: 12px 14px; border-right: 1px solid #edf0f4; border-bottom: 1px solid #edf0f4; text-align: left; }
-.table-preview th { position: sticky; top: 0; z-index: 2; background: #f7f8fa; font-weight: 750; }
+.table-preview th, .table-preview td { padding: 12px 14px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: left; }
+.table-preview th { position: sticky; top: 0; z-index: 2; background: var(--domus-surface-2); font-weight: 750; }
 .notebook-preview { display: flex; flex-direction: column; gap: 8px; padding: 22px; }
-.notebook-preview article { position: relative; padding: 14px; border-left: 3px solid #7a8ae9; border-radius: 8px; background: #f7f8fb; }
-.notebook-preview article.cell-markdown { border-left-color: #54a880; background: #f8fbf9; }
+.notebook-preview article { position: relative; padding: 14px; border-left: 3px solid #7a8ae9; border-radius: 8px; background: var(--domus-surface-2); }
+.notebook-preview article.cell-markdown { border-left-color: #54a880; background: var(--domus-surface-2); }
 .notebook-preview article > span { color: var(--muted); font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .notebook-preview pre { margin: 8px 0 0; overflow: auto; font-size: 12px; line-height: 1.6; white-space: pre-wrap; }
 .archive-preview { min-height: auto; padding: 10px; }
@@ -866,7 +922,7 @@ function formatSize(bytes: number): string {
 .archive-file-dot { width: 6px; height: 6px; margin-left: 5px; border-radius: 50%; background: #a4abbb; }
 .font-preview { display: flex; flex-direction: column; gap: 24px; padding: clamp(22px, 5vw, 60px); overflow: hidden; }
 .font-preview > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.audio-card { display: flex; width: min(500px, 100%); align-items: center; flex-direction: column; gap: 20px; padding: 36px; border-radius: 22px; background: #fff; box-shadow: 0 20px 58px rgb(30 38 58 / 14%); }
+.audio-card { display: flex; width: min(500px, 100%); align-items: center; flex-direction: column; gap: 20px; padding: 36px; border-radius: 22px; background: var(--domus-surface); box-shadow: 0 20px 58px rgb(30 38 58 / 14%); }
 .audio-art { display: grid; width: 170px; height: 170px; place-items: center; border-radius: 22px; color: #fff; background: linear-gradient(145deg, #697af0, #3d4dc0); font-size: 64px; }
 .audio-card strong { max-width: 100%; overflow: hidden; font-size: 16px; text-overflow: ellipsis; white-space: nowrap; }
 .audio-card audio { width: 100%; }
@@ -879,6 +935,7 @@ function formatSize(bytes: number): string {
   .preview-header { height: 64px; padding: max(8px, env(safe-area-inset-top)) 12px 8px; }
   .preview-actions button { width: 42px; height: 42px; padding: 0; }
   .preview-actions button span { display: none; }
+  .preview-actions button :deep(.n-button__icon) { margin-right: 0; }
   .preview-actions button.danger { display: none; }
   .preview-canvas { inset: 64px 0 0; padding: 10px; }
   .preview-canvas--editing { padding: 8px; }
