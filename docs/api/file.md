@@ -438,7 +438,27 @@ Content-Type: application/json
 绑定；覆盖、永久删除会回收旧缩略图；复制不共享缩略图。
 
 文件界面的“显示缩略图”是设备本地开关，默认关闭。它只控制列表和详情是否请求并
-渲染已有缩略图，不控制上传时生成。服务端不运行 preview worker 或转码任务。
+渲染已有缩略图，不控制上传时生成。
+
+## 服务端转码（播放画质）
+
+可选的 `domus worker` 为视频文件生成播放画质档（`1080p`/`720p`/`480p`）。转码产物
+是绑定源 inode/generation 的隐藏派生文件（`/.domus/renditions/…`），不出现在文件
+列表；下载/分享始终走原画。
+
+- `POST /file/transcode`：`{"path":"…","profile":"720p"}` 提交转码任务（队列化，
+  返回 `{"task_id":…,"profile":…,"status":"queued"}`）。同一 source generation 的
+  同档位若已 ready/进行中返回 409（`rendition_ready`/`rendition_in_progress`）。
+- `GET /file/renditions?path=…`：画质清单。每档含 `status`、`progress`；ready/running
+  的档附带可播放清单（`init`/`segments`，含 presigned URL 与明文 DEK，走浏览器本地
+  解密，服务端零正文过路）。
+- 取消走既有 `DELETE /task/:id`：queued 直接取消；running 置 cancelling，worker 在
+  分片间检测并中止。
+- 播放器画质菜单（原画 + 档位）按清单驱动；生成中的档位可“边转边播”（fMP4 分片
+  增量发布，seek 限制在已生成区间，完成后为完整 VOD）。账户菜单提供“默认画质”。
+
+源文件被覆盖（新 generation）、永久删除、用户注销时，rendition 级联清理；worker 崩溃
+残留的 running 任务在下次启动时自动 requeue。
 
 ## 已移除接口
 
@@ -446,7 +466,6 @@ Content-Type: application/json
 
 - `PUT /file/content/diff`；
 - `PUT /file/shared/:share_id/content/diff`；
-- `POST /file/transcode`；
 - `/file/share`、`/file/shares`、`/file/shared` 及其子路由；
 - 任何把明文、密文或 base64 文件正文提交给 Domus HTTP 的文件接口。
 

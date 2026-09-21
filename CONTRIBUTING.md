@@ -40,22 +40,62 @@ deploy/systemd/              Web 与可选 DOFS FUSE unit
 
 ## 开发环境
 
-需要 Go 1.26+、Node.js 22.13+、PostgreSQL 和一个带唯一 prefix 的 S3-compatible bucket。运行 Domus
-文件管理产品不需要 Docker、FUSE 或 `user_allow_other`；只有测试/使用可选 Linux FUSE
-挂载时才需要 FUSE 3。
+需要 Go 1.26+、Node.js 22.13+、PostgreSQL。默认开发栈的本地对象存储需要一个可用的
+Docker；Domus 本身（含生产部署）不需要 Docker、FUSE 或 `user_allow_other`，只有
+测试/使用可选 Linux FUSE 挂载时才需要 FUSE 3。
 
 ```bash
-cp config.example.yaml config.yaml
+cp config.local.example.yaml config.local.yaml
+createdb -h localhost -U postgres domus_dev
 cd frontend && npm install && cd ..
 make dev
 ```
 
-在 `config.yaml` 中填写 `oss.*` 与 `database.*`。SMTP 只用于邮箱验证码。
-`session_secret`、`encryption_secret` 首次启动可自动生成，生产环境必须持久备份。
-root 初始密码优先通过 `server.root_bootstrap_password_file` 提供。
+`config.local.yaml` 的 `oss.*` 已指向本地 SeaweedFS，无需真实云凭据。SMTP 只用于
+邮箱验证码。`session_secret`、`encryption_secret` 首次启动可自动生成，生产环境必须
+持久备份。root 初始密码优先通过 `server.root_bootstrap_password_file` 提供。
 
 `make dev` 同时启动 Domus Web 和 Vite，默认入口为 `http://127.0.0.1:8089`，API 默认
-为 `http://127.0.0.1:8088`。后端状态隔离在 `tmp/dev`，不构建镜像或启动容器。
+为 `http://127.0.0.1:8088`。后端状态隔离在 `tmp/dev`。
+
+### 对象存储与 worker
+
+`make dev` 默认带起本地 SeaweedFS，浏览器加密直传、DOFS 解密挂载、worker 派生文件
+全部在本机闭环：
+
+```bash
+cp config.local.example.yaml config.local.yaml   # 一次性
+createdb -h localhost -U postgres domus_dev      # 一次性
+make dev                                         # 本地 S3(8333) + Web(8088) + Vite(8089)
+make s3-stop                                     # 停本地 S3（数据保留在 tmp/local-s3）
+make s3-reset                                    # 停本地 S3 并删除数据（干净重建）
+```
+
+本地对象数据默认落盘在 `tmp/local-s3`（`LOCAL_S3_DATA_DIR` 可覆盖），可以承载大文件。
+单文件没有产品层大小上限：分片大小随文件自适应，受 multipart 协议约束（10000 片，
+上限约 48 TB 级）。
+
+需要云 OSS 时直接改 `config.local.yaml` 的 `oss.*`（或换成 `config.example.yaml` 的
+内容）；`make dev` 检测到端点不是 loopback 会自动跳过本地 S3。切换对象存储后
+`tmp/dev` 里的旧条目会失效，删掉重建即可。loopback 端点自动使用明文 HTTP；生产
+非 loopback 端点始终要求 HTTPS。
+
+`make dev` 已把 dofs serve 和 worker 一起带起（backend 先生成运行时配置，
+dofs serve 挂 FUSE，worker 每 5 秒扫一次队列，随 `Ctrl-C` 一并退出），日常开发
+无需手动起它们。需要单独驱动时：
+
+```bash
+go build -o tmp/dev/domus-bin .
+./tmp/dev/domus-bin dofs serve -c tmp/dev/config.yaml &
+./tmp/dev/domus-bin worker -c tmp/dev/config.yaml --once          # 单轮（缩略图 + 转码）
+./tmp/dev/domus-bin worker -c tmp/dev/config.yaml --interval 5    # 常驻队列
+```
+
+worker 生成的缩略图会写回 `/.domus/thumbnails/` 并在产品库中按 inode/generation
+绑定，浏览器开启“显示缩略图”后刷新即可解密显示。视频转码产物写回
+`/.domus/renditions/…`：画质清单由 `GET /file/renditions` 提供，播放器画质菜单支持
+“边转边播”（生成中的档位按分片增量缓冲，完成后为完整 VOD）。生产部署用 systemd
+承载同样的进程组合（`domus-dofs.service` 加 worker 单元）。
 
 ## 验证
 

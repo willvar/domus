@@ -1,18 +1,28 @@
+# Local development variant of config.example.yaml for `make dev-local`.
+# Copy to config.local.yaml (git-ignored). Credentials here only reach the
+# disposable SeaweedFS container started by scripts/local-s3.sh.
+
 oss:
   # Server endpoint: used by the server for HeadObject, Delete, etc.
   # Falls back to client_upload_endpoint if not set.
-  server_endpoint: ""
+  server_endpoint: "127.0.0.1:8333"
   # Client upload endpoint (required): public S3-compatible endpoint for browser direct upload via presigned URL.
   #   Aliyun OSS:  s3.oss-cn-hangzhou.aliyuncs.com
   #   AWS S3:      s3.us-east-1.amazonaws.com
   #   MinIO:       minio.example.com
-  client_upload_endpoint: "s3.oss-cn-hangzhou.aliyuncs.com"
+  # Set this to your LAN IP (and enable client_endpoint_insecure below) to
+  # open/upload files from other devices (phone, another machine) on the LAN.
+  client_upload_endpoint: "127.0.0.1:8333"
+  # Dev/LAN only: serve client presigned URLs over plain http for non-loopback
+  # hosts. The local object store carries no certificate. Never enable in
+  # production (production endpoints are always HTTPS).
+  # client_endpoint_insecure: true
   # Client download endpoint: browser preview/download. CDN domain (with private bucket origin-pull) or public endpoint.
   client_download_endpoint: ""
-  access_key_id: ""
-  access_key_secret: ""
-  bucket: ""
-  region: "cn-hangzhou"
+  access_key_id: "domus-dev-access"
+  access_key_secret: "domus-dev-secret"
+  bucket: "domus-dev"
+  region: "us-east-1"
   # Optional instance boundary inside a shared bucket. Do not change this after
   # storing objects without first migrating them: changing the value switches
   # namespaces and does not move existing objects automatically.
@@ -20,9 +30,9 @@ oss:
   max_presign_batch: 100  # max presigned URLs returned per presign request
 
 server:
-  port: 8080
+  port: 8088
   pid_file: "domus.pid"
-  cors_origins: ""  # optional, comma-separated origins for CORS when frontend and backend use different origins
+  cors_origins: "http://localhost:8089,http://127.0.0.1:8089"  # optional, comma-separated origins for CORS when frontend and backend use different origins
   # example: "http://localhost:5173,https://app.example.com"
   # session_secret and encryption_secret are auto-generated on first startup
   # first startup root password: prefer a 0600 secret file; fallback env is DOMUS_ROOT_BOOTSTRAP_PASSWORD
@@ -84,7 +94,7 @@ database:
   port: 5432
   user: "postgres"
   password: ""
-  dbname: "domus"
+  dbname: "domus_dev"
   sslmode: "disable"
 
 # SMTP (optional, required for email verification)

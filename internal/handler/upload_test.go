@@ -83,7 +83,6 @@ func TestRetiredProductCapabilitiesAreNotRouted(t *testing.T) {
 		route  string
 		body   string
 	}{
-		{method: http.MethodPost, route: "/file/transcode", body: `{}`},
 		{method: http.MethodPost, route: "/file/share", body: `{}`},
 		{method: http.MethodGet, route: "/file/shared"},
 		{method: http.MethodGet, route: "/file/shares"},
@@ -206,4 +205,44 @@ func TestAuthoritativeCompleteParts(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUploadPartSizeScalesWithFileSize(t *testing.T) {
+	alignment := int64(auth.NonceSize + auth.DefaultChunkSize + auth.TagSize)
+
+	t.Run("small files keep the direct part size", func(t *testing.T) {
+		partSize, err := uploadPartSizeFor(8 * 1024 * 1024 * 1024)
+		if err != nil || partSize != directUploadPartSize {
+			t.Fatalf("partSize = %d, err = %v", partSize, err)
+		}
+	})
+
+	t.Run("large files scale to stay under the part ceiling", func(t *testing.T) {
+		sizes := []int64{
+			100 * 1024 * 1024 * 1024,
+			1024 * 1024 * 1024 * 1024,
+			20 * 1024 * 1024 * 1024 * 1024,
+		}
+		for _, size := range sizes {
+			partSize, err := uploadPartSizeFor(size)
+			if err != nil {
+				t.Fatalf("size %d: %v", size, err)
+			}
+			if partSize%alignment != 0 {
+				t.Fatalf("size %d: part size %d is not chunk aligned", size, partSize)
+			}
+			if parts := encryptedMultipartPartCount(size, partSize); parts > maxMultipartParts {
+				t.Fatalf("size %d: %d parts exceed the ceiling", size, parts)
+			}
+			if partSize > s3MaximumPartSize {
+				t.Fatalf("size %d: part size %d exceeds the S3 maximum", size, partSize)
+			}
+		}
+	})
+
+	t.Run("objects beyond the protocol ceiling are rejected", func(t *testing.T) {
+		if _, err := uploadPartSizeFor(60 * 1024 * 1024 * 1024 * 1024); err == nil {
+			t.Fatal("expected an error for sizes beyond the multipart ceiling")
+		}
+	})
 }

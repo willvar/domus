@@ -32,6 +32,7 @@ PrivateTmp=yes
 PrivateDevices=yes
 PrivateMounts=yes
 ProtectSystem=strict
+ReadWritePaths=/etc/domus
 ProtectHome=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes

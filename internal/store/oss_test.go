@@ -77,3 +77,21 @@ func TestOSSClientEmptyPrefixPreservesLegacyKeys(t *testing.T) {
 		t.Fatalf("physicalListPrefix() = %q, %v", listPrefix, err)
 	}
 }
+
+func TestOSSClientFromConfigUsesPlainHTTPForLoopbackEndpoints(t *testing.T) {
+	fileStore, err := NewOSSClientFromConfig(config.OSSConfig{
+		ServerEndpoint: "127.0.0.1:8333", ClientUploadEndpoint: "127.0.0.1:8333",
+		AccessKeyID: "access", AccessKeySecret: "secret",
+		Bucket: "domus-dev", Region: "us-east-1",
+	})
+	if err != nil {
+		t.Fatalf("NewOSSClientFromConfig() error = %v", err)
+	}
+	putURL, err := fileStore.(*OSSClient).PresignedPutObject(".dofs/v1/object", time.Minute)
+	if err != nil {
+		t.Fatalf("PresignedPutObject() error = %v", err)
+	}
+	if !strings.HasPrefix(putURL, "http://127.0.0.1:8333/") {
+		t.Fatalf("presigned PUT URL = %q, want local HTTP endpoint", putURL)
+	}
+}

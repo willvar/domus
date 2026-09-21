@@ -28,9 +28,6 @@ func setupTestApp(t *testing.T) (*fiber.App, *model.Repos, func(username, passwo
 			SessionSecret:    "test-secret-key",
 			EncryptionSecret: "0000000000000000000000000000000000000000000000000000000000000000",
 		},
-		Upload: config.UploadConfig{
-			MaxFileSize: 10 * 1024 * 1024 * 1024,
-		},
 	}
 
 	serverKey, _ := auth.ServerKeyFromSecret(cfg.Server.EncryptionSecret)

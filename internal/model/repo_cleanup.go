@@ -17,7 +17,7 @@ func (r *gormUserCleanupRepo) DeleteUserAndRelatedData(userID string) error {
 		if err := tx.Where("owner_id = ? OR target_user_id = ?", userID, userID).Delete(&Share{}).Error; err != nil {
 			return err
 		}
-		for _, table := range []string{"domus_file_uploads", "domus_file_metadata"} {
+		for _, table := range []string{"domus_file_uploads", "domus_file_metadata", "domus_file_renditions"} {
 			if tx.Migrator().HasTable(table) {
 				if err := tx.Exec("DELETE FROM "+table+" WHERE user_id = ?", userID).Error; err != nil {
 					return err

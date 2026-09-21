@@ -20,7 +20,7 @@ func (h *Handler) handleListTasks(c *fiber.Ctx) error {
 	}
 	visibleTasks := tasks[:0]
 	for _, task := range tasks {
-		if task.Type == "upload" {
+		if task.Type == "upload" || task.Type == "transcode" {
 			visibleTasks = append(visibleTasks, task)
 		}
 	}
@@ -47,6 +47,22 @@ func (h *Handler) cancelTask(session *model.Session, taskID string) error {
 	}
 	if task.UserID != session.UserID && session.Role != "root" {
 		return fiber.NewError(fiber.StatusForbidden, "access_denied")
+	}
+	if task.Type == "transcode" {
+		switch task.Status {
+		case "queued":
+			// Nothing published yet: drop the reservation row outright.
+			if h.FileSystem != nil {
+				_ = h.FileSystem.DeleteRendition(task.UserID, uint64(task.SourceInode), task.Profile)
+			}
+			return h.Repos.Tasks.UpdateStatus(taskID, "cancelled")
+		case "running":
+			// The worker observes the flag between segment publishes.
+			_ = h.FileSystem.SetRenditionCancelling(task.UserID, task.TaskID)
+			return h.Repos.Tasks.UpdateStatus(taskID, "cancelling")
+		default:
+			return nil // already terminal
+		}
 	}
 	if task.Type == "upload" {
 		files, _ := h.Repos.Files.ListActiveUploads(task.UserID)

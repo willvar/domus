@@ -12,9 +12,12 @@ type TaskUpdateFunc func(userID, taskID, taskType, name, status, clientInstanceI
 // TaskRepo defines task data access operations.
 type TaskRepo interface {
 	Create(userID, taskID, taskType, name string) error
+	CreateQueued(userID, taskID, taskType, name string, sourceInode int64, sourcePath, profile string) error
 	Get(taskID string) (*Task, error)
 	UpdateProgress(taskID string, progress float64, phase string) error
 	UpdateStatus(taskID, status string) error
+	ClaimNextTranscode(userID string) (*Task, error)
+	RequeueStaleTranscodes() ([]Task, error)
 	ListRecent(userID string) ([]Task, error)
 	DeleteCompleted(userID string) error
 	Delete(taskID string) error
@@ -33,6 +36,57 @@ func (r *gormTaskRepo) Create(userID, taskID, taskType, name string) error {
 		Status: "running",
 		Name:   name,
 	}).Error
+}
+
+func (r *gormTaskRepo) CreateQueued(userID, taskID, taskType, name string, sourceInode int64, sourcePath, profile string) error {
+	return r.db.Create(&Task{
+		UserID:      userID,
+		TaskID:      taskID,
+		Type:        taskType,
+		Status:      "queued",
+		Name:        name,
+		SourceInode: sourceInode,
+		SourcePath:  sourcePath,
+		Profile:     profile,
+	}).Error
+}
+
+// ClaimNextTranscode atomically claims the oldest queued transcode task of a
+// user by flipping it to running. An empty userID claims across all users.
+// FOR UPDATE SKIP LOCKED keeps multiple worker processes from claiming the
+// same job.
+func (r *gormTaskRepo) ClaimNextTranscode(userID string) (*Task, error) {
+	scope := r.db
+	if userID != "" {
+		scope = scope.Where("user_id = ?", userID)
+	}
+	var claimed Task
+	err := scope.Raw(`UPDATE tasks SET status = 'running', updated_at = now()
+		WHERE id = (SELECT id FROM tasks WHERE type = 'transcode' AND status = 'queued'
+			ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED)
+		RETURNING *`).Scan(&claimed).Error
+	if err != nil {
+		return nil, err
+	}
+	if claimed.TaskID == "" {
+		return nil, gorm.ErrRecordNotFound
+	}
+	return &claimed, nil
+}
+
+// RequeueStaleTranscodes resets transcode tasks stuck in running/cancelling —
+// the residue of a worker process that died mid-job — back to queued so a
+// restarted worker claims them again. Returns the affected tasks so callers
+// can clean up matching rendition rows.
+func (r *gormTaskRepo) RequeueStaleTranscodes() ([]Task, error) {
+	var tasks []Task
+	err := r.db.Raw(`UPDATE tasks SET status = 'queued', progress = 0, updated_at = now()
+		WHERE type = 'transcode' AND status IN ('running', 'cancelling')
+		RETURNING *`).Scan(&tasks).Error
+	if err != nil {
+		return nil, err
+	}
+	return tasks, nil
 }
 
 func (r *gormTaskRepo) Get(taskID string) (*Task, error) {

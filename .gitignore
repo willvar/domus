@@ -1,6 +1,7 @@
 config.json
 config.yaml
 config.dev.yaml
+config.local.yaml
 tmp/
 dist/
 domus.db

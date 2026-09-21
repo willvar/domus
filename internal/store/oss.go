@@ -195,15 +195,16 @@ func NewOSSClient(options OSSOptions) (*OSSClient, error) {
 }
 
 // NewOSSClientFromConfig maps Domus' host-only endpoint configuration onto the
-// HTTPS-only production transport contract before invoking NewOSSClient.
+// production HTTPS transport. Loopback hosts (local development object stores)
+// are the only endpoints reached over plain HTTP.
 func NewOSSClientFromConfig(cfg config.OSSConfig) (FileStore, error) {
 	downloadBaseURL := ""
 	if strings.TrimSpace(cfg.ClientDownloadEndpoint) != "" {
-		downloadBaseURL = "https://" + strings.TrimSpace(cfg.ClientDownloadEndpoint)
+		downloadBaseURL = config.ClientEndpointURL(cfg.ClientDownloadEndpoint, cfg.ClientEndpointInsecure)
 	}
 	return NewOSSClient(OSSOptions{
-		ServerEndpointURL:       "https://" + strings.TrimSpace(cfg.ServerEndpoint),
-		ClientUploadEndpointURL: "https://" + strings.TrimSpace(cfg.ClientUploadEndpoint),
+		ServerEndpointURL:       config.EndpointURL(cfg.ServerEndpoint),
+		ClientUploadEndpointURL: config.ClientEndpointURL(cfg.ClientUploadEndpoint, cfg.ClientEndpointInsecure),
 		ClientDownloadBaseURL:   downloadBaseURL,
 		AccessKeyID:             cfg.AccessKeyID,
 		AccessKeySecret:         cfg.AccessKeySecret,

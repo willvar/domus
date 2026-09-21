@@ -91,6 +91,15 @@ func (h *Handler) deleteFileStorage(userID string, record *model.FileRecord) err
 	return h.cleanupThumbnailStorage(userID, record)
 }
 
+// cleanupRenditions removes server-transcoded derivatives bound to a source
+// inode. Best-effort: a failing cleanup must not block the file deletion.
+func (h *Handler) cleanupRenditions(userID string, inode int64) {
+	if h.FileSystem == nil || inode <= 0 {
+		return
+	}
+	_ = h.FileSystem.DeleteRenditionsBySource(userID, uint64(inode))
+}
+
 func (h *Handler) revokeFileShares(userID string, inode int64) {
 	shares, _ := h.Repos.Shares.ListOwnedByUser(userID)
 	_ = h.Repos.Shares.DeleteByInode(userID, inode)
@@ -126,6 +135,7 @@ func (h *Handler) permanentlyDeletePathWithProgress(userID, resolvedPath string,
 			if err := h.cleanupThumbnailStorage(userID, &records[i]); err != nil {
 				return err
 			}
+			h.cleanupRenditions(userID, records[i].ID)
 			if progress != nil {
 				progress(i+1, len(records), records[i].Path)
 			}
@@ -158,6 +168,7 @@ func (h *Handler) permanentlyDeletePathWithProgress(userID, resolvedPath string,
 	if err := h.Repos.Files.Delete(userID, resolvedPath); err != nil {
 		return err
 	}
+	h.cleanupRenditions(userID, rec.ID)
 	h.reclaimNamespaceBestEffort(userID)
 	h.revokeFileShares(userID, rec.ID)
 	return nil

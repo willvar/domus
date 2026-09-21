@@ -5,11 +5,12 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+
+	"github.com/willvar/escrow"
 )
 
 const (
@@ -20,72 +21,28 @@ const (
 )
 
 // DEK size for per-file data encryption keys.
-const DEKSize = 32 // AES-256
+const DEKSize = escrow.DEKSize
 
 // GenerateDEK generates a random 32-byte Data Encryption Key.
 func GenerateDEK() ([]byte, error) {
-	dek := make([]byte, DEKSize)
-	if _, err := rand.Read(dek); err != nil {
-		return nil, fmt.Errorf("generate DEK: %w", err)
-	}
-	return dek, nil
+	return escrow.GenerateDEK()
 }
 
 // WrapDEK encrypts a DEK with the user's KEK using AES-GCM.
 // Output format: [12-byte nonce][ciphertext+16-byte tag] = 60 bytes for a 32-byte DEK.
 func WrapDEK(kek, dek []byte) ([]byte, error) {
-	block, err := aes.NewCipher(kek)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	nonce := make([]byte, gcm.NonceSize())
-	if _, err := rand.Read(nonce); err != nil {
-		return nil, fmt.Errorf("generate nonce: %w", err)
-	}
-
-	ciphertext := gcm.Seal(nil, nonce, dek, nil)
-	return append(nonce, ciphertext...), nil
+	return escrow.WrapDEK(kek, dek)
 }
 
 // UnwrapDEK decrypts a wrapped DEK using the user's KEK.
 // Input must be the output of WrapDEK: [12-byte nonce][ciphertext+tag].
 func UnwrapDEK(kek, wrappedDEK []byte) ([]byte, error) {
-	block, err := aes.NewCipher(kek)
-	if err != nil {
-		return nil, err
-	}
-	gcm, err := cipher.NewGCM(block)
-	if err != nil {
-		return nil, err
-	}
-
-	nonceSize := gcm.NonceSize()
-	if len(wrappedDEK) < nonceSize+gcm.Overhead() {
-		return nil, fmt.Errorf("wrapped DEK too short")
-	}
-
-	nonce := wrappedDEK[:nonceSize]
-	ciphertext := wrappedDEK[nonceSize:]
-
-	dek, err := gcm.Open(nil, nonce, ciphertext, nil)
-	if err != nil {
-		return nil, fmt.Errorf("unwrap DEK: %w", err)
-	}
-	return dek, nil
+	return escrow.UnwrapDEK(kek, wrappedDEK)
 }
 
 // GenerateKEK generates a random 32-byte Key Encryption Key for a user.
 func GenerateKEK() ([]byte, error) {
-	kek := make([]byte, DEKSize)
-	if _, err := rand.Read(kek); err != nil {
-		return nil, fmt.Errorf("generate KEK: %w", err)
-	}
-	return kek, nil
+	return escrow.GenerateDEK()
 }
 
 // WrapKEK encrypts a user KEK with the server master key using AES-GCM.
@@ -100,14 +57,7 @@ func UnwrapKEK(serverKey, wrappedKEK []byte) ([]byte, error) {
 
 // ServerKeyFromSecret decodes the hex-encoded encryption secret into a 32-byte server key.
 func ServerKeyFromSecret(encryptionSecret string) ([]byte, error) {
-	raw, err := hex.DecodeString(encryptionSecret)
-	if err != nil {
-		return nil, fmt.Errorf("decode server key: %w", err)
-	}
-	if len(raw) < 32 {
-		return nil, fmt.Errorf("server key too short: need 32 bytes, got %d", len(raw))
-	}
-	return raw[:32], nil
+	return escrow.ServerKeyFromSecret(encryptionSecret)
 }
 
 // EncryptStream encrypts data from r and writes ciphertext to w using chunked AES-256-GCM.

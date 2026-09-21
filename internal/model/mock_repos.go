@@ -424,9 +424,12 @@ func (m *MockSessionRepo) SetPopulateKEK(fn func(*Session)) {
 
 type MockTaskRepo struct {
 	CreateFn          func(userID, taskID, taskType, name string) error
+	CreateQueuedFn    func(userID, taskID, taskType, name string, sourceInode int64, sourcePath, profile string) error
 	GetFn             func(taskID string) (*Task, error)
 	UpdateProgressFn  func(taskID string, progress float64, phase string) error
 	UpdateStatusFn    func(taskID, status string) error
+	ClaimNextTranscodeFn func(userID string) (*Task, error)
+	RequeueStaleTranscodesFn func() ([]Task, error)
 	ListRecentFn      func(userID string) ([]Task, error)
 	DeleteCompletedFn func(userID string) error
 	DeleteFn          func(taskID string) error
@@ -437,6 +440,24 @@ func (m *MockTaskRepo) Create(userID, taskID, taskType, name string) error {
 		return m.CreateFn(userID, taskID, taskType, name)
 	}
 	return nil
+}
+func (m *MockTaskRepo) CreateQueued(userID, taskID, taskType, name string, sourceInode int64, sourcePath, profile string) error {
+	if m.CreateQueuedFn != nil {
+		return m.CreateQueuedFn(userID, taskID, taskType, name, sourceInode, sourcePath, profile)
+	}
+	return nil
+}
+func (m *MockTaskRepo) ClaimNextTranscode(userID string) (*Task, error) {
+	if m.ClaimNextTranscodeFn != nil {
+		return m.ClaimNextTranscodeFn(userID)
+	}
+	return nil, gorm.ErrRecordNotFound
+}
+func (m *MockTaskRepo) RequeueStaleTranscodes() ([]Task, error) {
+	if m.RequeueStaleTranscodesFn != nil {
+		return m.RequeueStaleTranscodesFn()
+	}
+	return nil, nil
 }
 func (m *MockTaskRepo) Get(taskID string) (*Task, error) {
 	if m.GetFn != nil {

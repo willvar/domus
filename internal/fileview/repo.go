@@ -32,7 +32,7 @@ func Open(database *gorm.DB, runtime *dofsbridge.Runtime) (*Repo, error) {
 	if database == nil || runtime == nil {
 		return nil, errors.New("Domus file view requires database and DOFS runtime")
 	}
-	if err := database.AutoMigrate(&metadataRecord{}, &uploadRecord{}); err != nil {
+	if err := database.AutoMigrate(&metadataRecord{}, &uploadRecord{}, &renditionRecord{}); err != nil {
 		return nil, fmt.Errorf("migrate Domus file projection: %w", err)
 	}
 	return &Repo{db: database, runtime: runtime}, nil

@@ -116,6 +116,29 @@ func encryptedFileSize(plainSize int64) int64 {
 	return 5 + plainSize + numChunks*overhead
 }
 
+// uploadPartSizeFor returns the multipart part size for a plaintext file.
+// Parts split only on encrypted chunk boundaries, so the size grows with the
+// object to keep the total part count within the protocol ceiling. Files stay
+// uploadable up to the object-store limit instead of a product-level cap.
+func uploadPartSizeFor(plainSize int64) (int64, error) {
+	if plainSize < 0 {
+		return 0, errors.New("invalid file size")
+	}
+	encryptedChunk := int64(auth.NonceSize + auth.DefaultChunkSize + auth.TagSize)
+	partSize := directUploadPartSize
+	encrypted := encryptedFileSize(plainSize)
+	if needed := (encrypted + maxMultipartParts - 1) / maxMultipartParts; needed > partSize {
+		partSize = needed
+		if remainder := partSize % encryptedChunk; remainder != 0 {
+			partSize += encryptedChunk - remainder
+		}
+	}
+	if partSize > s3MaximumPartSize || encryptedMultipartPartCount(plainSize, partSize) > maxMultipartParts {
+		return 0, errors.New("file exceeds the multipart object size ceiling")
+	}
+	return partSize, nil
+}
+
 // encryptedMultipartPartCount returns the number of OSS multipart parts the
 // browser uploader will actually produce. Parts can only split between
 // encrypted chunks, so this can be larger than ceil(encryptedSize/partSize).
@@ -329,9 +352,6 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 	if body.FileSize < 0 {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_file_size"})
 	}
-	if body.FileSize > h.Config.Upload.MaxFileSize {
-		return c.Status(400).JSON(fiber.Map{"error": "file_too_large"})
-	}
 
 	ownerID := session.UserID
 	dirPath := body.Path
@@ -436,10 +456,9 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 	}
 
 	// Encrypted file geometry
-	partSize := directUploadPartSize
-	totalParts := encryptedMultipartPartCount(body.FileSize, partSize)
-	if totalParts > maxMultipartParts {
-		return c.Status(400).JSON(fiber.Map{"error": "too_many_parts"})
+	partSize, err := uploadPartSizeFor(body.FileSize)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "file_too_large"})
 	}
 
 	uploadID := uuid.New().String()
@@ -503,7 +522,7 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 		"file_name":     fileName,
 		"oss_upload_id": ossUploadID,
 		"part_size":     partSize,
-		"total_parts":   totalParts,
+		"total_parts":   encryptedMultipartPartCount(body.FileSize, partSize),
 		"dek":           hex.EncodeToString(effectiveKey),
 	})
 }
@@ -550,7 +569,11 @@ func (h *Handler) handleUploadPresign(c *fiber.Ctx) error {
 	if err != nil || direct.State != dofs.ExternalUploadActive || direct.ObjectKey != record.StorageKey() {
 		return c.Status(409).JSON(fiber.Map{"error": "upload_reservation_missing"})
 	}
-	totalParts := encryptedMultipartPartCount(record.Size, directUploadPartSize)
+	partSize, partErr := uploadPartSizeFor(record.Size)
+	if partErr != nil {
+		return c.Status(409).JSON(fiber.Map{"error": "file_too_large"})
+	}
+	totalParts := encryptedMultipartPartCount(record.Size, partSize)
 	if start > totalParts {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid_part_range"})
 	}
@@ -648,7 +671,11 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		})
 	}
 
-	expectedTotalParts := encryptedMultipartPartCount(record.Size, directUploadPartSize)
+	completionPartSize, partErr := uploadPartSizeFor(record.Size)
+	if partErr != nil {
+		return c.Status(409).JSON(fiber.Map{"error": "file_too_large"})
+	}
+	expectedTotalParts := encryptedMultipartPartCount(record.Size, completionPartSize)
 	if direct.State == dofs.ExternalUploadActive && record.OSSUploadID != "" {
 		// Completing an S3 multipart upload consumes its upload ID. If Domus
 		// crashes immediately afterwards, retry by recognizing the immutable
@@ -737,6 +764,12 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		if h.cleanupThumbnailStorage(ownerID, previousSource) == nil {
 			h.reclaimNamespaceBestEffort(ownerID)
 		}
+	}
+
+	// A replacement upload commits a new source generation: every rendition of
+	// the previous plaintext is now stale.
+	if previousSource != nil {
+		h.cleanupRenditions(ownerID, previousSource.ID)
 	}
 
 	if thumbnailRecord != nil {

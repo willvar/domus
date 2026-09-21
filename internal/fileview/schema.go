@@ -20,6 +20,35 @@ type metadataRecord struct {
 
 func (metadataRecord) TableName() string { return "domus_file_metadata" }
 
+// renditionRecord describes a server-transcoded derivative of one source file
+// generation (a playback quality). Segment inodes are stored, never object
+// keys or key material; those stay authoritative in DOFS.
+type renditionRecord struct {
+	UserID            string `gorm:"primaryKey;size:128"`
+	SourceInode       uint64 `gorm:"primaryKey"`
+	Profile           string `gorm:"primaryKey;size:32"`
+	SourceGeneration  int64  `gorm:"not null;default:0"`
+	Status            string `gorm:"not null;size:16;index"` // queued, running, ready, failed, cancelled
+	TaskID            string `gorm:"not null;default:'';index"`
+	InitInode         uint64 `gorm:"not null;default:0"`
+	Codecs            string `gorm:"not null;default:''"`
+	MediaWidth        int    `gorm:"not null;default:0"`
+	MediaHeight       int    `gorm:"not null;default:0"`
+	Segments          string `gorm:"not null;default:'[]'"`
+	PublishedDuration float64 `gorm:"not null;default:0"`
+	Error             string  `gorm:"not null;default:''"`
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+func (renditionRecord) TableName() string { return "domus_file_renditions" }
+
+// renditionSegment is one JSON entry of renditionRecord.Segments.
+type renditionSegment struct {
+	Inode    uint64  `json:"inode"`
+	Duration float64 `json:"duration"`
+}
+
 // uploadRecord is Domus task/resume state. Its ID is also the durable DOFS
 // external-upload reservation ID; ObjectKey and encryption keys are not
 // duplicated here.
@@ -42,3 +71,29 @@ type uploadRecord struct {
 }
 
 func (uploadRecord) TableName() string { return "domus_file_uploads" }
+
+// RenditionArtifact is one resolved derived artifact (init segment or media
+// segment): the immutable DOFS object reference plus its plaintext size.
+type RenditionArtifact struct {
+	Inode      uint64 `json:"-"`
+	ObjectKey  string `json:"-"`
+	WrappedDEK string `json:"-"`
+	Size       int64  `json:"size"`
+	Duration   float64 `json:"duration,omitempty"`
+}
+
+// Rendition is the handler-facing projection of renditionRecord with DOFS
+// node references resolved to object keys.
+type Rendition struct {
+	SourceInode      int64               `json:"-"`
+	SourceGeneration int64               `json:"-"`
+	Profile          string              `json:"profile"`
+	Status       string              `json:"status"`
+	TaskID       string              `json:"task_id"`
+	Codecs       string              `json:"codecs,omitempty"`
+	MediaWidth   int                 `json:"width,omitempty"`
+	MediaHeight  int                 `json:"height,omitempty"`
+	Error        string              `json:"error,omitempty"`
+	Init         *RenditionArtifact  `json:"-"`
+	Segments     []RenditionArtifact `json:"-"`
+}

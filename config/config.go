@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
 	"path"
@@ -22,7 +23,7 @@ type Config struct {
 	OSS      OSSConfig      `yaml:"oss"`
 	Server   ServerConfig   `yaml:"server"`
 	DOFS     DOFSConfig     `yaml:"dofs"`
-	Upload   UploadConfig   `yaml:"upload"`
+	Worker   WorkerConfig   `yaml:"worker"`
 	Database DatabaseConfig `yaml:"database"`
 	SMTP     SMTPConfig     `yaml:"smtp"`
 	Log      logger.Config  `yaml:"log"`
@@ -65,6 +66,7 @@ type OSSConfig struct {
 	ServerEndpoint         string `yaml:"server_endpoint"`          // Server-side read/write (HeadObject, Delete)
 	ClientUploadEndpoint   string `yaml:"client_upload_endpoint"`   // Public endpoint for browser direct upload (presigned PUT)
 	ClientDownloadEndpoint string `yaml:"client_download_endpoint"` // Browser download/preview (CDN or public endpoint)
+	ClientEndpointInsecure bool   `yaml:"client_endpoint_insecure"` // Dev/LAN only: serve client presigned URLs over plain http for non-loopback hosts
 	AccessKeyID            string `yaml:"access_key_id"`
 	AccessKeySecret        string `yaml:"access_key_secret"`
 	Bucket                 string `yaml:"bucket"`
@@ -82,8 +84,16 @@ type ServerConfig struct {
 	RootBootstrapPasswordFile string `yaml:"root_bootstrap_password_file"`
 }
 
-type UploadConfig struct {
-	MaxFileSize int64 `yaml:"max_file_size"`
+// WorkerConfig controls the optional content worker. The worker reads source
+// files through the DOFS FUSE mount and publishes derived files (thumbnails,
+// transcodes) back into the same namespace, so Domus itself stays free of
+// content encryption code.
+type WorkerConfig struct {
+	FFmpegPath        string `yaml:"ffmpeg_path"`
+	FFprobePath       string `yaml:"ffprobe_path"`
+	ThumbMaxDimension int    `yaml:"thumb_max_dimension"`
+	WorkDir           string `yaml:"work_dir"`
+	IntervalSeconds   int    `yaml:"interval_seconds"`
 }
 
 type DatabaseConfig struct {
@@ -249,6 +259,34 @@ func (c *Config) ValidateDOFS() error {
 	return nil
 }
 
+// ValidateWorker validates settings used by `domus worker`. The worker is
+// optional and only meaningful when a DOFS FUSE mount is available, so the
+// DOFS runtime settings are reused instead of introducing a second root.
+func (c *Config) ValidateWorker() error {
+	if c.Server.EncryptionSecret == "" {
+		return fmt.Errorf("config: server.encryption_secret is required")
+	}
+	if c.Database.Host == "" {
+		return fmt.Errorf("config: database.host is required")
+	}
+	if strings.TrimSpace(c.Worker.FFmpegPath) == "" {
+		return fmt.Errorf("config: worker.ffmpeg_path is required")
+	}
+	if strings.TrimSpace(c.Worker.FFprobePath) == "" {
+		return fmt.Errorf("config: worker.ffprobe_path is required")
+	}
+	if c.Worker.ThumbMaxDimension <= 0 {
+		return fmt.Errorf("config: worker.thumb_max_dimension must be greater than 0")
+	}
+	if c.Worker.IntervalSeconds < 0 {
+		return fmt.Errorf("config: worker.interval_seconds must not be negative")
+	}
+	if c.Worker.WorkDir != "" && !filepath.IsAbs(c.Worker.WorkDir) {
+		return fmt.Errorf("config: worker.work_dir must be an absolute path")
+	}
+	return c.ValidateDOFS()
+}
+
 func (c *Config) validateDOFSMetadata() error {
 	switch c.DOFS.Metadata.Driver {
 	case "sqlite":
@@ -308,6 +346,50 @@ func validateOSSEndpoint(name, endpoint string) error {
 	return nil
 }
 
+// EndpointSecure reports the transport for a configured OSS endpoint host.
+// Production endpoints always use TLS; only loopback hosts (a local
+// development object store such as SeaweedFS) fall back to plain HTTP.
+func EndpointSecure(endpoint string) bool {
+	host := strings.TrimSpace(endpoint)
+	if host == "" {
+		return true
+	}
+	if parsed, err := url.Parse("https://" + host); err == nil && parsed.Hostname() != "" {
+		host = parsed.Hostname()
+	}
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return false
+	}
+	return true
+}
+
+// EndpointURL builds the transport URL for a configured endpoint host.
+func EndpointURL(endpoint string) string {
+	host := strings.TrimSpace(endpoint)
+	if EndpointSecure(host) {
+		return "https://" + host
+	}
+	return "http://" + host
+}
+
+// ClientEndpointURL builds the transport URL for a client-facing OSS
+// endpoint. With insecure enabled it always uses plain http, which is the
+// escape hatch for LAN development access to a local object store (that
+// store carries no certificate); production configs must leave the flag off.
+func ClientEndpointURL(endpoint string, insecure bool) string {
+	if !insecure {
+		return EndpointURL(endpoint)
+	}
+	host := strings.TrimSpace(endpoint)
+	if parsed, err := url.Parse(host); err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		return "http://" + parsed.Host
+	}
+	return "http://" + host
+}
+
 func pathsOverlapConfig(first, second string) bool {
 	return first == second || pathContains(first, second) || pathContains(second, first)
 }
@@ -348,8 +430,12 @@ func Load(path string) (*Config, error) {
 			MountTimeoutSeconds:      60,
 			ShutdownTimeoutSeconds:   30,
 		},
-		Upload: UploadConfig{MaxFileSize: 10 * 1024 * 1024 * 1024},
-		Log:    logger.Config{Level: "info"},
+		Worker: WorkerConfig{
+			FFmpegPath:        "ffmpeg",
+			FFprobePath:       "ffprobe",
+			ThumbMaxDimension: 480,
+		},
+		Log: logger.Config{Level: "info"},
 	}
 
 	if err := loadInto(path, cfg); err != nil {

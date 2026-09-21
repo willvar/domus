@@ -88,7 +88,7 @@ func TestSQLiteDOFSDirectUploadProjectionAndStableRename(t *testing.T) {
 	if err != nil || !privateRoot.IsDir() {
 		t.Fatalf("private namespace root = %#v, %v", privateRoot, err)
 	}
-	for _, name := range []string{"trash", "thumbnails", "user"} {
+	for _, name := range []string{"trash", "thumbnails", "renditions", "user"} {
 		entry, lookupErr := metadata.Lookup(t.Context(), user.ID, privateRoot.Inode, name)
 		if lookupErr != nil || !entry.IsDir() {
 			t.Fatalf("private directory %q = %#v, %v", name, entry, lookupErr)

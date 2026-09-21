@@ -47,7 +47,7 @@ func Open(ctx context.Context, database *gorm.DB, cfg *config.Config, serverKey 
 		Bucket:    cfg.OSS.Bucket,
 		Region:    cfg.OSS.Region,
 		Prefix:    cfg.OSS.Prefix,
-		Secure:    true,
+		Secure:    config.EndpointSecure(cfg.OSS.ServerEndpoint),
 	})
 	if err != nil {
 		if metadataCloser != nil {
@@ -231,7 +231,7 @@ func (r *Runtime) EnsureUser(ctx context.Context, user *model.User) error {
 	if err != nil {
 		return fmt.Errorf("ensure Domus private root for %s: %w", user.ID, err)
 	}
-	for _, name := range []string{"trash", "thumbnails", "user"} {
+	for _, name := range []string{"trash", "thumbnails", "renditions", "user"} {
 		if _, err := ensureDirectory(ctx, controller, internal.Inode, name, 0700); err != nil {
 			return fmt.Errorf("ensure Domus private directory %s for %s: %w", name, user.ID, err)
 		}

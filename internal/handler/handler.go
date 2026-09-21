@@ -98,6 +98,10 @@ func (h *Handler) RegisterRoutes(app *fiber.App) {
 	fileUpload.Post("/cancel", h.handleUploadCancel)
 	fileUpload.Post("/cleanup", h.handleUploadCleanup)
 
+	// Server-side transcode (playback renditions).
+	file.Post("/transcode", h.handleTranscodeRequest)
+	file.Get("/renditions", h.handleListRenditions)
+
 	// /trash — deletion events are addressed by opaque IDs, never by a
 	// reserved path in the user's visible namespace.
 	trash := authed.Group("/trash")

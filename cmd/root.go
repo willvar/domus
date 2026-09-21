@@ -96,6 +96,8 @@ func Execute() {
 		restore(configPath, getFlagValue(os.Args[2:], "-i"), hasFlag(os.Args[2:], "--yes"))
 	case "dofs":
 		dofsCommand(configPath, os.Args[2:])
+	case "worker":
+		workerCommand(configPath, os.Args[2:])
 	case "dev":
 		devCommand(configPath, os.Args[2:])
 	case "help", "-h", "--help":
@@ -846,6 +848,7 @@ func printHelp() {
 	fmt.Println("  reset     清空数据库和配置的 OSS prefix（危险）")
 	fmt.Println("  restore   恢复数据库和配置的 OSS prefix（危险，需先停服务）")
 	fmt.Println("  dofs      管理 DOFS 挂载服务或执行单用户挂载（Linux）")
+	fmt.Println("  worker    生成派生文件（缩略图回填，Linux，复用 DOFS 挂载）")
 	fmt.Println("  dev       启动本地 Web 开发服务")
 	fmt.Println()
 	fmt.Println("选项:")

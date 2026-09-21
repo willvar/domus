@@ -940,6 +940,66 @@ func (r *memTaskRepo) Create(userID, taskID, taskType, name string) error {
 	return nil
 }
 
+func (r *memTaskRepo) CreateQueued(userID, taskID, taskType, name string, sourceInode int64, sourcePath, profile string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	r.data[taskID] = &Task{
+		ID:          r.nextID,
+		UserID:      userID,
+		TaskID:      taskID,
+		Type:        taskType,
+		Status:      "queued",
+		Name:        name,
+		SourceInode: sourceInode,
+		SourcePath:  sourcePath,
+		Profile:     profile,
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	r.nextID++
+	return nil
+}
+
+func (r *memTaskRepo) ClaimNextTranscode(userID string) (*Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var claimed *Task
+	for _, t := range r.data {
+		if t.Type != "transcode" || t.Status != "queued" {
+			continue
+		}
+		if userID != "" && t.UserID != userID {
+			continue
+		}
+		if claimed == nil || t.CreatedAt.Before(claimed.CreatedAt) {
+			claimed = t
+		}
+	}
+	if claimed == nil {
+		return nil, gorm.ErrRecordNotFound
+	}
+	claimed.Status = "running"
+	claimed.UpdatedAt = time.Now()
+	c := *claimed
+	return &c, nil
+}
+
+func (r *memTaskRepo) RequeueStaleTranscodes() ([]Task, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []Task
+	for _, t := range r.data {
+		if t.Type == "transcode" && (t.Status == "running" || t.Status == "cancelling") {
+			t.Status = "queued"
+			t.Progress = 0
+			t.UpdatedAt = time.Now()
+			out = append(out, *t)
+		}
+	}
+	return out, nil
+}
+
 func (r *memTaskRepo) Get(taskID string) (*Task, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()

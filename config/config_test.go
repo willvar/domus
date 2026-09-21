@@ -379,3 +379,40 @@ func TestConfigValidate(t *testing.T) {
 		})
 	}
 }
+
+func TestEndpointTransportSelection(t *testing.T) {
+	cases := []struct {
+		endpoint string
+		secure   bool
+		url      string
+	}{
+		{endpoint: "s3.example.test", secure: true, url: "https://s3.example.test"},
+		{endpoint: "127.0.0.1:8333", secure: false, url: "http://127.0.0.1:8333"},
+		{endpoint: "localhost:8333", secure: false, url: "http://localhost:8333"},
+		{endpoint: "[::1]:8333", secure: false, url: "http://[::1]:8333"},
+	}
+	for _, tc := range cases {
+		if got := EndpointSecure(tc.endpoint); got != tc.secure {
+			t.Fatalf("EndpointSecure(%q) = %v, want %v", tc.endpoint, got, tc.secure)
+		}
+		if got := EndpointURL(tc.endpoint); got != tc.url {
+			t.Fatalf("EndpointURL(%q) = %q, want %q", tc.endpoint, got, tc.url)
+		}
+	}
+}
+
+func TestClientEndpointURLInsecure(t *testing.T) {
+	t.Run("insecure forces plain http for lan hosts", func(t *testing.T) {
+		if got := ClientEndpointURL("192.0.2.1:8333", true); got != "http://192.0.2.1:8333" {
+			t.Fatalf("insecure endpoint url = %q", got)
+		}
+	})
+	t.Run("secure keeps the loopback contract", func(t *testing.T) {
+		if got := ClientEndpointURL("192.0.2.1:8333", false); got != "https://192.0.2.1:8333" {
+			t.Fatalf("secure endpoint url = %q", got)
+		}
+		if got := ClientEndpointURL("127.0.0.1:8333", false); got != "http://127.0.0.1:8333" {
+			t.Fatalf("loopback endpoint url = %q", got)
+		}
+	})
+}
