@@ -94,6 +94,8 @@ export interface FileListItem extends FileInfo {
   relative_path?: string
   original_path?: string
   deleted_at?: string
+  /** Original OSS thumbnail URL, kept so the decrypt mapping can be re-registered after a Service Worker restart. */
+  _thumbSource?: string
 }
 
 /** Share record. Mirrors model.Share. */

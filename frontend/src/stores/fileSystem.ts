@@ -412,6 +412,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     const cached = cache.get(path)
     if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
       files.value = cached.data
+      void ensureThumbnails(cached.data)
       fetchFiles(path).then(data => {
         if (data && currentPath.value === path) {
           files.value = data
@@ -462,8 +463,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
             last_modified: file.deleted_at || file.last_modified,
           }
         })
-        registerThumbnails(list)
-        await useServiceWorker().flush()
+        await syncThumbnails(list)
         return list
       }
       const res = await api.get<{ files?: FileListItem[]; trash?: { id: string; name: string } }>(
@@ -476,8 +476,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         ...file,
         path: trashItemLocation(trashID, file.relative_path),
       }))
-      registerThumbnails(list)
-      await useServiceWorker().flush()
+      await syncThumbnails(list)
       return list
     }
     if (path === '__shared__/') {
@@ -511,8 +510,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     }
     const res = await api.get<{ files?: FileListItem[] }>('/file/', { params: { path } })
     const list = res.data.files || []
-    registerThumbnails(list)
-    await useServiceWorker().flush()
+    await syncThumbnails(list)
     return list
   }
 
@@ -520,11 +518,25 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     message.warning(t('preview.decrypt_unavailable'))
   }
 
-  /** Register thumbnails with the Service Worker for client-side decryption. */
+  /** Registers fresh thumbnails and records the SW boot id they belong to. */
+  async function syncThumbnails(list: FileListItem[]): Promise<void> {
+    const sw = useServiceWorker()
+    registerThumbnails(list)
+    await sw.flush()
+    thumbnailBootId = await sw.getBootId()
+  }
+
+  /** Boot id of the SW instance the current thumbnail URLs belong to. */
+  let thumbnailBootId: string | null = null
+
+  /** Register thumbnails with the Service Worker for client-side decryption.
+   *  The DEK stays on the record and the original URL is kept in
+   *  `_thumbSource` so mappings can be re-registered after a SW restart. */
   function registerThumbnails(list: FileListItem[]): void {
     const sw = useServiceWorker()
     for (const file of list) {
       if (!file.thumbnail_url || !file.thumbnail_dek) continue
+      if (file.thumbnail_url.startsWith('/__decrypt__/')) continue
       const decryptUrl = sw.registerDecrypt({
         url: file.thumbnail_url,
         size: 0,
@@ -534,9 +546,32 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         dek: file.thumbnail_dek,
       })
       if (!decryptUrl) continue
+      file._thumbSource = file.thumbnail_url
       file.thumbnail_url = decryptUrl
-      file.thumbnail_dek = undefined
     }
+  }
+
+  /** Re-registers cached thumbnail decrypt mappings when the SW has been
+   *  restarted (its registry is memory-only, old /__decrypt__/ URLs 404). */
+  async function ensureThumbnails(list: FileListItem[]): Promise<void> {
+    const sw = useServiceWorker()
+    const bootId = await sw.getBootId()
+    if (bootId === null || bootId === thumbnailBootId) return
+    thumbnailBootId = bootId
+    for (const file of list) {
+      if (!file._thumbSource || !file.thumbnail_dek) continue
+      if (file.thumbnail_url?.startsWith('/__decrypt__/')) sw.unregisterDecrypt(file.thumbnail_url)
+      const decryptUrl = sw.registerDecrypt({
+        url: file._thumbSource,
+        size: 0,
+        chunkSize: 0,
+        contentType: 'image/webp',
+        filename: '',
+        dek: file.thumbnail_dek,
+      })
+      if (decryptUrl) file.thumbnail_url = decryptUrl
+    }
+    await sw.flush()
   }
 
   function goBack(): void {

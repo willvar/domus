@@ -18,6 +18,7 @@ export function useServiceWorker(): {
   registerDecrypt: (metadata: DecryptMetadata) => string | null
   unregisterDecrypt: (url: string) => void
   flush: () => Promise<void>
+  getBootId: () => Promise<string | null>
 } {
   async function register(): Promise<void> {
     if (!('serviceWorker' in navigator)) return
@@ -102,5 +103,20 @@ export function useServiceWorker(): {
     })
   }
 
-  return { swReady, register, sendKey, clearKey, canDecrypt, registerDecrypt, unregisterDecrypt, flush }
+  /**
+   * Boot identifier of the running Service Worker instance. The SW keeps its
+   * decrypt registry in memory only, so a changed boot id means every
+   * previously issued /__decrypt__/ URL is dead and must be re-registered.
+   */
+  function getBootId(): Promise<string | null> {
+    if (!navigator.serviceWorker?.controller) return Promise.resolve(null)
+    return new Promise(resolve => {
+      const { port1, port2 } = new MessageChannel()
+      port1.onmessage = event => resolve((event.data as string) || null)
+      navigator.serviceWorker.controller!.postMessage({ type: 'boot-id' }, [port2])
+      setTimeout(() => resolve(null), 3000)
+    })
+  }
+
+  return { swReady, register, sendKey, clearKey, canDecrypt, registerDecrypt, unregisterDecrypt, flush, getBootId }
 }

@@ -161,38 +161,51 @@ test('浏览器上传 PDF 时生成加密缩略图，显示开关默认关闭且
       })
       .toEqual({ ok: true, magic: '%PDF', marker: true })
 
-    await expect
-      .poll(() => page.evaluate(async () => {
-        const cache = await caches.open('domus-decrypt')
-        return (await cache.keys()).length
-      }), {
-        timeout: 20_000,
-        message: 'decrypted PDF was not committed to the bounded plaintext cache',
-      })
-      .toBeGreaterThan(0)
+    // Once fetched, both the full document and its ranges remain readable
+    // without the object store. This tests cache behavior, not its private name.
+    await page.context().setOffline(true)
+    try {
+      await expect
+        .poll(() => page.evaluate(async ({ url, expectedMarker }) => {
+          try {
+            const response = await fetch(url)
+            const bytes = new Uint8Array(await response.arrayBuffer())
+            const text = new TextDecoder('latin1').decode(bytes)
+            return { ok: response.ok, magic: text.slice(0, 4), marker: text.includes(expectedMarker) }
+          } catch {
+            return { ok: false }
+          }
+        }, { url: decryptURL!, expectedMarker: marker }), {
+          timeout: 20_000,
+          message: 'cached PDF was not readable without network access',
+        })
+        .toEqual({ ok: true, magic: '%PDF', marker: true })
 
-    await expect
-      .poll(() => page.evaluate(async (url) => {
-        const response = await fetch(url, { headers: { Range: 'bytes=0-63' } })
-        const bytes = new Uint8Array(await response.arrayBuffer())
-        return {
-          status: response.status,
-          contentRange: response.headers.get('Content-Range'),
-          contentLength: response.headers.get('Content-Length'),
-          bodyLength: bytes.length,
-          magic: new TextDecoder('latin1').decode(bytes.slice(0, 4)),
-        }
-      }, decryptURL!), {
-        timeout: 20_000,
-        message: 'cached PDF range response was malformed or unresponsive',
-      })
-      .toEqual({
-        status: 206,
-        contentRange: `bytes 0-63/${pdf.length}`,
-        contentLength: '64',
-        bodyLength: 64,
-        magic: '%PDF',
-      })
+      await expect
+        .poll(() => page.evaluate(async (url) => {
+          const response = await fetch(url, { headers: { Range: 'bytes=0-63' } })
+          const bytes = new Uint8Array(await response.arrayBuffer())
+          return {
+            status: response.status,
+            contentRange: response.headers.get('Content-Range'),
+            contentLength: response.headers.get('Content-Length'),
+            bodyLength: bytes.length,
+            magic: new TextDecoder('latin1').decode(bytes.slice(0, 4)),
+          }
+        }, decryptURL!), {
+          timeout: 20_000,
+          message: 'cached PDF range was not readable without network access',
+        })
+        .toEqual({
+          status: 206,
+          contentRange: `bytes 0-63/${pdf.length}`,
+          contentLength: '64',
+          bodyLength: 64,
+          magic: '%PDF',
+        })
+    } finally {
+      await page.context().setOffline(false)
+    }
 
     const stabilityMS = Number.parseInt(process.env.DOMUS_E2E_PREVIEW_STABILITY_MS || '2000', 10)
     if (Number.isFinite(stabilityMS) && stabilityMS > 0) {

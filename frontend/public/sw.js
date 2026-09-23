@@ -11,13 +11,16 @@
 const HEADER_SIZE = 5 // [1 byte version][4 bytes chunk_size]
 const NONCE_SIZE = 12
 const TAG_SIZE = 16
-const CACHE_NAME = 'domus-decrypt'
-const LEGACY_CACHE_NAME = 'zephyr-decrypt'
+const CACHE_NAME = 'domus-decrypt-v2'
+// Pre-v2 entries may be truncated: the SW once dropped tail chunks while
+// caching streamed plaintext. Activation deletes the poisoned generations.
+const STALE_CACHE_NAMES = ['domus-decrypt', 'zephyr-decrypt']
 const CACHE_CLEANUP_DELAY = 5 * 60 * 1000 // 5 minutes
 const MAX_CACHEABLE_BYTES = 64 * 1024 * 1024
 
 
 // --- State ---
+const BOOT_ID = crypto.randomUUID() // changes on every SW (re)start
 let kek = null // CryptoKey (AES-GCM) — user's KEK for unwrapping DEKs
 const registry = new Map() // id → { url, size, chunkSize, contentType, filename, download, wrappedDek, dek?, contentHash? }
 const cleanupTimers = new Map() // contentHash → timer id
@@ -26,7 +29,7 @@ const chunkAccum = new Map() // contentHash → { chunks: Map<idx, Uint8Array>, 
 // --- Lifecycle ---
 self.addEventListener('install', () => self.skipWaiting())
 self.addEventListener('activate', (event) => event.waitUntil(
-  Promise.all([self.clients.claim(), caches.delete(LEGACY_CACHE_NAME)])
+  Promise.all([self.clients.claim(), ...STALE_CACHE_NAMES.map(name => caches.delete(name))])
 ))
 
 // --- Message handling ---
@@ -85,6 +88,11 @@ self.addEventListener('message', async (event) => {
     case 'flush':
       if (event.ports[0]) event.ports[0].postMessage(null)
       break
+    case 'boot-id':
+      // Lets the main thread detect SW restarts: the in-memory registry is
+      // empty after one, so previously issued decrypt URLs are all dead.
+      if (event.ports[0]) event.ports[0].postMessage(BOOT_ID)
+      break
   }
 })
 
@@ -93,8 +101,16 @@ function cacheKey(contentHash) {
 }
 
 // --- Chunk accumulator: collects decrypted chunks across multiple Range requests ---
+// Media content types are excluded: they stream, so accumulating their
+// plaintext only balloons the SW process until the browser kills it.
+function isStreamableMedia(meta) {
+  const type = meta.contentType || ''
+  return type.startsWith('video/') || type.startsWith('audio/')
+}
+
 function getAccum(meta) {
   if (!meta.contentHash || !meta.chunkSize || !meta.size || meta.size > MAX_CACHEABLE_BYTES) return null
+  if (isStreamableMedia(meta)) return null
   let acc = chunkAccum.get(meta.contentHash)
   if (!acc) {
     acc = { chunks: new Map(), totalChunks: Math.ceil(meta.size / meta.chunkSize) }
@@ -273,73 +289,115 @@ async function decryptStreamWindowed({ reader, residual, dek, encChunk, startChu
 
 function streamDecryptResponse(meta) {
   let collectForCache = Boolean(
-    meta.contentHash && (!meta.size || meta.size <= MAX_CACHEABLE_BYTES)
+    meta.contentHash && !isStreamableMedia(meta) && meta.size > 0 && meta.size <= MAX_CACHEABLE_BYTES
   )
   const plainParts = []
   let totalPlain = 0
 
+  // Pull-based pipeline state: the browser pulls (desiredSize > 0) and only
+  // then does the SW decrypt, so playback memory stays bounded instead of
+  // decrypting the whole file as fast as the network allows. WebCrypto runs
+  // off-thread; a small in-flight window hides the per-chunk latency while
+  // chunks are still emitted strictly in index order.
+  const state = {
+    started: false,
+    reader: null,
+    residual: new Uint8Array(0),
+    chunkSize: 0,
+    encChunk: 0,
+    nextIdx: 0,
+    emitIdx: 0,
+    readerDone: false,
+    inflight: new Map(),
+  }
+
+  async function startPipeline() {
+    const response = await fetch(meta.url)
+    if (!response.ok || !response.body) throw new Error('fetch failed')
+    state.reader = response.body.getReader()
+    while (state.residual.length < HEADER_SIZE) {
+      const { value, done } = await state.reader.read()
+      if (done) break
+      state.residual = concat(state.residual, value)
+    }
+    if (state.residual.length < HEADER_SIZE || state.residual[0] !== 0x01) {
+      throw new Error('invalid header')
+    }
+    state.chunkSize = new DataView(state.residual.buffer, state.residual.byteOffset).getUint32(1, false)
+    state.encChunk = encChunkSize(state.chunkSize)
+    state.residual = state.residual.slice(HEADER_SIZE)
+    state.started = true
+  }
+
+  async function pullEncChunk() {
+    while (state.residual.length < state.encChunk) {
+      const { value, done } = await state.reader.read()
+      if (done) break
+      state.residual = concat(state.residual, value)
+    }
+    // A tail shorter than one chunk (or a small single-chunk object) is
+    // still a full encrypted chunk and must be emitted, not dropped.
+    if (state.residual.length === 0) return undefined
+    const chunkLen = Math.min(state.residual.length, state.encChunk)
+    const encData = state.residual.slice(0, chunkLen)
+    state.residual = state.residual.slice(chunkLen)
+    return encData
+  }
+
   const stream = new ReadableStream({
-    async start(controller) {
+    async pull(controller) {
       try {
-        const response = await fetch(meta.url)
-        if (!response.ok) {
-          controller.error(new Error('fetch failed'))
+        if (!state.started) await startPipeline()
+        // Top up the in-flight decrypt window.
+        while (!state.readerDone && state.inflight.size < DECRYPT_WINDOW) {
+          const encData = await pullEncChunk()
+          if (encData === undefined) {
+            state.readerDone = true
+            break
+          }
+          const idx = state.nextIdx++
+          state.inflight.set(idx, crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: encData.slice(0, NONCE_SIZE), additionalData: uint64BE(idx) },
+            meta.dek, encData.slice(NONCE_SIZE),
+          ).then(pt => new Uint8Array(pt)))
+        }
+        if (state.inflight.size === 0) {
+          controller.close()
+          if (collectForCache && plainParts.length > 0) {
+            const full = concatAll(plainParts)
+            const blob = new Blob([full], { type: meta.contentType || 'application/octet-stream' })
+            const cacheResp = new Response(blob, {
+              headers: { 'Content-Type': meta.contentType || 'application/octet-stream' }
+            })
+            caches.open(CACHE_NAME).then(c => c.put(cacheKey(meta.contentHash), cacheResp))
+          }
           return
         }
-
-        const reader = response.body.getReader()
-
-        // Read header
-        let residual = new Uint8Array(0)
-        while (residual.length < HEADER_SIZE) {
-          const { value, done } = await reader.read()
-          if (done) break
-          residual = concat(residual, value)
-        }
-        if (residual.length < HEADER_SIZE || residual[0] !== 0x01) {
-          controller.error(new Error('invalid header'))
-          return
-        }
-
-        const chunkSize = new DataView(residual.buffer, residual.byteOffset).getUint32(1, false)
-        const encChunk = encChunkSize(chunkSize)
-        const residualBox = { value: residual.slice(HEADER_SIZE) }
-
-        await decryptStreamWindowed({
-          reader, residual: residualBox, dek: meta.dek, encChunk, startChunk: 0,
-          onChunk: (idx, plaintext) => {
-            controller.enqueue(plaintext)
-            totalPlain += plaintext.length
-            if (collectForCache) {
-              if (totalPlain <= MAX_CACHEABLE_BYTES) {
-                plainParts.push(plaintext)
-              } else {
-                // Unknown/malformed sizes must not turn the browser process
-                // into an unbounded plaintext cache.
-                collectForCache = false
-                plainParts.length = 0
-              }
-            }
-            return true
-          },
-        })
-
-        controller.close()
-
-        // Cache the full plaintext in background
-        if (collectForCache && plainParts.length > 0) {
-          const full = concatAll(plainParts)
-          const blob = new Blob([full], { type: meta.contentType || 'application/octet-stream' })
-          const cacheResp = new Response(blob, {
-            headers: { 'Content-Type': meta.contentType || 'application/octet-stream' }
-          })
-          caches.open(CACHE_NAME).then(c => c.put(cacheKey(meta.contentHash), cacheResp))
+        const plain = await state.inflight.get(state.emitIdx)
+        state.inflight.delete(state.emitIdx)
+        state.emitIdx++
+        controller.enqueue(plain)
+        totalPlain += plain.length
+        if (collectForCache) {
+          if (totalPlain <= MAX_CACHEABLE_BYTES) {
+            plainParts.push(plain)
+          } else {
+            // Unknown/malformed sizes must not turn the browser process
+            // into an unbounded plaintext cache.
+            collectForCache = false
+            plainParts.length = 0
+          }
         }
       } catch (err) {
         try { controller.error(err) } catch { /* already closed */ }
       }
-    }
-  })
+    },
+    cancel() {
+      if (state.reader) {
+        state.reader.cancel().catch(() => {})
+      }
+    },
+  }, { highWaterMark: 16 })
 
   const headers = {
     'Accept-Ranges': 'bytes',
