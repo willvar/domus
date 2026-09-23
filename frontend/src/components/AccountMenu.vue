@@ -4,6 +4,7 @@ import { NAvatar, NButton, NDivider, NSelect, NSwitch, NThing } from 'naive-ui'
 import { useI18n } from '../composables/useI18n'
 import { usePreferences } from '../composables/usePreferences'
 import { useTheme } from '../composables/useTheme'
+import { purgeClientState } from '../utils/devPurge'
 import { IconAccountCircle, IconArrowLeft, IconContrastCircle, IconDeleteOutline, IconFolderHome, IconViewGridOutline } from '../barrels/icons'
 
 const props = defineProps<{
@@ -28,6 +29,8 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const { isDark, toggleDark } = useTheme()
 const { prefs, update } = usePreferences()
+// Dev-only client-state purge: lives just above the sign-out button.
+const isDev = import.meta.env.DEV
 
 const qualityChoices = computed(() => [
   { label: t('quality.original'), value: 'original' },
@@ -131,6 +134,9 @@ const qualityChoices = computed(() => [
       <NButton v-if="props.root" quaternary block size="small" @click="emit('admin')">
         <template #icon><IconAccountCircle /></template>
         {{ t('titlebar.admin_panel') }}
+      </NButton>
+      <NButton v-if="isDev" quaternary block size="small" @click="purgeClientState()">
+        {{ t('dev.purge_reload') }}
       </NButton>
       <NButton quaternary block type="error" size="small" @click="emit('logout')">
         <template #icon><IconArrowLeft /></template>

@@ -98,6 +98,7 @@ const en: MessageMap = {
   "login.setup_now": "Set up now",
   "titlebar.role": "Role",
   "titlebar.admin_panel": "Admin Panel",
+  "dev.purge_reload": "Purge Caches & Reload (dev)",
   "titlebar.sign_out": "Sign Out",
   "toolbar.back": "Back (Alt+←)",
   "toolbar.forward": "Forward (Alt+→)",

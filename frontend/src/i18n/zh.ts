@@ -98,6 +98,7 @@ const zh: MessageMap = {
   "login.setup_now": "立即设置",
   "titlebar.role": "角色",
   "titlebar.admin_panel": "用户管理",
+  "dev.purge_reload": "清除缓存并重载（开发）",
   "titlebar.sign_out": "退出登录",
   "toolbar.back": "后退 (Alt+←)",
   "toolbar.forward": "前进 (Alt+→)",
