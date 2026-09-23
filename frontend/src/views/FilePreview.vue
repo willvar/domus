@@ -15,6 +15,7 @@ import {
 } from 'naive-ui'
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
+import exifr from 'exifr'
 import {
   IconArrowLeft,
   IconClose,
@@ -28,10 +29,14 @@ import {
 } from '../barrels/icons'
 import { writeEncryptedFile } from '../composables/useCryptoUpload'
 import { registerFileDecrypt, unregisterFileDecrypt } from '../composables/useFileAccess'
+import pdfWorkerURL from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+import { mediaMetaItems, parseMediaMeta } from '../utils/mediaMeta'
+import type { MetaItem } from '../utils/mediaMeta'
 import { useDevice } from '../composables/useDevice'
 import { useI18n } from '../composables/useI18n'
 import { showConfirm } from '../composables/useNativeDialog'
 import { RENDITION_PROFILES, useRenditions } from '../composables/useRenditions'
+import type { PlaybackStats } from '../composables/useRenditions'
 import api from '../composables/useApi'
 import { useFileSystemStore } from '../stores/fileSystem'
 import { useAppMessage } from '../ui/feedback'
@@ -109,7 +114,15 @@ const viewerType = computed<ViewerType | null>(() => fs.getViewerType(name.value
 const previewKind = computed(() => viewerType.value || 'unsupported')
 const inTrash = computed(() => isTrashLocation(file.value?.path || ''))
 const isVideoFile = computed(() => viewerType.value === 'video')
-const quality = useRenditions({ decryptUrl: () => decryptUrl.value })
+const quality = useRenditions({
+  decryptUrl: () => decryptUrl.value,
+  sourceCodecs: () => file.value?.media_codecs,
+})
+const switchingQuality = ref(false)
+let qualitySelection = 0
+function qualityLabelOf(profile: string): string {
+  return profile === 'original' ? t('quality.original') : profile.toUpperCase()
+}
 const qualityOptions = computed(() => {
   const options: Array<{ label: string; key: string }> = [{ label: t('quality.original'), key: 'original' }]
   // Profiles above the source height would be pointless upscales, but the
@@ -118,22 +131,208 @@ const qualityOptions = computed(() => {
   const cap = quality.sourceHeight.value
   for (const profile of RENDITION_PROFILES) {
     if (cap > 0 && parseInt(profile, 10) > cap) continue
-    const rendition = quality.renditions.value.find(item => item.profile === profile)
-    let suffix = ''
-    if (rendition) {
-      if (rendition.status === 'ready') suffix = '  ✓'
-      else if (rendition.status === 'running') suffix = `  ${Math.round((rendition.progress || 0) * 100)}%`
-      else if (rendition.status === 'queued') suffix = `  · ${t('quality.pending')}`
-      else if (rendition.status === 'cancelling') suffix = `  · ${t('quality.generating')}`
-      else if (rendition.status === 'failed') suffix = `  · ${t('quality.failed_short')}`
-    }
-    options.push({ label: profile.toUpperCase() + suffix, key: profile })
+    options.push({ label: qualityLabelOf(profile), key: profile })
   }
   return options
 })
 const qualityLabel = computed(() => quality.activeQuality.value === 'original'
   ? t('quality.original')
   : quality.activeQuality.value.toUpperCase())
+
+// File metadata ("元数据"): best-effort extras per preview kind, parsed
+// client-side from the decrypted bytes the SW serves via decryptUrl, plus the
+// worker-probed media_meta for audio/video.
+const metaItems = ref<MetaItem[]>([])
+const archiveCounts = ref<{ entries: number; files: number; uncompressed: number } | null>(null)
+
+function formatShutter(seconds?: number): string | undefined {
+  if (typeof seconds !== 'number' || !Number.isFinite(seconds) || seconds <= 0) return undefined
+  if (seconds >= 1) return `${+seconds.toFixed(1)}s`
+  return `1/${Math.round(1 / seconds)}s`
+}
+
+function formatExposureBias(bias?: number): string | undefined {
+  if (typeof bias !== 'number' || !Number.isFinite(bias) || bias === 0) return undefined
+  const rounded = Math.round(bias * 10) / 10
+  return `${rounded > 0 ? '+' : ''}${rounded} EV`
+}
+
+function formatExifDate(value?: Date | string | number): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined
+  if (value instanceof Date) return dayjs(value).format('YYYY-MM-DD HH:mm')
+  if (typeof value !== 'string') return undefined
+  const parsed = dayjs(value.replace(/^(\d{4}):(\d{2}):(\d{2})/, '$1-$2-$3'))
+  return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm') : undefined
+}
+
+function formatExifDimensions(e: Record<string, unknown>): string | undefined {
+  const e2 = e as Record<string, any>
+  const width = e2.ExifImageWidth ?? e2.ImageWidth ?? e2.PixelXDimension
+  const height = e2.ExifImageHeight ?? e2.ImageHeight ?? e2.PixelYDimension
+  if (!width || !height) return undefined
+  return `${width} × ${height}`
+}
+
+// PDF dates arrive as "D:20240102103456+08'00'".
+function formatPdfDate(value?: string): string | undefined {
+  if (!value) return undefined
+  const match = String(value).replace(/^D:/, '').match(/^(\d{4})(\d{2})(\d{2})(\d{2})?(\d{2})?/)
+  if (!match) return undefined
+  return `${match[1]}-${match[2]}-${match[3]} ${match[4] && match[5] ? `${match[4]}:${match[5]}` : ''}`.trim()
+}
+
+async function loadMetadata(): Promise<void> {
+  try {
+    if (viewerType.value === 'image') await loadImageMeta()
+    else if (viewerType.value === 'video' || viewerType.value === 'audio') loadMediaMeta()
+    else if (viewerType.value === 'pdf') await loadPdfMeta()
+    else if (viewerType.value === 'archive') loadArchiveMeta()
+    else if (viewerType.value && ['text', 'markdown', 'csv', 'notebook'].includes(viewerType.value)) loadTextMeta()
+  } catch {
+    // Metadata is optional; never let it break the preview.
+  }
+}
+
+function pushMeta(items: MetaItem[], label: string, value?: string | number | null, href?: string): void {
+  if (value === undefined || value === null || value === '') return
+  items.push({ label, value: String(value), href })
+}
+
+function loadMediaMeta(): void {
+  const meta = parseMediaMeta(file.value?.media_meta)
+  if (meta) metaItems.value = mediaMetaItems(meta)
+}
+
+async function loadImageMeta(): Promise<void> {
+  if (!decryptUrl.value) return
+  const response = await fetch(decryptUrl.value)
+  if (!response.ok) return
+  const buffer = await response.arrayBuffer()
+  const parsed = await exifr.parse(buffer, { tiff: true, exif: true, ifd0: {}, xmp: {} })
+  const e = (parsed && Object.keys(parsed).length ? parsed : null) as Record<string, any> | null
+  const items: MetaItem[] = []
+  if (e) {
+    pushMeta(items, t('info.meta_camera'), [e.Make, e.Model].filter(Boolean).join(' '))
+    pushMeta(items, t('info.meta_lens'), e.LensModel || e.LensMake)
+    pushMeta(items, t('info.meta_taken'), formatExifDate(e.DateTimeOriginal ?? e.CreateDate))
+    pushMeta(items, t('info.meta_dimensions'), formatExifDimensions(e))
+    pushMeta(items, t('info.meta_keywords'), e.Keywords ?? e.Subject)
+    pushMeta(items, t('info.meta_shutter'), formatShutter(e.ExposureTime))
+    pushMeta(items, t('info.meta_aperture'), typeof e.FNumber === 'number' ? `f/${e.FNumber}` : undefined)
+    pushMeta(items, t('info.meta_iso'), e.ISO)
+    pushMeta(items, t('info.meta_focal'), typeof e.FocalLength === 'number' ? `${Math.round(e.FocalLength)}mm` : undefined)
+    pushMeta(items, t('info.meta_focal_35mm'), e.FocalLengthIn35mmFilm ? `${e.FocalLengthIn35mmFilm}mm` : undefined)
+    pushMeta(items, t('info.meta_bias'), formatExposureBias(e.ExposureCompensation ?? e.ExposureBiasValue))
+    pushMeta(items, t('info.meta_metering'), e.MeteringMode)
+    pushMeta(items, t('info.meta_white_balance'), e.WhiteBalance)
+    pushMeta(items, t('info.meta_flash'), e.Flash)
+    pushMeta(items, t('info.meta_software'), e.Software)
+  }
+  // Resolution fallback: some images (screenshots, edited exports) have no
+  // EXIF dimensions; read the decoder frame geometry instead.
+  if (!items.some(item => item.label === t('info.meta_dimensions'))) {
+    const geometry = await imageGeometry(decryptUrl.value).catch(() => null)
+    if (geometry) {
+      pushMeta(items, t('info.meta_dimensions'), `${geometry.width} × ${geometry.height}`)
+    }
+  }
+  const gps = await exifr.gps(new Uint8Array(buffer)).catch(() => null)
+  if (gps && Number.isFinite(gps.latitude) && Number.isFinite(gps.longitude)) {
+    pushMeta(
+      items,
+      t('info.meta_gps'),
+      `${gps.latitude.toFixed(6)}, ${gps.longitude.toFixed(6)}`,
+      `https://www.openstreetmap.org/?mlat=${gps.latitude}&mlon=${gps.longitude}#map=17/${gps.latitude}/${gps.longitude}`,
+    )
+  }
+  metaItems.value = items
+}
+
+function imageGeometry(url: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const image = new Image()
+    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight })
+    image.onerror = reject
+    image.src = url
+  })
+}
+
+async function loadPdfMeta(): Promise<void> {
+  if (!decryptUrl.value) return
+  const pdfjs = await import('pdfjs-dist')
+  pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerURL
+  const doc = await pdfjs.getDocument({ url: decryptUrl.value }).promise
+  const { info } = await doc.getMetadata()
+  const fields = info as Record<string, unknown>
+  const items: MetaItem[] = []
+  pushMeta(items, t('info.meta_doc_title'), typeof fields.Title === 'string' ? fields.Title : undefined)
+  pushMeta(items, t('info.meta_author'), typeof fields.Author === 'string' ? fields.Author : undefined)
+  pushMeta(items, t('info.meta_subject'), typeof fields.Subject === 'string' ? fields.Subject : undefined)
+  pushMeta(items, t('info.meta_keywords'), typeof fields.Keywords === 'string' ? fields.Keywords : undefined)
+  pushMeta(items, t('info.meta_pages'), doc.numPages)
+  pushMeta(items, t('info.meta_created'), formatPdfDate(fields.CreationDate as string | undefined))
+  pushMeta(items, t('info.meta_producer'), typeof fields.Producer === 'string' ? fields.Producer : undefined)
+  pushMeta(items, t('info.meta_version'), fields.PDFFormatVersion as string | undefined)
+  metaItems.value = items
+}
+
+function loadArchiveMeta(): void {
+  const counts = archiveCounts.value
+  if (!counts || !counts.entries) return
+  const items: MetaItem[] = []
+  pushMeta(items, t('info.meta_entries'), counts.entries)
+  pushMeta(items, t('info.meta_files'), counts.files)
+  pushMeta(items, t('info.meta_uncompressed'), formatSize(counts.uncompressed))
+  metaItems.value = items
+}
+
+function loadTextMeta(): void {
+  const content = textContent.value
+  if (!content) return
+  const items: MetaItem[] = []
+  pushMeta(items, t('info.meta_lines'), content.split('\n').length + (sourceTruncated.value ? '+' : ''))
+  const crlf = (content.match(/\r\n/g) || []).length
+  const lineFeeds = (content.match(/\n/g) || []).length - crlf
+  const loneCarriage = (content.match(/\r/g) || []).length - crlf
+  pushMeta(items, t('info.meta_eol'),
+    crlf && !lineFeeds && !loneCarriage ? 'CRLF'
+      : lineFeeds && !crlf && !loneCarriage ? 'LF'
+        : crlf || (lineFeeds && loneCarriage) ? t('info.meta_eol_mixed') : undefined)
+  pushMeta(items, t('info.meta_encoding'), content.startsWith('\uFEFF')
+    ? 'UTF-8 (BOM)'
+    : content.includes('\uFFFD') ? t('info.meta_encoding_other') : 'UTF-8')
+  metaItems.value = items
+}
+
+// "Stats for nerds": right-click the video and toggle the diagnostics
+// overlay; it samples playback internals every 500ms while visible.
+const statsVisible = ref(false)
+const statsMenu = ref(false)
+const statsMenuX = ref(0)
+const statsMenuY = ref(0)
+const stats = ref<PlaybackStats | null>(null)
+let statsTimer: ReturnType<typeof setInterval> | null = null
+const statsMenuOptions = [{ label: t('quality.stats_menu'), key: 'stats' }]
+
+function openVideoMenu(event: MouseEvent): void {
+  statsMenuX.value = event.clientX
+  statsMenuY.value = event.clientY
+  statsMenu.value = true
+}
+
+function toggleStats(): void {
+  statsMenu.value = false
+  statsVisible.value = !statsVisible.value
+  if (statsVisible.value) {
+    stats.value = quality.getStats()
+    statsTimer = setInterval(() => {
+      stats.value = quality.getStats()
+    }, 500)
+  } else if (statsTimer) {
+    clearInterval(statsTimer)
+    statsTimer = null
+  }
+}
 const truncated = computed(() => sourceTruncated.value || viewTruncated.value)
 const isHtmlFile = computed(() => /\.html?$/i.test(name.value))
 const editableText = computed(() => ['text', 'markdown', 'csv'].includes(viewerType.value || ''))
@@ -195,8 +394,11 @@ onMounted(async () => {
       inode: registered.access.inode || file.value.inode,
       size: registered.access.size,
       content_type: registered.access.content_type,
+      media_codecs: registered.access.media_codecs,
+      media_meta: registered.access.media_meta,
     }
     await loadRichPreview(previewKind.value, registered.access.size)
+    void loadMetadata()
   } catch (reason: any) {
     console.error('Preview failed:', reason)
     error.value = t('files.preview_retry_hint')
@@ -211,10 +413,15 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', preventDirtyUnload)
+  qualitySelection++
   quality.detach()
   if (scrollSyncReleaseFrame) cancelAnimationFrame(scrollSyncReleaseFrame)
   unregisterFileDecrypt(decryptUrl.value)
   if (loadedFont) document.fonts.delete(loadedFont)
+  if (statsTimer) {
+    clearInterval(statsTimer)
+    statsTimer = null
+  }
   if (file.value) {
     void api.post('/audit/', {
       path: file.value.path,
@@ -272,11 +479,21 @@ async function loadRichPreview(kind: string, size: number): Promise<void> {
       fetch(decryptUrl.value),
     ])
     const zip = await JSZip.loadAsync(await response.arrayBuffer())
-    archiveEntries.value = Object.values(zip.files).slice(0, 500).map(entry => ({
+    const allEntries = Object.values(zip.files)
+    let uncompressed = 0
+    let fileCount = 0
+    for (const entry of allEntries) {
+      if (entry.dir) continue
+      const data = (entry as unknown as { _data?: { uncompressedSize?: number } })._data
+      uncompressed += data?.uncompressedSize || 0
+      fileCount++
+    }
+    archiveCounts.value = { entries: allEntries.length, files: fileCount, uncompressed }
+    archiveEntries.value = allEntries.slice(0, 500).map(entry => ({
       name: entry.name,
       dir: entry.dir,
     }))
-    viewTruncated.value = Object.keys(zip.files).length > 500
+    viewTruncated.value = allEntries.length > 500
     return
   }
 
@@ -565,13 +782,35 @@ function formatSize(bytes: number): string {
   return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`
 }
 
-function onQualitySelect(key: string | number): void {
-  void quality.selectQuality(String(key), { savePreference: true })
+async function onQualitySelect(key: string | number): Promise<void> {
+  const previousSelection = qualitySelection
+  const profile = String(key)
+  const rendition = quality.renditions.value.find(item => item.profile === profile)
+  const playable = !!rendition && (rendition.status === 'ready' || (rendition.status === 'running' && rendition.init))
+  // 原画 always plays the raw source directly — its background remux never
+  // prompts. Other profiles without a usable rendition need a transcode.
+  if (profile !== 'original' && !playable) {
+    const confirmed = await showConfirm(
+      t('quality.transcode_title'),
+      t('quality.transcode_body', { profile: qualityLabelOf(profile) }),
+      { positiveText: t('quality.transcode_confirm') },
+    )
+    if (!confirmed || previousSelection !== qualitySelection) return
+  }
+  const selection = ++qualitySelection
+  switchingQuality.value = profile !== 'original' && !playable
+  try {
+    await quality.selectQuality(profile)
+  } catch {
+    if (selection === qualitySelection) message.error(t('quality.failed'))
+  } finally {
+    if (selection === qualitySelection) switchingQuality.value = false
+  }
 }
 </script>
 
 <template>
-  <main class="preview-shell">
+  <main class="preview-shell" :class="{ 'preview-shell--bar': isMobile && !editing }">
     <header class="preview-header">
       <NButton circle class="back-button" :aria-label="t('files.back_to_files')" @click="goBack">
         <template #icon><IconArrowLeft /></template>
@@ -597,6 +836,21 @@ function onQualitySelect(key: string | number): void {
           >
             <template #icon><IconContentSave /></template><span>{{ t('preview.save') }}</span>
           </NButton>
+        </template>
+        <template v-else-if="isMobile">
+          <NDropdown
+            v-if="isVideoFile && !inTrash"
+            trigger="click"
+            placement="bottom-end"
+            :options="qualityOptions"
+            data-testid="quality-dropdown"
+            @select="onQualitySelect"
+            @update:show="show => show && void quality.refresh()"
+          >
+            <NButton class="quality-menu" data-testid="quality-menu">
+              <template #icon><IconTune /></template><span>{{ qualityLabel }}</span>
+            </NButton>
+          </NDropdown>
         </template>
         <template v-else>
           <NDropdown
@@ -715,7 +969,23 @@ function onQualitySelect(key: string | number): void {
           </div>
         </div>
         <img v-else-if="viewerType === 'image'" :src="decryptUrl" class="preview-image" :alt="name" />
-        <video v-else-if="isVideoFile" ref="videoEl" class="preview-media" controls playsinline preload="metadata" />
+        <div v-else-if="isVideoFile" class="video-shell" @contextmenu.prevent="openVideoMenu">
+          <video ref="videoEl" class="preview-media" controls playsinline preload="metadata" />
+          <div v-if="switchingQuality" class="video-loading">
+            <NSpin size="large" />
+            <strong>{{ t('quality.preparing', { profile: qualityLabelOf(quality.activeQuality.value) }) }}</strong>
+          </div>
+          <NDropdown
+            trigger="manual"
+            :show="statsMenu"
+            :x="statsMenuX"
+            :y="statsMenuY"
+            placement="bottom-start"
+            :options="statsMenuOptions"
+            @select="toggleStats"
+            @clickoutside="statsMenu = false"
+          />
+        </div>
         <div v-else-if="viewerType === 'audio'" class="audio-card">
           <div class="audio-art"><span>♪</span></div>
           <strong>{{ name }}</strong>
@@ -761,11 +1031,37 @@ function onQualitySelect(key: string | number): void {
           </NResult>
         </div>
 
+        <div v-if="isVideoFile && statsVisible && stats" class="video-stats">
+          <div>{{ t('quality.stats_quality') }}: {{ qualityLabelOf(stats.quality) }}<template v-if="stats.segmented && stats.renditionStatus && stats.renditionStatus !== 'ready'"> · {{ stats.renditionStatus }}</template></div>
+          <div v-if="stats.videoWidth">{{ t('quality.stats_resolution') }}: {{ stats.videoWidth }}×{{ stats.videoHeight }}</div>
+          <div v-if="stats.codecs">codecs: {{ stats.codecs }}</div>
+          <div>{{ t('quality.stats_buffer') }}: +{{ stats.bufferedAhead.toFixed(1) }}s / −{{ stats.bufferedBehind.toFixed(1) }}s · {{ stats.bufferedRanges }}</div>
+          <div v-if="stats.segmented">{{ t('quality.stats_segments') }}: {{ stats.appendedSegments }}/{{ stats.totalSegments }}<template v-if="stats.renditionStatus === 'running' && stats.renditionProgress"> · {{ Math.round(stats.renditionProgress * 100) }}%</template></div>
+          <div v-if="stats.droppedFrames !== undefined">{{ t('quality.stats_dropped') }}: {{ stats.droppedFrames }} / {{ stats.totalFrames }}</div>
+        </div>
+
         <NAlert v-if="truncated" class="truncated-notice" type="warning" :show-icon="false">
           {{ t('files.preview_truncated') }}
         </NAlert>
       </template>
     </section>
+
+    <Transition name="select-bar">
+      <nav v-if="isMobile && !editing" class="preview-mobile-bar">
+        <NButton v-if="canEdit" quaternary @click="startEdit">
+          <IconPencilOutline /><span>{{ t('preview.edit') }}</span>
+        </NButton>
+        <NButton quaternary @click="showDetails = true">
+          <IconInformationOutline /><span>{{ t('menu.details') }}</span>
+        </NButton>
+        <NButton quaternary @click="download">
+          <IconDownload /><span>{{ t('menu.download') }}</span>
+        </NButton>
+        <NButton quaternary type="error" class="mobile-delete" :disabled="!file?.inode" @click="remove">
+          <IconDeleteOutline /><span>{{ inTrash ? t('menu.permanent_delete') : t('menu.delete') }}</span>
+        </NButton>
+      </nav>
+    </Transition>
 
     <NDrawer
       :show="showDetails && Boolean(file)"
@@ -781,6 +1077,15 @@ function onQualitySelect(key: string | number): void {
           <NDescriptionsItem :label="t('files.path')"><span class="path-value">{{ file.path }}</span></NDescriptionsItem>
           <NDescriptionsItem v-if="file.last_modified" :label="t('info.modified')">{{ dayjs(file.last_modified).format('YYYY-MM-DD HH:mm') }}</NDescriptionsItem>
         </NDescriptions>
+        <template v-if="metaItems.length">
+          <div class="exif-heading">{{ t('info.meta_title') }}</div>
+          <NDescriptions :column="1" label-placement="top" bordered size="small">
+            <NDescriptionsItem v-for="item in metaItems" :key="item.label" :label="item.label">
+              <a v-if="item.href" :href="item.href" target="_blank" rel="noopener">{{ item.value }}</a>
+              <template v-else>{{ item.value }}</template>
+            </NDescriptionsItem>
+          </NDescriptions>
+        </template>
         <template #footer>
           <NButton type="primary" block class="folder-button" @click="openContainingFolder">
             <template #icon><IconFolderOutline /></template>{{ t('files.open_containing_folder') }}
@@ -832,8 +1137,45 @@ function onQualitySelect(key: string | number): void {
 .preview-canvas--editing { display: block; overflow: hidden; padding: 16px; }
 .preview-canvas--image, .preview-canvas--video { background: #151a24; }
 .preview-image, .preview-media { display: block; max-width: 100%; max-height: calc(100dvh - 128px); object-fit: contain; box-shadow: 0 24px 70px rgb(0 0 0 / 24%); }
-.preview-media { width: min(1120px, 100%); }
-.preview-media { width: min(1120px, 100%); }
+.preview-media { width: auto; height: auto; }
+.video-shell {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 100%;
+}
+.video-shell .preview-media { grid-area: 1 / 1; }
+.video-loading {
+  grid-area: 1 / 1;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 18px;
+  border-radius: 999px;
+  color: #fff;
+  background: rgb(21 26 36 / 78%);
+  font-size: 13px;
+}
+.video-stats {
+  position: fixed;
+  top: 84px;
+  left: 12px;
+  right: 12px;
+  z-index: 30;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 22px;
+  padding: 10px 16px;
+  border-radius: 10px;
+  color: #eee;
+  background: rgb(21 26 36 / 82%);
+  font-family: ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.8;
+  user-select: text;
+}
 .preview-pdf { width: min(1120px, 100%); height: calc(100dvh - 128px); border: 0; border-radius: 12px; background: var(--domus-surface); box-shadow: 0 18px 58px rgb(30 38 58 / 15%); }
 .preview-state { display: flex; min-height: 280px; align-items: center; justify-content: center; flex-direction: column; gap: 9px; color: var(--muted); text-align: center; }
 .preview-state > svg { width: 38px; height: 38px; color: var(--muted); }
@@ -931,8 +1273,85 @@ function onQualitySelect(key: string | number): void {
 .path-value { font-family: ui-monospace, monospace; }
 .folder-button svg { width: 16px; height: 16px; }
 
+.exif-heading {
+  margin: 18px 0 10px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.exif-heading + .n-descriptions { margin-bottom: 4px; }
+
 @media (max-width: 680px) {
   .preview-header { height: 64px; padding: max(8px, env(safe-area-inset-top)) 12px 8px; }
+  .preview-actions button { width: 42px; height: 42px; padding: 0; }
+  .preview-actions button span { display: none; }
+  /* Quality keeps its label in the header so the current quality is visible. */
+  .preview-actions .quality-menu { width: auto; min-width: 42px; padding: 0 10px; }
+  .preview-actions .quality-menu span { display: inline; }
+  .preview-actions .quality-menu :deep(.n-button__icon) { margin-right: 4px; }
+  .preview-canvas { inset: 64px 0 0; padding: 10px; }
+  .preview-canvas--editing { padding: 8px; }
+  .preview-image, .preview-media { max-height: calc(100dvh - 84px); }
+  .preview-pdf { height: calc(100dvh - 84px); border-radius: 6px; }
+  /* Keep media above the fixed bottom bar. */
+  .preview-shell--bar .preview-image, .preview-shell--bar .preview-media { max-height: calc(100dvh - 148px); }
+  .preview-shell--bar .preview-pdf { height: calc(100dvh - 148px); }
+  .preview-shell--bar .document-preview, .preview-shell--bar .text-preview,
+  .preview-shell--bar .table-preview, .preview-shell--bar .notebook-preview,
+  .preview-shell--bar .archive-preview, .preview-shell--bar .font-preview {
+    min-height: calc(100dvh - 148px);
+    border-radius: 10px;
+  }
+  .preview-mobile-bar {
+    --bar-bg: rgba(255, 255, 255, .94);
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 40;
+    display: flex;
+    height: calc(64px + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom);
+    align-items: center;
+    border: 0;
+    border-top: 1px solid var(--nav-border, rgba(224, 227, 236, .9));
+    border-radius: 18px 18px 0 0;
+    background: var(--nav-bg, var(--bar-bg));
+    backdrop-filter: blur(20px);
+  }
+  .preview-mobile-bar button {
+    display: flex;
+    min-width: 0;
+    height: 100%;
+    flex: 1;
+    align-items: center;
+    justify-content: center;
+    border: 0;
+    padding: 0 3px;
+    color: var(--ink-2);
+    background: transparent;
+    font-size: 10px;
+    font-weight: 700;
+    touch-action: manipulation;
+  }
+  .preview-mobile-bar button :deep(.n-button__content) { flex-direction: column; gap: 4px; }
+  .preview-mobile-bar button svg { width: 21px; height: 21px; }
+  .preview-mobile-bar .mobile-delete { color: var(--domus-danger); }
+  /* Touch keeps :hover applied after a tap, so suppress sticky highlights. */
+  @media (hover: none) {
+    .preview-mobile-bar :deep(.n-button:not(.n-button--disabled):hover),
+    .preview-mobile-bar :deep(.n-button:not(.n-button--disabled):focus) {
+      background-color: transparent;
+    }
+    .preview-mobile-bar :deep(.n-button:not(.n-button--disabled):hover .n-button__state-border),
+    .preview-mobile-bar :deep(.n-button:not(.n-button--disabled):focus .n-button__state-border) {
+      border-color: transparent;
+    }
+  }
+  .select-bar-enter-active, .select-bar-leave-active { transition: transform .24s cubic-bezier(.2,.8,.3,1), opacity .24s ease; }
+  .select-bar-enter-from, .select-bar-leave-to { transform: translateY(100%); opacity: 0; }
   .preview-actions button { width: 42px; height: 42px; padding: 0; }
   .preview-actions button span { display: none; }
   .preview-actions button :deep(.n-button__icon) { margin-right: 0; }

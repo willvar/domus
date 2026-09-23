@@ -10,12 +10,37 @@ import type { RenditionArtifact, RenditionSummary, RenditionsResponse } from '..
 /** Fixed playback-quality menu order, mirroring the worker profiles. */
 export const RENDITION_PROFILES = ['2160p', '1440p', '1080p', '720p', '480p'] as const
 
+/** Snapshot of playback internals for the "stats for nerds" overlay. */
+export interface PlaybackStats {
+  quality: string
+  /** True while the MSE rendition pipeline is attached (false = raw source). */
+  segmented: boolean
+  renditionStatus?: string
+  renditionProgress?: number
+  codecs?: string
+  videoWidth?: number
+  videoHeight?: number
+  currentTime?: number
+  duration?: number
+  bufferedAhead: number
+  bufferedBehind: number
+  bufferedRanges: number
+  appendedSegments?: number
+  totalSegments?: number
+  droppedFrames?: number
+  totalFrames?: number
+}
+
 /**
  * Server-side transcode playback: attaches a quality rendition to a video
  * element via MSE and streams the growing segment manifest while the worker
  * is still transcoding, falling back to the original (fully decrypted) source.
  */
-export function useRenditions(options: { decryptUrl: () => string }) {
+export function useRenditions(options: {
+  decryptUrl: () => string
+  /** Source media codec string (from /file/access); shown for raw playback. */
+  sourceCodecs?: () => string | undefined
+}) {
   const renditions = ref<RenditionSummary[]>([])
   const sourceHeight = ref(0)
   const activeQuality = ref<string>('original')
@@ -38,6 +63,35 @@ export function useRenditions(options: { decryptUrl: () => string }) {
   let pollTimer: ReturnType<typeof setInterval> | null = null
   let pumpTimer: ReturnType<typeof setTimeout> | null = null
   let attachGeneration = 0
+  let selectionGeneration = 0
+  let refreshRequest = 0
+  let attachedProfile: string | null = null
+  let playbackIntent: boolean | null = null
+  const mediaCleanup: Array<() => void> = []
+
+  // View-facing readiness signals: resolve when a rendition's pipeline is
+  // attached and appending, reject when the rendition fails or playback is
+  // torn down. The preview view shows a loading overlay until these settle.
+  const readyWaiters = new Map<string, Array<{ resolve: () => void; reject: (reason: Error) => void }>>()
+
+  function waitPlayable(profile: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const list = readyWaiters.get(profile) || []
+      list.push({ resolve, reject })
+      readyWaiters.set(profile, list)
+    })
+  }
+
+  function settleWaiters(profile: string, error?: Error): void {
+    const list = readyWaiters.get(profile)
+    if (!list) return
+    readyWaiters.delete(profile)
+    for (const waiter of list) error ? waiter.reject(error) : waiter.resolve()
+  }
+
+  function settleAllWaiters(error: Error): void {
+    for (const profile of [...readyWaiters.keys()]) settleWaiters(profile, error)
+  }
 
   const { t } = useI18n()
   const notify = useAppMessage()
@@ -46,12 +100,18 @@ export function useRenditions(options: { decryptUrl: () => string }) {
     return renditions.value.find(rendition => rendition.profile === profile)
   }
 
-  async function refresh(): Promise<void> {
-    if (!filePath) return
+  async function refresh(): Promise<boolean> {
+    if (!filePath) return false
+    const request = ++refreshRequest
+    const requestPath = filePath
+    const generation = selectionGeneration
+    const attachment = attachGeneration
     const response = await api.get<RenditionsResponse>('/file/renditions', { params: { path: filePath } })
+    if (request !== refreshRequest || requestPath !== filePath || generation !== selectionGeneration || attachment !== attachGeneration) return false
     const payload = response.data
     renditions.value = Array.isArray(payload?.renditions) ? payload.renditions : []
     sourceHeight.value = payload?.source_height || 0
+    return true
   }
 
   /** Fetches and decrypts one derived artifact through the service worker. */
@@ -78,7 +138,7 @@ export function useRenditions(options: { decryptUrl: () => string }) {
   }
 
   function mimeType(rendition: RenditionSummary): string {
-    const codecs = rendition.codecs || 'avc1.640028,mp4a.40.2'
+    const codecs = rendition.codecs || (rendition.profile === 'original' ? '' : 'avc1.640028,mp4a.40.2')
     return `video/mp4; codecs="${codecs}"`
   }
 
@@ -98,6 +158,11 @@ export function useRenditions(options: { decryptUrl: () => string }) {
   function resolveMime(rendition: RenditionSummary): string | null {
     const ctor = mediaSourceCtor()
     if (!ctor) return null
+    if (rendition.profile === 'original') {
+      if (!rendition.codecs) return null
+      const mime = mimeType(rendition)
+      return ctor.isTypeSupported(mime) ? mime : null
+    }
     const candidates = [
       mimeType(rendition),
       // Renditions created before the worker's codec-string fix may carry an
@@ -125,6 +190,9 @@ export function useRenditions(options: { decryptUrl: () => string }) {
   }
 
   function teardownMedia(): void {
+    attachGeneration++
+    for (const cleanup of mediaCleanup.splice(0)) cleanup()
+    attachedProfile = null
     stopPolling()
     if (video) video.removeEventListener('seeking', onSeeking)
     sourceBuffer = null
@@ -232,6 +300,7 @@ export function useRenditions(options: { decryptUrl: () => string }) {
     if (start < 0 || end <= start) return false
     evicting = true
     target.addEventListener('updateend', () => {
+      if (sourceBuffer !== target) return
       evicting = false
       pump()
     }, { once: true })
@@ -244,30 +313,14 @@ export function useRenditions(options: { decryptUrl: () => string }) {
     return true
   }
 
-  /** Restarts the append window at a segment index after an out-of-region seek. */
+  /** Moves the append window to a segment index after an out-of-region seek.
+   *  fMP4 segments carry their own timestamps, so the target segment appends
+   *  straight into a fresh buffered range while previously buffered data
+   *  stays playable — evictBehind trims it as the playhead moves on. The
+   *  old full-buffer wipe here is what made every seek stall. */
   function restartWindow(index: number): void {
-    appendedEnd = index
-    const target = sourceBuffer
-    if (!target || target.updating) {
-      schedulePump(100)
-      return
-    }
-    const buffered = target.buffered
-    if (buffered.length === 0) {
-      pump()
-      return
-    }
-    evicting = true
-    target.addEventListener('updateend', () => {
-      evicting = false
-      pump()
-    }, { once: true })
-    try {
-      target.remove(0, buffered.end(buffered.length - 1))
-    } catch {
-      evicting = false
-      pump()
-    }
+    appendedEnd = Math.max(index, 0)
+    pump()
   }
 
   /** Fetches + appends one artifact; onDone runs on the completion tick. */
@@ -276,10 +329,7 @@ export function useRenditions(options: { decryptUrl: () => string }) {
     fetchArtifact(artifact, generation)
       .then(buffer => {
         const target = sourceBuffer
-        if (!target || generation !== attachGeneration) {
-          appending = false
-          return
-        }
+        if (!target || generation !== attachGeneration) return
         try {
           target.appendBuffer(buffer)
         } catch (reason) {
@@ -292,11 +342,13 @@ export function useRenditions(options: { decryptUrl: () => string }) {
           return
         }
         target.addEventListener('updateend', () => {
+          if (generation !== attachGeneration || sourceBuffer !== target) return
           appending = false
           onDone()
         }, { once: true })
       })
       .catch(() => {
+        if (generation !== attachGeneration) return
         appending = false
         schedulePump()
       })
@@ -354,22 +406,51 @@ export function useRenditions(options: { decryptUrl: () => string }) {
   }
 
   function restoreAfterMetadata(time: number): void {
-    if (!video || !time) return
+    const target = video
+    if (!target || !time) return
+    const generation = attachGeneration
+    const cleanup = (): void => target.removeEventListener('loadedmetadata', onLoaded)
     const onLoaded = (): void => {
-      video?.removeEventListener('loadedmetadata', onLoaded)
-      if (video && Number.isFinite(video.duration) && time < video.duration) video.currentTime = time
+      cleanup()
+      if (generation !== attachGeneration) return
+      if (Number.isFinite(target.duration) && time < target.duration) target.currentTime = time
     }
-    video.addEventListener('loadedmetadata', onLoaded)
+    mediaCleanup.push(cleanup)
+    target.addEventListener('loadedmetadata', onLoaded)
+  }
+
+  /** Resolves readiness waiters and resumes playback (if the source was
+   *  playing before the switch) once the first frame of the new source is
+   *  actually decodable. Auto-play can legitimately be rejected by the
+   *  browser's gesture policy after a long transcode wait — then the video
+   *  simply stays paused at the restored position. */
+  function settleOnCanPlay(profile: string, wasPlaying: boolean): void {
+    const target = video
+    if (!target) return
+    const generation = attachGeneration
+    const selection = selectionGeneration
+    const cleanup = (): void => target.removeEventListener('canplay', onCanPlay)
+    const onCanPlay = (): void => {
+      cleanup()
+      if (generation !== attachGeneration) return
+      if (selection === selectionGeneration) settleWaiters(profile)
+      playbackIntent = null
+      if (wasPlaying) target.play().catch(() => {})
+    }
+    mediaCleanup.push(cleanup)
+    target.addEventListener('canplay', onCanPlay)
   }
 
   async function playOriginal(): Promise<void> {
     if (!video) return
-    const keep = video.currentTime
+    const keep = restoreTime || video.currentTime
+    const wasPlaying = playbackIntent ?? !video.paused
     teardownMedia()
-    attachGeneration++
+    playbackIntent = wasPlaying
     activeQuality.value = 'original'
     video.src = options.decryptUrl()
     restoreAfterMetadata(keep)
+    settleOnCanPlay('original', wasPlaying)
   }
 
   /** Clamps seeks to the generated region while the rendition is still growing. */
@@ -403,12 +484,17 @@ export function useRenditions(options: { decryptUrl: () => string }) {
     const mime = resolveMime(rendition)
     if (!mime) {
       // Older iOS Safari has no MSE: the rendition pipeline cannot attach.
+      settleWaiters(profile, new Error('MSE unsupported'))
       notify.info(t('quality.mse_unsupported'))
+      await playOriginal()
       return
     }
-    const keep = video.currentTime
+    const keep = restoreTime || video.currentTime
+    const wasPlaying = playbackIntent ?? !video.paused
     teardownMedia()
-    attachGeneration++
+    const generation = attachGeneration
+    playbackIntent = wasPlaying
+    attachedProfile = profile
     activeQuality.value = profile
     restoreTime = keep
     const ctor = mediaSourceCtor()
@@ -424,9 +510,11 @@ export function useRenditions(options: { decryptUrl: () => string }) {
     video.src = objectUrl
     video.addEventListener('seeking', onSeeking)
     await onceSourceOpen(source, managed)
+    if (generation !== attachGeneration || mediaSource !== source) return
     const current = findRendition(profile)
     if (!mediaSource || !video || activeQuality.value !== profile || !current?.init) {
       console.warn('rendition attach aborted', { hasSource: !!mediaSource, hasVideo: !!video, active: activeQuality.value, profile, hasInit: !!current?.init })
+      settleWaiters(profile, new Error('rendition attach aborted'))
       await playOriginal()
       return
     }
@@ -434,6 +522,7 @@ export function useRenditions(options: { decryptUrl: () => string }) {
       sourceBuffer = mediaSource.addSourceBuffer(mime)
     } catch (reason) {
       console.warn('addSourceBuffer failed:', reason)
+      settleWaiters(profile, new Error('addSourceBuffer failed'))
       await playOriginal()
       return
     }
@@ -449,6 +538,7 @@ export function useRenditions(options: { decryptUrl: () => string }) {
     }
     pump()
     if (!finalized) startPolling()
+    settleOnCanPlay(profile, wasPlaying)
   }
 
   function onceSourceOpen(source: MediaSource, managed: boolean): Promise<void> {
@@ -460,10 +550,17 @@ export function useRenditions(options: { decryptUrl: () => string }) {
       // ManagedMediaSource (iOS) signals readiness with 'startstreaming'
       // instead of 'sourceopen'; listen for both once.
       const onOpen = (): void => {
+        mediaCleanup.splice(mediaCleanup.indexOf(cancelSourceOpen), 1)
         source.removeEventListener('sourceopen', onOpen)
         source.removeEventListener('startstreaming', onOpen)
         resolve()
       }
+      const cancelSourceOpen = (): void => {
+        source.removeEventListener('sourceopen', onOpen)
+        source.removeEventListener('startstreaming', onOpen)
+        resolve()
+      }
+      mediaCleanup.push(cancelSourceOpen)
       source.addEventListener('sourceopen', onOpen)
       if (managed) source.addEventListener('startstreaming', onOpen)
     })
@@ -474,32 +571,45 @@ export function useRenditions(options: { decryptUrl: () => string }) {
       stopPolling()
       return
     }
+    const selection = selectionGeneration
+    const attachment = attachGeneration
     try {
-      await refresh()
+      if (!await refresh()) return
     } catch (reason) {
       console.warn('rendition refresh failed:', reason)
       return
     }
+    if (selection !== selectionGeneration || attachment !== attachGeneration || !video) return
     // Judge after the refresh: the selected rendition may only appear in the
     // manifest after the queue request was accepted server-side.
     const rendition = findRendition(activeQuality.value)
-    if (activeQuality.value === 'original' || !rendition) {
+    if (!rendition) {
+      if (readyWaiters.has(activeQuality.value) || attachedProfile === activeQuality.value) {
+        settleWaiters(activeQuality.value, new Error('rendition vanished'))
+        await playOriginal()
+      }
       stopPolling()
       return
     }
     if (rendition.status === 'failed' || rendition.status === 'cancelled') {
+      settleWaiters(activeQuality.value, new Error(rendition.error || 'rendition failed'))
       stopPolling()
-      await playOriginal()
+      // Recover to the raw original unless the raw original IS the current
+      // source. A mounted MSE source (segmented original included) must be
+      // torn down — a partial one would freeze on the last appended segment;
+      // but a raw file playing while its background remux fails needs no
+      // reload.
+      if (mediaSource || activeQuality.value !== 'original') await playOriginal()
       return
     }
     const updated = findRendition(activeQuality.value)
     if (!updated) return
-    if (updated.init && !sourceBuffer) {
+    if (updated.init && attachedProfile !== activeQuality.value) {
       // The init segment just appeared: attach the MSE pipeline now.
       await playRendition(activeQuality.value)
       return
     }
-    if (!sourceBuffer) return
+    if (!sourceBuffer || attachedProfile !== activeQuality.value) return
     const published = updated.segments || []
     if (published.length > segments.length) {
       segments = published
@@ -517,56 +627,76 @@ export function useRenditions(options: { decryptUrl: () => string }) {
     }
   }
 
-  /** Switches playback quality. Saves the preference when user-initiated. */
-  async function selectQuality(profile: string, opts: { silent?: boolean; savePreference?: boolean } = {}): Promise<void> {
+  /** Switches playback quality. Manual picks here never overwrite the saved
+   *  default preference (AccountMenu) — that preference only drives which
+   *  quality attach() applies when a video is opened. */
+  async function selectQuality(profile: string, opts: { silent?: boolean } = {}): Promise<void> {
     if (!video) return
-    if (opts.savePreference) {
-      const { update } = usePreferences()
-      update({ playbackQuality: profile })
-    }
-    if (profile === 'original') {
-      await playOriginal()
-      return
-    }
-    if (profile === activeQuality.value) return
     const rendition = findRendition(profile)
-    if (rendition && (rendition.status === 'ready' || (rendition.status === 'running' && rendition.init))) {
+    const failed = rendition?.status === 'failed' || rendition?.status === 'cancelled'
+    if (profile === activeQuality.value && !failed &&
+      (attachedProfile === profile || readyWaiters.has(profile))) return
+
+    const selection = ++selectionGeneration
+    settleAllWaiters(new Error('playback selection superseded'))
+    stopPolling()
+    // Keep a fully attached source on its own segments while the new init
+    // is pending; an unfinished attachment cannot keep playing.
+    if (mediaSource && (!sourceBuffer || (failed && attachedProfile === profile) ||
+      (profile === 'original' && (!rendition?.init || failed)))) {
+      await playOriginal()
+      if (selection !== selectionGeneration) return
+    }
+    activeQuality.value = profile
+    if (rendition && !failed && (rendition.status === 'ready' || rendition.init)) {
       await playRendition(profile)
       return
     }
-    if (rendition && (rendition.status === 'queued' || rendition.status === 'running')) {
-      // Selected but not decodable yet: keep the original and poll.
-      activeQuality.value = profile
-      finalized = false
-      startPolling()
-      if (!opts.silent) notify.info(t('quality.queued'))
-      return
-    }
-    try {
-      await api.post('/file/transcode', { path: filePath, profile })
-      activeQuality.value = profile
-      finalized = false
-      startPolling()
-      if (!opts.silent) notify.info(t('quality.queued'))
-    } catch (reason: any) {
-      if (reason?.response?.status === 409) {
-        await refresh()
-        const existing = findRendition(profile)
-        if (existing && existing.status !== 'failed' && existing.status !== 'cancelled') {
-          if (existing.status === 'ready' || existing.init) await playRendition(profile)
-          else {
-            activeQuality.value = profile
-            startPolling()
+
+    const pending = waitPlayable(profile)
+    // Original upgrades in the background. Other selections must settle
+    // on supersession even while their queue POST is still in flight.
+    if (profile === 'original') void pending.catch(() => {})
+    const queue = async (): Promise<void> => {
+      if (!rendition || failed) {
+        try {
+          await api.post('/file/transcode', { path: filePath, profile })
+        } catch (reason: unknown) {
+          if (!reason || typeof reason !== 'object' || !('response' in reason) ||
+            !reason.response || typeof reason.response !== 'object' ||
+            !('status' in reason.response) || reason.response.status !== 409) throw reason
+          if (selection !== selectionGeneration) return
+          await refresh()
+          if (selection !== selectionGeneration) return
+          const existing = findRendition(profile)
+          if (!existing || existing.status === 'failed' || existing.status === 'cancelled') throw reason
+          if (existing.status === 'ready' || existing.init) {
+            await playRendition(profile)
+            return
           }
-          return
         }
       }
-      notify.error(t('quality.failed'))
+      if (selection !== selectionGeneration) return
+      // POST creates its row synchronously: missing on the next poll means
+      // cancellation/replacement, not eventual queue visibility.
+      startPolling()
+      if (profile !== 'original' && !opts.silent) notify.info(t('quality.queued'))
     }
+    void queue().catch(async (reason: unknown) => {
+      if (selection !== selectionGeneration) return
+      settleWaiters(profile, reason instanceof Error ? reason : new Error('rendition queue failed'))
+      if (profile === 'original') notify.error(t('quality.failed'))
+      await playOriginal()
+    })
+    if (profile !== 'original') await pending
   }
 
   /** Loads the rendition manifest for a file and applies the saved default. */
   async function attach(target: HTMLVideoElement, path: string): Promise<void> {
+    detach()
+    renditions.value = []
+    sourceHeight.value = 0
+    const selection = selectionGeneration
     video = target
     filePath = path
     attachGeneration++
@@ -581,30 +711,83 @@ export function useRenditions(options: { decryptUrl: () => string }) {
       console.warn('rendition manifest unavailable:', reason)
       return
     }
-    const preference = prefs.playbackQuality
-    const wanted = preference === 'auto'
-      ? RENDITION_PROFILES.find(profile => {
-          const rendition = findRendition(profile)
-          return rendition?.status === 'ready' || (rendition?.status === 'running' && rendition.init)
-        })
-      : preference && preference !== 'original' ? preference : undefined
+    if (selection !== selectionGeneration || video !== target) return
+    const preference = prefs.playbackQuality === 'auto' ? 'original' : prefs.playbackQuality
+    // 'auto' was removed as a choice; stored values fall back to original.
+    // The explicit 'original' preference only ever uses the remuxed original
+    // or the raw source — it must not fall back to downscaled transcodes.
+    const candidates = !preference || preference === 'original'
+      ? ['original']
+      : [preference]
+    const wanted = candidates.find(profile => {
+      const rendition = findRendition(profile)
+      return rendition?.status === 'ready' || (rendition?.status === 'running' && rendition.init)
+    })
     if (wanted && findRendition(wanted)) {
       await playRendition(wanted)
       return
     }
-    if (wanted) {
+    if (preference && preference !== 'auto' && preference !== 'original') {
       // The remembered default has no rendition for this file yet: keep the
       // original playing and tell the user how to get it.
-      notify.info(t('quality.preferred_missing', { profile: wanted.toUpperCase() }))
+      notify.info(t('quality.preferred_missing', { profile: preference.toUpperCase() }))
+    }
+  }
+
+  /** Snapshot for the "stats for nerds" overlay. */
+  function getStats(): PlaybackStats {
+    let bufferedAhead = 0
+    let bufferedBehind = 0
+    let bufferedRanges = 0
+    if (video) {
+      const buffered = video.buffered
+      bufferedRanges = buffered.length
+      for (let index = 0; index < buffered.length; index++) {
+        if (buffered.start(index) <= video.currentTime && video.currentTime < buffered.end(index)) {
+          bufferedAhead = buffered.end(index) - video.currentTime
+          bufferedBehind = video.currentTime - buffered.start(index)
+          break
+        }
+      }
+    }
+    const rendition = findRendition(activeQuality.value)
+    let droppedFrames: number | undefined
+    let totalFrames: number | undefined
+    if (video) {
+      const playbackQuality = (video as any).getVideoPlaybackQuality?.()
+      if (playbackQuality) {
+        droppedFrames = playbackQuality.droppedVideoFrames
+        totalFrames = playbackQuality.totalVideoFrames
+      } else if ('webkitDroppedFrameCount' in video) {
+        droppedFrames = (video as any).webkitDroppedFrameCount
+        totalFrames = (video as any).webkitDecodedFrameCount
+      }
+    }
+    return {
+      quality: activeQuality.value,
+      segmented: !!mediaSource,
+      renditionStatus: rendition?.status,
+      renditionProgress: rendition?.progress,
+      codecs: mediaSource ? findRendition(attachedProfile || '')?.codecs : options.sourceCodecs?.() || undefined,
+      videoWidth: video?.videoWidth || undefined,
+      videoHeight: video?.videoHeight || undefined,
+      currentTime: video?.currentTime,
+      duration: video?.duration && Number.isFinite(video.duration) ? video.duration : undefined,
+      bufferedAhead, bufferedBehind, bufferedRanges,
+      appendedSegments: mediaSource ? appendedEnd : undefined,
+      totalSegments: mediaSource ? segments.length : undefined,
+      droppedFrames, totalFrames,
     }
   }
 
   function detach(): void {
+    selectionGeneration++
+    settleAllWaiters(new Error('playback detached'))
     teardownMedia()
-    attachGeneration++
+    playbackIntent = null
     video = null
     filePath = ''
   }
 
-  return { renditions, sourceHeight, activeQuality, attach, detach, selectQuality, refresh }
+  return { renditions, sourceHeight, activeQuality, attach, detach, selectQuality, refresh, getStats }
 }

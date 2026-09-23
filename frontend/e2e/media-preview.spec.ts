@@ -111,6 +111,8 @@ test('浏览器上传 PDF 时生成加密缩略图，显示开关默认关闭且
     await thumbnailSwitch.click()
     await expect(thumbnailSwitch).toHaveAttribute('aria-checked', 'true')
     expect(await page.evaluate(() => localStorage.getItem('domus_show_thumbnails'))).toBe('1')
+    await page.locator('.sidebar-account').click()
+    await expect(thumbnailSwitch).not.toBeVisible()
 
     const thumbnail = fileItem.locator('img.file-thumbnail')
     await expect(thumbnail).toBeVisible({ timeout: 30_000 })

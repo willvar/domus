@@ -474,7 +474,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       if (res.data.trash?.name) trashEntryNames.set(trashID, res.data.trash.name)
       const list = (res.data.files || []).map(file => ({
         ...file,
-        path: trashItemLocation(trashID, file.relative_path || '/', file.is_dir),
+        path: trashItemLocation(trashID, file.relative_path),
       }))
       registerThumbnails(list)
       await useServiceWorker().flush()

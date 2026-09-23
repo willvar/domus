@@ -40,6 +40,8 @@ type FileInfo struct {
 	MediaWidth    int       `json:"media_width,omitempty"`
 	MediaHeight   int       `json:"media_height,omitempty"`
 	MediaDuration float64   `json:"media_duration,omitempty"`
+	MediaCodecs   string    `json:"media_codecs,omitempty"`
+	MediaMeta     string    `json:"media_meta,omitempty"`
 	Status        string    `json:"status,omitempty"`
 	TaskID        string    `json:"task_id,omitempty"`
 	TaskProgress  float64   `json:"task_progress,omitempty"`

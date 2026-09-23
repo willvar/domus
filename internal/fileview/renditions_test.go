@@ -262,3 +262,88 @@ func TestResetRenditionsForTasks(t *testing.T) {
 		t.Fatalf("reset rendition = %#v", reset)
 	}
 }
+
+func TestMediaProbeUpdateDoesNotReviveStaleFields(t *testing.T) {
+	env := newRenditionTestEnv(t)
+	inode, _ := env.publishTestVideo(t, "revive.mp4")
+	_, thumbnailKey := env.publishTestVideo(t, "revive-thumb.webp")
+	repository := env.repository
+	before, err := repository.Get(env.userID, "/revive.mp4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateContentType(env.userID, before.Path, "video/old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateMediaCodecs(env.userID, before.Path, uint64(inode), before.Generation, "avc1.OLD"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateMediaMeta(env.userID, before.Path, uint64(inode), before.Generation, `{"title":"old"}`); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.UpdateThumbnail(env.userID, before.Path, thumbnailKey, "", 320, 180, 4); err != nil {
+		t.Fatal(err)
+	}
+
+	// Use the same writeback path as FUSE: the DOFS generation advances without
+	// a Domus upload commit resetting the product metadata.
+	runtime := repository.runtime
+	writer, err := dofs.NewBackend(t.Context(), env.userID, runtime.Metadata, runtime.Objects, runtime.Keys, dofs.BackendOptions{Writable: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if err := writer.EnableWriteback(t.Context(), t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	node, err := runtime.Metadata.GetNode(t.Context(), env.userID, uint64(inode))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := writer.OpenWrite(t.Context(), node, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := session.WriteAt(t.Context(), []byte("replacement bytes"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Commit(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := session.Close(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	replacement, err := repository.Get(env.userID, before.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replacement.Generation != before.Generation+1 || replacement.ContentHash != "" || replacement.ThumbnailKey != "" {
+		t.Fatalf("replacement exposed previous contents: %+v", replacement)
+	}
+	if err := repository.UpdateMediaMeta(env.userID, before.Path, uint64(inode), replacement.Generation, `{"title":"new"}`); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := repository.Get(env.userID, before.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.MediaMeta != `{"title":"new"}` || updated.MediaCodecs != "" || updated.ThumbnailKey != "" ||
+		updated.ContentHash != "" || updated.ContentType != "video/mp4" || updated.MediaWidth != 0 || updated.MediaHeight != 0 || updated.MediaDuration != 0 {
+		t.Fatalf("probe revived previous-generation fields: %+v", updated)
+	}
+	if err := repository.UpdateMediaCodecs(env.userID, before.Path, uint64(inode), replacement.Generation, "avc1.NEW"); err != nil {
+		t.Fatal(err)
+	}
+	// Model a probe which passed its identity check before the replacement but
+	// arrives at the database after a newer-generation result was persisted.
+	if err := repository.upsertMetadata(env.userID, uint64(inode), before.Generation, map[string]any{"media_meta": `{"title":"late old result"}`}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err = repository.Get(env.userID, before.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.MediaCodecs != "avc1.NEW" || updated.MediaMeta != `{"title":"new"}` {
+		t.Fatalf("same-generation merge or stale-write rejection failed: %+v", updated)
+	}
+}

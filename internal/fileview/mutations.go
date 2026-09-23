@@ -57,14 +57,47 @@ func (r *Repo) ensureDirectoryPath(ctx context.Context, user *model.User, namesp
 	return current, nil
 }
 
-func (r *Repo) upsertMetadata(userID string, inode uint64, updates map[string]any) error {
+func (r *Repo) upsertMetadata(userID string, inode uint64, generation int64, updates map[string]any) error {
 	now := time.Now().UTC()
-	record := metadataRecord{UserID: userID, Inode: inode, CreatedAt: now, UpdatedAt: now}
-	if err := r.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&record).Error; err != nil {
-		return err
+	values := map[string]any{
+		"user_id": userID, "inode": inode, "generation": generation,
+		"content_type": "", "content_hash": "", "thumbnail": uint64(0),
+		"media_width": 0, "media_height": 0, "media_duration": float64(0),
+		"media_codecs": "", "media_meta": "", "created_at": now, "updated_at": now,
 	}
-	updates["updated_at"] = now
-	return r.db.Model(&metadataRecord{}).Where("user_id = ? AND inode = ?", userID, inode).Updates(updates).Error
+	assignments := make(clause.Set, 0, 10)
+	for _, name := range []string{
+		"content_type", "content_hash", "thumbnail", "media_width", "media_height",
+		"media_duration", "media_codecs", "media_meta",
+	} {
+		incoming := clause.Column{Table: "excluded", Name: name}
+		var value any = incoming
+		if update, ok := updates[name]; ok {
+			values[name] = update
+		} else {
+			// Preserve siblings only within the same generation. A new generation
+			// resets every field not supplied by this update in the same statement.
+			value = gorm.Expr("CASE WHEN ? = ? THEN ? ELSE ? END",
+				clause.Column{Table: "domus_file_metadata", Name: "generation"},
+				clause.Column{Table: "excluded", Name: "generation"},
+				clause.Column{Table: "domus_file_metadata", Name: name}, incoming)
+		}
+		assignments = append(assignments, clause.Assignment{Column: clause.Column{Name: name}, Value: value})
+	}
+	for _, name := range []string{"generation", "updated_at"} {
+		assignments = append(assignments, clause.Assignment{
+			Column: clause.Column{Name: name}, Value: clause.Column{Table: "excluded", Name: name},
+		})
+	}
+	return r.db.Model(&metadataRecord{}).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_id"}, {Name: "inode"}},
+		DoUpdates: assignments,
+		// A delayed probe must not roll a newer projection back to its generation.
+		Where: clause.Where{Exprs: []clause.Expression{clause.Lte{
+			Column: clause.Column{Table: "domus_file_metadata", Name: "generation"},
+			Value:  clause.Column{Table: "excluded", Name: "generation"},
+		}}},
+	}).Create(values).Error
 }
 
 func (r *Repo) Upsert(userID, namespacePath, name string, isDir bool, size int64, contentType, contentHash string, options ...model.UpsertFileOpts) error {
@@ -93,11 +126,13 @@ func (r *Repo) Upsert(userID, namespacePath, name string, isDir bool, size int64
 			return dofs.ErrConflict
 		}
 	}
-	return r.upsertMetadata(userID, node.Inode, map[string]any{
-		"generation": node.Generation, "content_type": contentType, "content_hash": contentHash,
+	return r.upsertMetadata(userID, node.Inode, node.Generation, map[string]any{
+		"content_type": contentType, "content_hash": contentHash,
 		// Product metadata is generation-scoped. A replacement must never show
-		// dimensions or a thumbnail generated from the previous plaintext.
+		// dimensions, a thumbnail or codec strings generated from the previous
+		// plaintext.
 		"thumbnail": 0, "media_width": 0, "media_height": 0, "media_duration": 0,
+		"media_codecs": "", "media_meta": "",
 	})
 }
 
@@ -249,18 +284,21 @@ func (r *Repo) UpdateThumbnail(userID, namespacePath, thumbnailKey, thumbnailWra
 	if err != nil {
 		return err
 	}
-	return r.upsertMetadata(userID, uint64(record.ID), map[string]any{
-		"generation": record.Generation, "thumbnail": thumbnail, "media_width": width, "media_height": height, "media_duration": duration,
+	return r.upsertMetadata(userID, uint64(record.ID), record.Generation, map[string]any{
+		"thumbnail": thumbnail, "media_width": width, "media_height": height, "media_duration": duration,
 	})
 }
 
 func (r *Repo) UpdateThumbnailIfGeneration(userID, namespacePath string, fileID, generation int64, thumbnailKey, thumbnailWrappedDEK string, width, height int, duration float64) (bool, error) {
 	record, err := r.Get(userID, namespacePath)
-	if errors.Is(err, gorm.ErrRecordNotFound) || record.ID != fileID || record.Generation != generation || record.Status != "ready" {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
+	}
+	if record.ID != fileID || record.Generation != generation || record.Status != "ready" {
+		return false, nil
 	}
 	thumbnail, err := r.thumbnailInode(userID, thumbnailKey, thumbnailWrappedDEK)
 	if err != nil {
@@ -269,8 +307,8 @@ func (r *Repo) UpdateThumbnailIfGeneration(userID, namespacePath string, fileID,
 	// Stamp the generation that was actually probed. If a writer commits after
 	// this check, recordFromNode ignores this now-stale row instead of attaching
 	// an old thumbnail to the new contents.
-	return true, r.upsertMetadata(userID, uint64(record.ID), map[string]any{
-		"generation": generation, "thumbnail": thumbnail, "media_width": width,
+	return true, r.upsertMetadata(userID, uint64(record.ID), generation, map[string]any{
+		"thumbnail": thumbnail, "media_width": width,
 		"media_height": height, "media_duration": duration,
 	})
 }
@@ -280,7 +318,37 @@ func (r *Repo) UpdateContentType(userID, namespacePath, contentType string) erro
 	if err != nil {
 		return err
 	}
-	return r.upsertMetadata(userID, uint64(record.ID), map[string]any{"generation": record.Generation, "content_type": contentType})
+	return r.upsertMetadata(userID, uint64(record.ID), record.Generation, map[string]any{"content_type": contentType})
+}
+
+// UpdateMediaCodecs records the source media's MSE codec string, probed by
+// the worker through the FUSE mount. The caller passes the inode and
+// generation captured before the probe; if the file was replaced or moved in
+// the meantime the stale result is discarded instead of being attached to the
+// new contents.
+func (r *Repo) UpdateMediaCodecs(userID, namespacePath string, fileID uint64, generation int64, codecs string) error {
+	record, err := r.Get(userID, namespacePath)
+	if err != nil {
+		return err
+	}
+	if uint64(record.ID) != fileID || record.Generation != generation || record.Status != "ready" {
+		return nil
+	}
+	return r.upsertMetadata(userID, fileID, generation, map[string]any{"media_codecs": codecs})
+}
+
+// UpdateMediaMeta records the JSON-encoded ffprobe summary of the source
+// media. Like the codec string it carries the pre-probe inode/generation and
+// is discarded when the contents changed during the probe.
+func (r *Repo) UpdateMediaMeta(userID, namespacePath string, fileID uint64, generation int64, meta string) error {
+	record, err := r.Get(userID, namespacePath)
+	if err != nil {
+		return err
+	}
+	if uint64(record.ID) != fileID || record.Generation != generation || record.Status != "ready" {
+		return nil
+	}
+	return r.upsertMetadata(userID, fileID, generation, map[string]any{"media_meta": meta})
 }
 
 func (r *Repo) SearchFiles(userID, query string, limit int) ([]model.SearchFileResult, error) {

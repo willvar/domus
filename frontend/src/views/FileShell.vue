@@ -44,7 +44,6 @@ import {
   IconInformationOutline,
   IconMagnify,
   IconPencilOutline,
-  IconPlus,
   IconProgressClock,
   IconRefresh,
   IconRestore,
@@ -60,6 +59,9 @@ import { useI18n } from '../composables/useI18n'
 import { useAppMessage } from '../ui/feedback'
 import { showConfirm, showPrompt } from '../composables/useNativeDialog'
 import api from '../composables/useApi'
+import { registerFileDecrypt, unregisterFileDecrypt } from '../composables/useFileAccess'
+import { mediaMetaItems, parseMediaMeta } from '../utils/mediaMeta'
+import type { MetaItem } from '../utils/mediaMeta'
 import { useAuthStore } from '../stores/auth'
 import { useFileSystemStore } from '../stores/fileSystem'
 import { usePendingOpsStore } from '../stores/pendingOps'
@@ -97,6 +99,11 @@ const showActivity = ref(false)
 const showInspector = ref(false)
 const showThumbnails = ref(localStorage.getItem('domus_show_thumbnails') === '1')
 const detailsFile = ref<FileListItem | null>(null)
+// Inspector extras: worker-probed media meta plus client-side parsing of
+// zip-based formats (zip archives, docx/xlsx/pptx document properties).
+const inspectorExtraMeta = ref<MetaItem[]>([])
+const OFFICE_EXTS = new Set(['docx', 'xlsx', 'pptx'])
+const inspectorMetaEpoch = { current: 0 }
 const actionFile = ref<FileListItem | null>(null)
 const showActionMenu = ref(false)
 const actionMenuEpoch = ref(0)
@@ -139,13 +146,6 @@ const rubberBandStyle = computed(() => {
 const homePath = '/'
 const isHome = computed(() => fs.currentPath === homePath && !fs.searchMode)
 const activePlace = computed(() => fs.isTrash ? 'trash' : 'files')
-const currentTitle = computed(() => {
-  if (fs.searchMode) return t('files.search_results')
-  if (fs.isTrash) return fs.pathSegments[fs.pathSegments.length - 1]?.name || t('places.trash')
-  if (isHome.value) return t('files.my_files')
-  const value = fs.currentPath.replace(/\/$/, '').split('/').pop()
-  return value || t('files.my_files')
-})
 const directoryFiles = computed(() => fs.sortedFiles)
 const foldersCount = computed(() => directoryFiles.value.filter(file => file.is_dir).length)
 const filesCount = computed(() => directoryFiles.value.length - foldersCount.value)
@@ -195,11 +195,6 @@ const sortOptions = computed(() => [
   { label: t('toolbar.sort_name'), value: 'name' },
   { label: t('toolbar.sort_date'), value: 'date' },
   { label: t('toolbar.sort_size'), value: 'size' },
-])
-
-const createOptions = computed<DropdownOption[]>(() => [
-  { key: 'upload', label: t('toolbar.upload'), icon: renderIcon(IconUpload) },
-  { key: 'folder', label: t('toolbar.new_folder'), icon: renderIcon(IconFolderPlusOutline) },
 ])
 
 const actionMenuOptions = computed<DropdownOption[]>(() => {
@@ -303,7 +298,7 @@ function closeFloatingPanels(): void {
 
 function updateBreadcrumbOverflow(): void {
   const viewport = breadcrumbViewport.value
-  if (!viewport || !isMobile.value) {
+  if (!viewport) {
     breadcrumbOverflowLeft.value = false
     breadcrumbOverflowRight.value = false
     return
@@ -316,7 +311,7 @@ function revealCurrentBreadcrumb(): void {
   void nextTick(() => {
     const viewport = breadcrumbViewport.value
     if (!viewport) return
-    if (isMobile.value) viewport.scrollLeft = viewport.scrollWidth
+    viewport.scrollLeft = viewport.scrollWidth
     updateBreadcrumbOverflow()
   })
 }
@@ -596,11 +591,6 @@ async function handleActionSelect(key: string | number): Promise<void> {
   }
 }
 
-function handleCreateSelect(key: string | number): void {
-  if (key === 'upload') triggerUpload()
-  if (key === 'folder') void fs.createFolder()
-}
-
 function openAdmin(): void {
   showAccount.value = false
   void router.push('/admin')
@@ -614,6 +604,116 @@ function showDetails(file: FileListItem): void {
   detailsFile.value = file
   showInspector.value = true
   actionFile.value = null
+}
+
+watch(() => [detailsFile.value?.path, showInspector.value] as const, () => {
+  // Every transition (close, switch to another file or a directory) invalidates
+  // in-flight parses; the epoch check inside the loader sees this bump.
+  inspectorMetaEpoch.current++
+  inspectorAbort?.abort()
+  inspectorAbort = null
+  if (!showInspector.value || !detailsFile.value || detailsFile.value.is_dir) {
+    inspectorExtraMeta.value = []
+    return
+  }
+  inspectorExtraMeta.value = []
+  void loadInspectorExtra()
+})
+
+// Best-effort extras for the inspector. The worker-probed media meta needs no
+// extra work; zip-based formats (zip archives, docx/xlsx/pptx) are parsed
+// client-side from the decrypted bytes.
+const INSPECTOR_ZIP_LIMIT = 256 * 1024 * 1024
+let inspectorAbort: AbortController | null = null
+
+async function loadInspectorExtra(): Promise<void> {
+  const target = detailsFile.value
+  if (!target || target.is_dir) return
+  const epoch = inspectorMetaEpoch.current
+  const mediaMeta = parseMediaMeta(target.media_meta)
+  if (mediaMeta) {
+    inspectorExtraMeta.value = mediaMetaItems(mediaMeta)
+    if (!isZipLike(target.name)) return
+  }
+  if (!isZipLike(target.name)) return
+  // Parsing needs the whole file in memory; skip huge ones instead of
+  // downloading gigabytes just for the metadata panel.
+  if ((target.size || 0) > INSPECTOR_ZIP_LIMIT) return
+  try {
+    const { decryptUrl } = await registerFileDecrypt(target)
+    if (epoch !== inspectorMetaEpoch.current) {
+      unregisterFileDecrypt(decryptUrl)
+      return
+    }
+    inspectorAbort = new AbortController()
+    const response = await fetch(decryptUrl, { signal: inspectorAbort.signal })
+    unregisterFileDecrypt(decryptUrl)
+    if (!response.ok) return
+    const { default: JSZip } = await import('jszip')
+    const zip = await JSZip.loadAsync(await response.arrayBuffer())
+    const entries = Object.values(zip.files)
+    const items: MetaItem[] = []
+    const ext = target.name.toLowerCase().split('.').pop() || ''
+    if (OFFICE_EXTS.has(ext)) {
+      const props = await officeProps(zip)
+      if (props.title) items.push({ label: t('info.meta_doc_title'), value: props.title })
+      if (props.creator) items.push({ label: t('info.meta_author'), value: props.creator })
+      if (props.created) items.push({ label: t('info.meta_created'), value: props.created })
+      if (props.modified) items.push({ label: t('info.meta_modified'), value: props.modified })
+      if (props.application) items.push({ label: t('info.meta_producer'), value: props.application })
+      if (props.pages) items.push({ label: t('info.meta_pages'), value: props.pages })
+    } else {
+      let files = 0
+      let uncompressed = 0
+      for (const entry of entries) {
+        if (entry.dir) continue
+        files++
+        uncompressed += (entry as unknown as { _data?: { uncompressedSize?: number } })._data?.uncompressedSize || 0
+      }
+      items.push({ label: t('info.meta_entries'), value: String(entries.length) })
+      if (files !== entries.length) items.push({ label: t('info.meta_files'), value: String(files) })
+      if (uncompressed > 0) items.push({ label: t('info.meta_uncompressed'), value: formatSize(uncompressed) })
+    }
+    if (epoch === inspectorMetaEpoch.current && items.length) {
+      inspectorExtraMeta.value = [...inspectorExtraMeta.value, ...items]
+    }
+  } catch {
+    // Metadata is optional; ignore failures.
+  }
+}
+
+function isZipLike(name: string): boolean {
+  const ext = name.toLowerCase().split('.').pop() || ''
+  return ext === 'zip' || OFFICE_EXTS.has(ext)
+}
+
+async function officeProps(zip: { file: (name: string) => { async: (kind: 'string') => Promise<string> } | null }): Promise<{
+  title?: string; creator?: string; created?: string; modified?: string; application?: string; pages?: string
+}> {
+  const read = async (name: string): Promise<Document | null> => {
+    const xml = await zip.file(name)?.async('string')
+    if (!xml) return null
+    return new DOMParser().parseFromString(xml, 'application/xml')
+  }
+  const core = await read('docProps/core.xml')
+  const app = await read('docProps/app.xml')
+  const pick = (doc: Document | null, tag: string): string | undefined => {
+    const value = doc?.getElementsByTagName(tag)[0]?.textContent?.trim()
+    return value || undefined
+  }
+  const formatXmlDate = (value?: string): string | undefined => {
+    if (!value) return undefined
+    const parsed = dayjs(value)
+    return parsed.isValid() ? parsed.format('YYYY-MM-DD HH:mm') : value
+  }
+  return {
+    title: pick(core, 'dc:title'),
+    creator: pick(core, 'dc:creator'),
+    created: formatXmlDate(pick(core, 'dcterms:created')),
+    modified: formatXmlDate(pick(core, 'dcterms:modified')),
+    application: pick(app, 'Application'),
+    pages: pick(app, 'Pages'),
+  }
 }
 
 function setClipboard(file: FileListItem, mode: 'copy' | 'cut'): void {
@@ -724,6 +824,12 @@ function toggleSortOrder(): void {
 }
 
 function choosePlace(place: 'files' | 'trash'): void {
+  void goTo(place === 'trash' ? TRASH_ROOT_LOCATION : homePath)
+}
+
+/** Account-drawer navigation: closes the drawer, then jumps to the place. */
+function goToPlace(place: 'files' | 'trash'): void {
+  showAccount.value = false
   void goTo(place === 'trash' ? TRASH_ROOT_LOCATION : homePath)
 }
 
@@ -904,35 +1010,37 @@ function phaseLabel(phase?: string): string {
               <template #icon><IconProgressClock class="activity-center-icon" width="20" height="20" /></template>
             </NButton>
           </NBadge>
-          <NPopover
-            :show="showAccount && isMobile"
-            trigger="click"
-            placement="bottom-end"
-            :show-arrow="false"
+          <NButton quaternary circle class="mobile-account" @click.stop="showAccount = !showAccount; showActivity = false">
+            <img v-if="auth.user?.avatar_url" :src="auth.user.avatar_url" alt="" />
+            <IconAccountCircle v-else width="34" height="34" />
+          </NButton>
+          <NDrawer
+            v-if="isMobile"
+            :show="showAccount"
+            placement="right"
+            :width="304"
             @update:show="showAccount = $event"
           >
-            <template #trigger>
-            <NButton quaternary circle class="mobile-account" @click.stop="showActivity = false">
-              <img v-if="auth.user?.avatar_url" :src="auth.user.avatar_url" alt="" />
-              <IconAccountCircle v-else width="34" height="34" />
-            </NButton>
-            </template>
             <AccountMenu
+              class="mobile-account-drawer"
               :avatar-url="auth.user?.avatar_url"
               :display-name="auth.user?.display_name || auth.username"
               :username="auth.username"
               :role="auth.user?.role"
               :root="auth.isRoot"
               :show-thumbnails="showThumbnails"
+              :places="true"
+              :active-place="activePlace"
               @update:show-thumbnails="setThumbnailDisplay"
               @admin="openAdmin"
               @logout="logout"
+              @navigate="goToPlace"
             />
-          </NPopover>
+          </NDrawer>
         </div>
       </header>
 
-      <section class="file-workspace">
+      <section class="file-workspace" :class="{ 'select-bar-space': isMobile && fs.selectMode }">
         <div class="location-toolbar">
           <NButtonGroup class="history-buttons">
             <NButton quaternary size="small" :disabled="!fs.canGoBack" :title="t('toolbar.back')" @click="fs.goBack()">
@@ -966,6 +1074,9 @@ function phaseLabel(phase?: string): string {
               </NBreadcrumbItem>
             </NBreadcrumb>
           </div>
+        </div>
+
+        <div class="content-heading">
           <div class="primary-actions">
             <NButton
               v-if="!fs.isTrash && !fs.searchMode"
@@ -979,7 +1090,6 @@ function phaseLabel(phase?: string): string {
             </NButton>
             <NButton
               v-if="!fs.isTrash && !fs.searchMode"
-              type="primary"
               size="small"
               :aria-label="t('toolbar.upload')"
               :title="t('toolbar.upload')"
@@ -1014,26 +1124,6 @@ function phaseLabel(phase?: string): string {
               <template #icon><IconCheckboxMultipleMarkedOutline /></template>
               <span class="action-label">{{ t('files.select_multiple') }}</span>
             </NButton>
-          </div>
-          <NButton
-            v-if="!fs.searchMode && !selectionCount && !fs.selectMode && directoryFiles.length"
-            quaternary
-            size="small"
-            class="mobile-select-entry"
-            @click.stop="enterSelectMode()"
-          >
-            <template #icon><IconCheckboxMultipleMarkedOutline /></template>
-            {{ t('files.select_multiple') }}
-          </NButton>
-        </div>
-
-        <div class="content-heading">
-          <div>
-            <div class="eyebrow">{{ fs.searchMode ? t('files.searching_for', { query: searchText }) : t('files.location') }}</div>
-            <h1>{{ currentTitle }}</h1>
-            <p v-if="!fs.loading">
-              {{ fs.selectMode && isMobile ? t('files.selection_count', { n: selectionCount }) : t('files.item_summary', { folders: foldersCount, files: filesCount }) }}
-            </p>
           </div>
           <div v-if="!isMobile && !fs.searchMode && (selectionCount || fs.selectMode)" class="selection-controls">
             <span class="selection-count">{{ t('files.selection_count', { n: selectionCount }) }}</span>
@@ -1236,15 +1326,15 @@ function phaseLabel(phase?: string): string {
       </section>
     </main>
 
-    <nav class="mobile-bottom-nav" :class="{ 'is-selection': fs.selectMode }" :aria-label="fs.selectMode ? t('files.select_multiple') : 'File locations'">
-      <template v-if="fs.selectMode">
+    <Transition name="select-bar">
+      <nav v-if="isMobile && fs.selectMode" class="mobile-select-bar" :aria-label="t('files.select_multiple')">
         <NButton quaternary :disabled="!directoryFiles.length || selectionCount === directoryFiles.length" @click.stop="fs.selectAll()">
           <IconCheckboxMultipleMarkedOutline /><span>{{ t('menu.select_all') }}</span>
         </NButton>
         <NButton quaternary :disabled="!selectionCount" @click.stop="fs.copySelected(); message.success(t('files.copied'))">
           <IconContentCopy /><span>{{ t('mobile.selection.copy') }}</span>
         </NButton>
-        <NButton v-if="!fs.isTrash" quaternary :disabled="!selectionCount" @click.stop="fs.cutSelected(); message.success(t('files.cut'))">
+        <NButton v-if="!fs.isTrash" quaternary :disabled="!selectionCount" @click.stop="fs.cutSelected()">
           <IconContentCut /><span>{{ t('mobile.selection.cut') }}</span>
         </NButton>
         <NButton v-else quaternary :disabled="!selectionCount" @click.stop="fs.restoreSelected()">
@@ -1256,28 +1346,8 @@ function phaseLabel(phase?: string): string {
         <NButton quaternary @click.stop="fs.exitSelectMode()">
           <IconCheck /><span>{{ t('mobile.selection.done') }}</span>
         </NButton>
-      </template>
-      <template v-else>
-        <NButton quaternary :class="{ active: activePlace === 'files' }" @click.stop="choosePlace('files')">
-          <IconFolderHome /><span>{{ t('files.my_files') }}</span>
-        </NButton>
-        <NDropdown
-          trigger="click"
-          placement="top"
-          :options="createOptions"
-          :menu-props="() => ({ role: 'menu' })"
-          :node-props="dropdownNodeProps"
-          @select="handleCreateSelect"
-        >
-          <NButton circle type="primary" class="mobile-create" :disabled="fs.isTrash || fs.searchMode" @click.stop>
-            <template #icon><IconPlus /></template>
-          </NButton>
-        </NDropdown>
-        <NButton quaternary :class="{ active: activePlace === 'trash' }" @click.stop="choosePlace('trash')">
-          <IconDeleteOutline /><span>{{ t('places.trash') }}</span>
-        </NButton>
-      </template>
-    </nav>
+      </nav>
+    </Transition>
 
     <NDropdown
       :key="actionMenuEpoch"
@@ -1342,6 +1412,15 @@ function phaseLabel(phase?: string): string {
             <span class="path-value">{{ detailsFile.original_path || detailsFile.path }}</span>
           </NDescriptionsItem>
         </NDescriptions>
+        <template v-if="inspectorExtraMeta.length">
+          <div class="inspector__meta-heading">{{ t('info.meta_title') }}</div>
+          <NDescriptions :column="1" label-placement="top" bordered size="small">
+            <NDescriptionsItem v-for="item in inspectorExtraMeta" :key="item.label" :label="item.label">
+              <a v-if="item.href" :href="item.href" target="_blank" rel="noopener">{{ item.value }}</a>
+              <template v-else>{{ item.value }}</template>
+            </NDescriptionsItem>
+          </NDescriptions>
+        </template>
         <template #footer>
           <div class="inspector__actions">
             <NButton v-if="!detailsFile.is_dir" @click="downloadItem(detailsFile)">
@@ -1386,7 +1465,6 @@ function phaseLabel(phase?: string): string {
   --sidebar-bg: rgba(252, 253, 255, .96);
   --nav-bg: rgba(255, 255, 255, .94);
   --nav-border: rgba(224, 227, 236, .9);
-  --nav-shadow: 0 14px 42px rgba(33, 42, 64, .16);
   --drop-bg: rgb(243 245 255 / 94%);
   --drop-inset: rgb(255 255 255 / 52%);
   --selection-empty-bg: rgb(255 255 255 / 94%);
@@ -1497,24 +1575,40 @@ button, input, select { font: inherit; }
   cursor: pointer;
 }
 .mobile-account { display: none; border: 0; background: transparent; }
+/* Drawer surface: full height so the account actions can sit on the bottom
+   edge, with safe-area padding on both ends. */
+.mobile-account-drawer {
+  height: 100dvh;
+  padding: calc(16px + env(safe-area-inset-top)) 16px calc(18px + env(safe-area-inset-bottom));
+}
 
 .file-workspace { display: flex; height: calc(100dvh - 76px); min-height: 0; flex-direction: column; padding: 0 32px; }
-.location-toolbar { display: grid; min-height: 68px; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 18px; border-bottom: 1px solid var(--line); }
+.location-toolbar { display: grid; min-height: 68px; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 18px; }
 .history-buttons { display: flex; }
 .history-buttons svg, .view-controls svg { width: 18px; height: 18px; }
-.breadcrumbs-viewport { min-width: 0; overflow: hidden; }
-.breadcrumbs { display: flex; min-width: 0; align-items: center; gap: 5px; overflow: hidden; color: var(--ink-3); }
-.breadcrumbs :deep(.n-breadcrumb-item__link) { overflow: hidden; max-width: 180px; }
-.breadcrumbs :deep(.n-button) { max-width: 180px; color: var(--ink-2); font-size: 13px; font-weight: 650; }
+.breadcrumbs-viewport { min-width: 0; overflow-x: auto; overflow-y: hidden; -webkit-mask-repeat: no-repeat; mask-repeat: no-repeat; overscroll-behavior-inline: contain; scrollbar-width: none; touch-action: pan-x; }
+.breadcrumbs-viewport::-webkit-scrollbar { display: none; }
+.breadcrumbs-viewport.is-clipped-left:not(.is-clipped-right) {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 14px, #000 100%);
+  mask-image: linear-gradient(to right, transparent, #000 14px, #000 100%);
+}
+.breadcrumbs-viewport.is-clipped-right:not(.is-clipped-left) {
+  -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 14px), transparent);
+  mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 14px), transparent);
+}
+.breadcrumbs-viewport.is-clipped-left.is-clipped-right {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 14px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 14px), transparent);
+}
+.breadcrumbs { display: flex; min-width: 0; align-items: center; gap: 5px; width: max-content; color: var(--ink-3); }
+.breadcrumbs :deep(.n-breadcrumb-item) { flex: 0 0 auto; }
+.breadcrumbs :deep(.n-breadcrumb-item__link),
+.breadcrumbs :deep(.n-button) { max-width: 260px; font-size: 14px; font-weight: 600; }
 .breadcrumbs :deep(.n-button__content) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .primary-actions { display: flex; gap: 10px; }
-.mobile-select-entry { display: none; }
 
-.content-heading { display: flex; align-items: end; justify-content: space-between; gap: 24px; padding: 28px 0 20px; }
-.eyebrow { margin-bottom: 7px; color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-.content-heading h1 { margin: 0; font-size: 30px; font-weight: 720; line-height: 1.1; letter-spacing: -.04em; }
-.content-heading p { margin: 8px 0 0; color: var(--muted); font-size: 13px; }
-.view-controls { display: flex; align-items: center; gap: 7px; }
+.content-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 0px; padding: 0 0 12px; }
+.view-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
 .sort-control { display: flex; align-items: center; gap: 9px; color: var(--muted); font-size: 12px; }
 .sort-control .n-select { width: 122px; }
 .selection-controls {
@@ -1546,11 +1640,7 @@ button, input, select { font: inherit; }
   min-height: 0;
   flex: 1;
   overflow: auto;
-  padding: 20px;
-  border: 1px solid var(--line);
-  border-radius: 18px;
-  background: var(--surface-translucent);
-  box-shadow: var(--surface-shadow);
+  padding: 4px 0 20px;
 }
 .file-surface.rubber-banding { cursor: crosshair; user-select: none; }
 .rubber-band {
@@ -1632,10 +1722,10 @@ button, input, select { font: inherit; }
 
 .file-statusbar { display: flex; min-height: 42px; align-items: center; justify-content: space-between; color: var(--muted); font-size: 11px; }
 
-.mobile-bottom-nav { display: none; }
 .upload-input { display: none; }
 
 .inspector__preview { display: grid; height: 210px; place-items: center; overflow: hidden; margin: 22px 0; border: 1px solid var(--line); border-radius: 16px; color: var(--accent); background: var(--tile-bg); }
+.inspector__meta-heading { margin: 18px 0 10px; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .inspector__preview svg { width: 68px; height: 68px; }
 .inspector__preview img { width: 100%; height: 100%; object-fit: contain; }
 .path-value { font-family: ui-monospace, monospace; }
@@ -1680,43 +1770,19 @@ button, input, select { font: inherit; }
   .header-actions { position: static; order: 3; gap: 4px; }
   .activity-button { width: 40px; height: 40px; border-color: var(--line); background: var(--surface); }
   .mobile-account { display: grid; width: 40px; height: 40px; border: 1px solid var(--line); background: var(--surface); }
-  .file-workspace { height: calc(100dvh - 72px); min-height: 0; padding: 0 15px 92px; }
-  .location-toolbar { min-height: 58px; grid-template-columns: auto minmax(0, 1fr) auto; gap: 9px; }
+  .file-workspace { height: calc(100dvh - 72px); min-height: 0; padding: 0 15px calc(28px + env(safe-area-inset-bottom)); }
+  .file-workspace.select-bar-space { padding-bottom: calc(132px + env(safe-area-inset-bottom)); }
+  .location-toolbar { min-height: 58px; grid-template-columns: auto minmax(0, 1fr); gap: 9px; }
   .history-buttons button:nth-child(2) { display: none; }
   .history-buttons button { width: 36px; height: 36px; }
-  .breadcrumbs-viewport {
-    width: 100%;
-    overflow-x: auto;
-    overflow-y: hidden;
-    -webkit-mask-repeat: no-repeat;
-    mask-repeat: no-repeat;
-    overscroll-behavior-inline: contain;
-    scrollbar-width: none;
-    touch-action: pan-x;
-  }
-  .breadcrumbs-viewport::-webkit-scrollbar { display: none; }
-  .breadcrumbs-viewport.is-clipped-left:not(.is-clipped-right) {
-    -webkit-mask-image: linear-gradient(to right, transparent, #000 14px, #000 100%);
-    mask-image: linear-gradient(to right, transparent, #000 14px, #000 100%);
-  }
-  .breadcrumbs-viewport.is-clipped-right:not(.is-clipped-left) {
-    -webkit-mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 14px), transparent);
-    mask-image: linear-gradient(to right, #000 0, #000 calc(100% - 14px), transparent);
-  }
-  .breadcrumbs-viewport.is-clipped-left.is-clipped-right {
-    -webkit-mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 14px), transparent);
-    mask-image: linear-gradient(to right, transparent, #000 14px, #000 calc(100% - 14px), transparent);
-  }
-  .breadcrumbs { width: max-content; min-width: max-content; gap: 2px; overflow: visible; }
   .breadcrumbs :deep(.n-breadcrumb-item) { flex: 0 0 auto; }
   .breadcrumbs :deep(.n-breadcrumb-item__link),
   .breadcrumbs :deep(.n-button) { max-width: none; font-size: 12px; }
-  .primary-actions { display: none; }
-  .mobile-select-entry { display: flex; }
-  .content-heading { align-items: center; padding: 21px 2px 16px; }
-  .eyebrow { margin-bottom: 6px; font-size: 10px; }
-  .content-heading h1 { font-size: 25px; }
-  .content-heading p { margin-top: 6px; font-size: 12px; }
+  .primary-actions { display: flex; gap: 10px; }
+  .primary-actions .action-label { display: none; }
+  .primary-actions :deep(.n-button) { width: 38px; padding: 0; justify-content: center; }
+  .primary-actions :deep(.n-button .n-button__icon) { margin: 0; }
+  .content-heading { padding: 0 2px 12px; }
   .view-controls { gap: 3px; }
   .sort-control > span, .sort-order-button, .refresh-button { display: none; }
   .sort-control .n-select { width: 104px; }
@@ -1741,32 +1807,43 @@ button, input, select { font: inherit; }
   .mobile-meta { display: block; margin-top: 4px; color: var(--muted); font-size: 11px; font-weight: 400; }
   .surface-state { min-height: 330px; }
   .file-statusbar { display: none; }
-  .mobile-bottom-nav {
+  /* Contextual batch-action bar: only exists while select mode is active. */
+  .mobile-select-bar {
     position: fixed;
-    left: 10px;
-    right: 10px;
-    bottom: max(10px, env(safe-area-inset-bottom));
+    left: 0;
+    right: 0;
+    bottom: 0;
     z-index: 40;
     display: grid;
-    height: 68px;
-    grid-template-columns: 1fr 64px 1fr;
+    height: calc(64px + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom);
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     align-items: center;
-    border: 1px solid var(--nav-border);
-    border-radius: 21px;
+    border: 0;
+    border-top: 1px solid var(--nav-border);
+    border-radius: 18px 18px 0 0;
     background: var(--nav-bg);
-    box-shadow: var(--nav-shadow);
     backdrop-filter: blur(20px);
   }
-  .mobile-bottom-nav button { display: flex; height: 100%; align-items: center; justify-content: center; border: 0; color: var(--ink-2); background: transparent; font-size: 10px; font-weight: 700; }
-  .mobile-bottom-nav button :deep(.n-button__content) { flex-direction: column; gap: 4px; }
-  .mobile-bottom-nav button svg { width: 21px; height: 21px; }
-  .mobile-bottom-nav button.active { color: var(--accent); }
-  .mobile-bottom-nav.is-selection { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  .mobile-bottom-nav.is-selection button { min-width: 0; padding: 0 3px; }
-  .mobile-bottom-nav.is-selection .mobile-selection-delete { color: var(--domus-danger); }
-  .mobile-bottom-nav .mobile-create { width: 52px; height: 52px; place-self: center; border-radius: 17px; color: #fff; background: var(--accent); box-shadow: var(--brand-shadow); }
-  .mobile-bottom-nav .mobile-create:disabled { opacity: .38; }
-  .mobile-bottom-nav .mobile-create svg { width: 25px; height: 25px; }
+  .mobile-select-bar button { display: flex; min-width: 0; height: 100%; align-items: center; justify-content: center; border: 0; padding: 0 3px; color: var(--ink-2); background: transparent; font-size: 10px; font-weight: 700; touch-action: manipulation; }
+  .mobile-select-bar button :deep(.n-button__content) { flex-direction: column; gap: 4px; }
+  .mobile-select-bar button svg { width: 21px; height: 21px; }
+  .mobile-select-bar .mobile-selection-delete { color: var(--domus-danger); }
+  /* Touch keeps :hover applied after a tap (no pointer-leave), so naive-ui's
+     quaternary buttons leave a sticky highlight on the bar. :active — applied
+     only while pressed — still provides feedback. */
+  @media (hover: none) {
+    .mobile-select-bar :deep(.n-button:not(.n-button--disabled):hover),
+    .mobile-select-bar :deep(.n-button:not(.n-button--disabled):focus) {
+      background-color: transparent;
+    }
+    .mobile-select-bar :deep(.n-button:not(.n-button--disabled):hover .n-button__state-border),
+    .mobile-select-bar :deep(.n-button:not(.n-button--disabled):focus .n-button__state-border) {
+      border-color: transparent;
+    }
+  }
+  .select-bar-enter-active, .select-bar-leave-active { transition: transform .24s cubic-bezier(.2,.8,.3,1), opacity .24s ease; }
+  .select-bar-enter-from, .select-bar-leave-to { transform: translateY(100%); opacity: 0; }
   .inspector__preview { height: 150px; margin: 16px 0; }
 }
 

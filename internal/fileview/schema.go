@@ -14,8 +14,14 @@ type metadataRecord struct {
 	MediaWidth    int     `gorm:"not null;default:0"`
 	MediaHeight   int     `gorm:"not null;default:0"`
 	MediaDuration float64 `gorm:"not null;default:0"`
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	// MediaCodecs is the MSE codec string of the source media (for example
+	// "avc1.640028,mp4a.40.2"), probed by the worker from the FUSE mount.
+	MediaCodecs string `gorm:"not null;default:''"`
+	// MediaMeta is the JSON-encoded ffprobe summary of the source media
+	// (container/stream properties and recording tags), probed by the worker.
+	MediaMeta  string `gorm:"not null;default:''"`
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 func (metadataRecord) TableName() string { return "domus_file_metadata" }

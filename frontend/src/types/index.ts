@@ -63,6 +63,8 @@ export interface FileInfo {
   content_type?: string
   thumbnail_url?: string
   thumbnail_dek?: string
+  media_codecs?: string
+  media_meta?: string
   media_width?: number
   media_height?: number
   media_duration?: number
@@ -555,6 +557,8 @@ export interface FileAccessResponse {
   dek: string // hex-encoded Data Encryption Key
   generation: number
   content_hash?: string
+  media_codecs?: string
+  media_meta?: string
 }
 
 // -----------------------------------------------------------------------------

@@ -108,6 +108,8 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 			MediaWidth:    r.MediaWidth,
 			MediaHeight:   r.MediaHeight,
 			MediaDuration: r.MediaDuration,
+			MediaCodecs:   r.MediaCodecs,
+			MediaMeta:     r.MediaMeta,
 			Status:        r.Status,
 		}
 		if r.Status != "ready" && r.TaskID != "" {
@@ -549,5 +551,7 @@ func (h *Handler) sendFileAccessResponse(c *fiber.Ctx, session *model.Session, f
 		"dek":          hex.EncodeToString(dek),
 		"content_hash": fileRecord.ContentHash,
 		"generation":   fileRecord.Generation,
+		"media_codecs": fileRecord.MediaCodecs,
+		"media_meta":   fileRecord.MediaMeta,
 	})
 }

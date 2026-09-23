@@ -28,14 +28,32 @@ type Repo struct {
 	runtime *dofsbridge.Runtime
 }
 
+// Open migrates the projection schema and returns a repo. Schema migrations
+// belong to the web tier alone: it is the single process allowed to run DDL,
+// so tests and the web entrypoint use this constructor.
 func Open(database *gorm.DB, runtime *dofsbridge.Runtime) (*Repo, error) {
+	if err := migrate(database); err != nil {
+		return nil, fmt.Errorf("migrate Domus file projection: %w", err)
+	}
+	return open(database, runtime)
+}
+
+// OpenExisting returns a repo without touching the schema. The worker uses
+// this: two processes racing AutoMigrate on a brand-new column fail with
+// duplicate-column errors, and the worker has no business running DDL.
+func OpenExisting(database *gorm.DB, runtime *dofsbridge.Runtime) (*Repo, error) {
+	return open(database, runtime)
+}
+
+func open(database *gorm.DB, runtime *dofsbridge.Runtime) (*Repo, error) {
 	if database == nil || runtime == nil {
 		return nil, errors.New("Domus file view requires database and DOFS runtime")
 	}
-	if err := database.AutoMigrate(&metadataRecord{}, &uploadRecord{}, &renditionRecord{}); err != nil {
-		return nil, fmt.Errorf("migrate Domus file projection: %w", err)
-	}
 	return &Repo{db: database, runtime: runtime}, nil
+}
+
+func migrate(database *gorm.DB) error {
+	return database.AutoMigrate(&metadataRecord{}, &uploadRecord{}, &renditionRecord{})
 }
 
 func operationContext() (context.Context, context.CancelFunc) {
@@ -193,6 +211,8 @@ func (r *Repo) recordFromNode(ctx context.Context, user *model.User, node dofs.N
 		record.MediaWidth = metadata.MediaWidth
 		record.MediaHeight = metadata.MediaHeight
 		record.MediaDuration = metadata.MediaDuration
+		record.MediaCodecs = metadata.MediaCodecs
+		record.MediaMeta = metadata.MediaMeta
 		if metadata.Thumbnail != 0 {
 			thumbnail, thumbnailErr := r.runtime.Metadata.GetNode(ctx, user.ID, metadata.Thumbnail)
 			if thumbnailErr == nil && thumbnail.State == dofs.NodeStateReady && thumbnail.IsFile() {

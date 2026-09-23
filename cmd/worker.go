@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -82,7 +83,7 @@ func workerCommand(configPath string, args []string) {
 	if err := runtime.EnsureAllUsers(ctx); err != nil {
 		logger.Fatal("Failed to initialize DOFS namespaces: %v", err)
 	}
-	fileSystem, err := fileview.Open(db, runtime)
+	fileSystem, err := fileview.OpenExisting(db, runtime)
 	if err != nil {
 		logger.Fatal("Failed to initialize Domus file projection: %v", err)
 	}
@@ -153,11 +154,17 @@ type workerRunner struct {
 	limit      int
 }
 
+type workerProbeBatch struct {
+	userID, username, mountPoint string
+	metadata, codecs             []model.FileRecord
+}
+
 func (w *workerRunner) pass(ctx context.Context) (processed, failed int, err error) {
 	users, err := w.repos.Users.List()
 	if err != nil {
 		return 0, 0, fmt.Errorf("list users: %w", err)
 	}
+	var probes []workerProbeBatch
 	for _, user := range users {
 		if ctx.Err() != nil {
 			return processed, failed, ctx.Err()
@@ -165,20 +172,20 @@ func (w *workerRunner) pass(ctx context.Context) (processed, failed int, err err
 		if w.userFilter != "" && user.ID != w.userFilter && user.Username != w.userFilter {
 			continue
 		}
-		done, failures, userErr := w.processUser(ctx, user.ID, user.Username)
+		done, failures, userErr := w.processUser(ctx, user.ID, user.Username, &probes)
 		processed += done
 		failed += failures
 		if userErr != nil {
 			logger.Info("worker: user %s failed: %v", user.Username, userErr)
 		}
-		if w.limit > 0 && processed >= w.limit {
-			break
+		if w.limit > 0 && processed+failed >= w.limit {
+			return processed, failed, nil
 		}
 	}
-	return processed, failed, nil
+	return w.processProbes(ctx, probes, processed, failed)
 }
 
-func (w *workerRunner) processUser(ctx context.Context, userID, username string) (processed, failed int, err error) {
+func (w *workerRunner) processUser(ctx context.Context, userID, username string, probes *[]workerProbeBatch) (processed, failed int, err error) {
 	status, err := w.control.Ensure(ctx, dofs.MountUserSelector{UserID: userID})
 	if err != nil {
 		return 0, 0, fmt.Errorf("ensure mount: %w", err)
@@ -192,11 +199,12 @@ func (w *workerRunner) processUser(ctx context.Context, userID, username string)
 	processed += transcodeDone
 	failed += transcodeFailed
 
-	var candidates []model.FileRecord
-	if err := w.collectCandidates(ctx, userID, "/", &candidates); err != nil {
+	var thumbnailCandidates, codecCandidates, metaCandidates []model.FileRecord
+	if err := w.collectCandidates(ctx, userID, "/", &thumbnailCandidates, &codecCandidates, &metaCandidates); err != nil {
 		return processed, failed, err
 	}
-	for _, record := range candidates {
+
+	for _, record := range thumbnailCandidates {
 		if ctx.Err() != nil {
 			return processed, failed, ctx.Err()
 		}
@@ -211,10 +219,57 @@ func (w *workerRunner) processUser(ctx context.Context, userID, username string)
 		processed++
 		logger.Info("worker: thumbnail for %s ready (%s)", record.Path, username)
 	}
+
+	if len(metaCandidates) > 0 || len(codecCandidates) > 0 {
+		*probes = append(*probes, workerProbeBatch{
+			userID: userID, username: username, mountPoint: mountPoint,
+			metadata: metaCandidates, codecs: codecCandidates,
+		})
+	}
+
 	return processed, failed, nil
 }
 
-func (w *workerRunner) collectCandidates(ctx context.Context, userID, parentPath string, out *[]model.FileRecord) error {
+// Optional probes share the remaining pass budget only after every selected
+// user's thumbnails have had priority. Keep the collected records, not a
+// second namespace walk, so an unprobeable file cannot starve another user.
+func (w *workerRunner) processProbes(ctx context.Context, batches []workerProbeBatch, processed, failed int) (int, int, error) {
+	for _, batch := range batches {
+		for _, record := range batch.metadata {
+			if ctx.Err() != nil {
+				return processed, failed, ctx.Err()
+			}
+			if w.limit > 0 && processed+failed >= w.limit {
+				return processed, failed, nil
+			}
+			if err := w.probeFileMediaMeta(ctx, batch.userID, batch.mountPoint, record); err != nil {
+				failed++
+				logger.Info("worker: media meta probe for %s failed: %v", record.Path, err)
+				continue
+			}
+			processed++
+			logger.Info("worker: media meta for %s ready (%s)", record.Path, batch.username)
+		}
+		for _, record := range batch.codecs {
+			if ctx.Err() != nil {
+				return processed, failed, ctx.Err()
+			}
+			if w.limit > 0 && processed+failed >= w.limit {
+				return processed, failed, nil
+			}
+			if err := w.probeFileCodecs(ctx, batch.userID, batch.mountPoint, record); err != nil {
+				failed++
+				logger.Info("worker: codec probe for %s failed: %v", record.Path, err)
+				continue
+			}
+			processed++
+			logger.Info("worker: codec probe for %s ready (%s)", record.Path, batch.username)
+		}
+	}
+	return processed, failed, nil
+}
+
+func (w *workerRunner) collectCandidates(ctx context.Context, userID, parentPath string, thumbnailOut, codecOut, metaOut *[]model.FileRecord) error {
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -230,20 +285,34 @@ func (w *workerRunner) collectCandidates(ctx context.Context, userID, parentPath
 			if child.Path == "/.domus/" || strings.HasPrefix(child.Path, "/.domus/") {
 				continue
 			}
-			if err := w.collectCandidates(ctx, userID, child.Path, out); err != nil {
+			if err := w.collectCandidates(ctx, userID, child.Path, thumbnailOut, codecOut, metaOut); err != nil {
 				return err
 			}
 			continue
 		}
-		if child.Status != "ready" || child.ThumbnailKey != "" {
+		if child.Status != "ready" {
 			continue
 		}
-		if !isThumbnailMedia(child.ContentType) {
-			continue
+		// One walk serves all sweeps: thumbnails for image/video files that
+		// lack one, codec strings for video files, and ffprobe metadata
+		// summaries for any media file (video or audio) that lacks one.
+		if child.ThumbnailKey == "" && isThumbnailMedia(child.ContentType) {
+			*thumbnailOut = append(*thumbnailOut, child)
 		}
-		*out = append(*out, child)
+		if child.MediaCodecs == "" && strings.HasPrefix(child.ContentType, "video/") {
+			*codecOut = append(*codecOut, child)
+		}
+		if child.MediaMeta == "" && isProbeableMedia(child.ContentType) {
+			*metaOut = append(*metaOut, child)
+		}
 	}
 	return nil
+}
+
+// isProbeableMedia reports whether the content type benefits from an ffprobe
+// metadata summary (container properties and recording tags).
+func isProbeableMedia(contentType string) bool {
+	return strings.HasPrefix(contentType, "video/") || strings.HasPrefix(contentType, "audio/")
 }
 
 func (w *workerRunner) processFile(ctx context.Context, userID, mountPoint string, record model.FileRecord) error {
@@ -308,6 +377,47 @@ func (w *workerRunner) processFile(ctx context.Context, userID, mountPoint strin
 
 func isThumbnailMedia(contentType string) bool {
 	return strings.HasPrefix(contentType, "image/") || strings.HasPrefix(contentType, "video/")
+}
+
+// ---------------------------------------------------------------------------
+// Source media codec probing
+// ---------------------------------------------------------------------------
+
+// probeFileCodecs fills in the MSE codec string of one video source via the
+// FUSE mount. Files are probed once: the stored media_codecs value excludes
+// them from later sweeps.
+func (w *workerRunner) probeFileCodecs(ctx context.Context, userID, mountPoint string, record model.FileRecord) error {
+	sourcePath := filepath.Join(mountPoint, filepath.FromSlash(strings.TrimPrefix(record.Path, "/")))
+	if _, err := os.Stat(sourcePath); err != nil {
+		return fmt.Errorf("source is not mounted: %w", err)
+	}
+	codecs, err := worker.ProbeSourceCodecs(ctx, w.cfg.Worker.FFprobePath, sourcePath)
+	if err != nil {
+		return err
+	}
+	return w.files.UpdateMediaCodecs(userID, record.Path, uint64(record.ID), record.Generation, codecs)
+}
+
+// probeFileMediaMeta fills in the ffprobe metadata summary of one media
+// source via the FUSE mount. Files are probed once: the stored media_meta
+// value excludes them from later sweeps.
+func (w *workerRunner) probeFileMediaMeta(ctx context.Context, userID, mountPoint string, record model.FileRecord) error {
+	sourcePath := filepath.Join(mountPoint, filepath.FromSlash(strings.TrimPrefix(record.Path, "/")))
+	if _, err := os.Stat(sourcePath); err != nil {
+		return fmt.Errorf("source is not mounted: %w", err)
+	}
+	meta, err := worker.ProbeMediaMeta(ctx, w.cfg.Worker.FFprobePath, sourcePath)
+	if err != nil {
+		return err
+	}
+	if meta.IsEmpty() {
+		return fmt.Errorf("worker: media meta is empty for %s", record.Path)
+	}
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		return err
+	}
+	return w.files.UpdateMediaMeta(userID, record.Path, uint64(record.ID), record.Generation, string(encoded))
 }
 
 // ---------------------------------------------------------------------------
@@ -522,6 +632,9 @@ func (p *transcodePublisher) publishInit(ctx context.Context) {
 // publishPending publishes playlist entries that appeared since the last
 // call. It returns the count of newly published segments.
 func (p *transcodePublisher) publishPending(ctx context.Context) (int, error) {
+	if !p.initPublished {
+		return 0, nil
+	}
 	content, err := os.ReadFile(filepath.Join(p.scratchDir, "index.m3u8"))
 	if err != nil {
 		return 0, nil // the playlist appears shortly after the job starts

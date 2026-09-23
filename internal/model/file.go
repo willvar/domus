@@ -26,6 +26,8 @@ type FileRecord struct {
 	MediaWidth          int     `json:"-"`
 	MediaHeight         int     `json:"-"`
 	MediaDuration       float64 `json:"-"`
+	MediaCodecs         string  `json:"-"`
+	MediaMeta           string  `json:"-"`
 	WrappedDEK          string  `json:"-"`
 
 	Status           string    `json:"status"`
