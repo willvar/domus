@@ -539,7 +539,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       if (file.thumbnail_url.startsWith('/__decrypt__/')) continue
       const decryptUrl = sw.registerDecrypt({
         url: file.thumbnail_url,
-        size: 0,
+        size: null,
         chunkSize: 0,
         contentType: 'image/webp',
         filename: '',
@@ -563,7 +563,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       if (file.thumbnail_url?.startsWith('/__decrypt__/')) sw.unregisterDecrypt(file.thumbnail_url)
       const decryptUrl = sw.registerDecrypt({
         url: file._thumbSource,
-        size: 0,
+        size: null,
         chunkSize: 0,
         contentType: 'image/webp',
         filename: '',

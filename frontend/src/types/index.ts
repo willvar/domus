@@ -570,7 +570,8 @@ export interface FileAccessResponse {
 /** Metadata passed to SW for registering a decrypt mapping. */
 export interface DecryptMetadata {
   url: string
-  size: number
+  /** Plaintext bytes; null discovers the size from the encrypted object. Zero is an empty file. */
+  size: number | null
   chunkSize: number
   contentType: string
   filename: string

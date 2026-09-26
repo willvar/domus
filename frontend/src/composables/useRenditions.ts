@@ -68,6 +68,7 @@ export function useRenditions(options: {
   let attachedProfile: string | null = null
   let playbackIntent: boolean | null = null
   const mediaCleanup: Array<() => void> = []
+  const artifactRequests = new Set<AbortController>()
 
   // View-facing readiness signals: resolve when a rendition's pipeline is
   // attached and appending, reject when the rendition fails or playback is
@@ -116,6 +117,9 @@ export function useRenditions(options: {
 
   /** Fetches and decrypts one derived artifact through the service worker. */
   async function fetchArtifact(artifact: RenditionArtifact, generation: number): Promise<ArrayBuffer> {
+    if (artifact.size > 64 * 1024 * 1024) throw new RangeError('Media segment exceeds the playback buffer budget')
+    const control = new AbortController()
+    artifactRequests.add(control)
     const sw = useServiceWorker()
     const registered = sw.registerDecrypt({
       url: artifact.url,
@@ -125,15 +129,19 @@ export function useRenditions(options: {
       filename: '',
       dek: artifact.dek,
     })
-    if (!registered) throw new Error('Service worker decryption unavailable')
-    await sw.flush()
     try {
-      const response = await fetch(registered)
+      if (!registered) throw new Error('Service worker decryption unavailable')
+      await sw.flush()
+      control.signal.throwIfAborted()
+      const response = await fetch(registered, { signal: control.signal })
       if (!response.ok) throw new Error(`artifact fetch failed: ${response.status}`)
       if (generation !== attachGeneration) throw new Error('stale artifact fetch')
-      return await response.arrayBuffer()
+      const buffer = await response.arrayBuffer()
+      control.signal.throwIfAborted()
+      return buffer
     } finally {
-      sw.unregisterDecrypt(registered)
+      artifactRequests.delete(control)
+      if (registered) sw.unregisterDecrypt(registered)
     }
   }
 
@@ -191,10 +199,17 @@ export function useRenditions(options: {
 
   function teardownMedia(): void {
     attachGeneration++
+    for (const control of artifactRequests) control.abort()
+    artifactRequests.clear()
     for (const cleanup of mediaCleanup.splice(0)) cleanup()
     attachedProfile = null
     stopPolling()
-    if (video) video.removeEventListener('seeking', onSeeking)
+    if (video) {
+      video.removeEventListener('seeking', onSeeking)
+      video.pause()
+      video.removeAttribute('src')
+      video.load()
+    }
     sourceBuffer = null
     initArtifact = null
     initAppended = false
@@ -236,6 +251,32 @@ export function useRenditions(options: {
   const BUFFER_AHEAD_SECONDS = 45
   /** How much already-played video to keep behind the playhead. */
   const KEEP_BEHIND_SECONDS = 30
+
+  // Time alone is not a memory budget for high-bitrate originals. Estimate
+  // bytes from the manifest and stop at whichever bound is reached first.
+  function bufferEdge(time: number, ahead: boolean, tight = false): number {
+    let seconds = ahead ? BUFFER_AHEAD_SECONDS : tight ? 5 : KEEP_BEHIND_SECONDS
+    let bytes = (ahead ? 32 : tight ? 2 : 16) * 1024 * 1024
+    let start = 0
+    const spans = segments.map(segment => {
+      const span = { start, end: start + (segment.duration || 0), size: segment.size }
+      start = span.end
+      return span
+    })
+    let edge = time
+    for (const span of ahead ? spans : spans.reverse()) {
+      if (ahead ? span.end <= time : span.start >= time) continue
+      const duration = span.end - span.start
+      if (duration <= 0) continue
+      const available = ahead ? span.end - Math.max(time, span.start) : Math.min(time, span.end) - span.start
+      const length = Math.min(available, seconds, span.size > 0 ? bytes / span.size * duration : seconds)
+      edge += ahead ? length : -length
+      seconds -= length
+      bytes -= length / duration * span.size
+      if (length < available || seconds <= 0 || bytes <= 0) break
+    }
+    return Math.max(0, edge)
+  }
 
   function totalDuration(): number {
     let total = 0
@@ -286,15 +327,35 @@ export function useRenditions(options: {
   function evictBehind(time: number, tight = false): boolean {
     const target = sourceBuffer
     if (!target || target.updating || appending || evicting) return false
-    const keep = tight ? 5 : KEEP_BEHIND_SECONDS
-    const edge = Math.max(0, time - keep)
+    const budgetEdge = bufferEdge(time, false, tight)
+    const future = bufferEdge(time, true)
+    let edge = 0
+    let futureEnd = 0
+    for (const segment of segments) {
+      futureEnd += segment.duration || 0
+      // remove() may also discard dependent frames up to the next keyframe.
+      // Round down to an independent segment boundary, including on quota
+      // recovery, so a tight byte budget cannot delete the current GOP.
+      if (futureEnd <= budgetEdge) edge = futureEnd
+      if (futureEnd >= future) break
+    }
     const buffered = target.buffered
     let start = -1
     let end = -1
     for (let i = 0; i < buffered.length; i++) {
-      if (buffered.end(i) <= edge) {
-        if (start < 0) start = buffered.start(i)
+      if (buffered.start(i) < edge - 0.25) {
+        start = buffered.start(i)
+        end = Math.min(buffered.end(i), edge)
+        break
+      }
+      // Trim future data even when it belongs to the same continuous range.
+      // Keep a full boundary segment so removal cannot cut the next GOP.
+      if (buffered.end(i) > futureEnd + 0.25 && futureEnd > time) {
+        start = Math.max(buffered.start(i), futureEnd)
         end = buffered.end(i)
+        appendedEnd = Math.min(appendedEnd, segmentIndexAt(futureEnd))
+        ended = false
+        break
       }
     }
     if (start < 0 || end <= start) return false
@@ -347,9 +408,14 @@ export function useRenditions(options: {
           onDone()
         }, { once: true })
       })
-      .catch(() => {
+      .catch(reason => {
         if (generation !== attachGeneration) return
         appending = false
+        if (reason instanceof RangeError) {
+          settleAllWaiters(reason)
+          void playOriginal()
+          return
+        }
         schedulePump()
       })
   }
@@ -362,7 +428,7 @@ export function useRenditions(options: {
    * outside the buffer restarts the window at the target segment.
    */
   function pump(): void {
-    if (!sourceBuffer || !video || appending || evicting || ended) return
+    if (!sourceBuffer || !video || appending || evicting) return
     if (pendingSeek !== null) {
       const target = pendingSeek
       pendingSeek = null
@@ -371,11 +437,11 @@ export function useRenditions(options: {
         return
       }
     }
-    if (bufferedAhead(video.currentTime) >= BUFFER_AHEAD_SECONDS) {
+    if (evictBehind(video.currentTime)) return
+    if (bufferedAhead(video.currentTime) >= Math.max(0.1, bufferEdge(video.currentTime, true) - video.currentTime)) {
       schedulePump()
       return
     }
-    if (evictBehind(video.currentTime)) return
     if (!initAppended) {
       if (!initArtifact) return
       const generation = attachGeneration
@@ -391,6 +457,7 @@ export function useRenditions(options: {
     }
     if (appendedEnd >= segments.length) {
       if (finalized) finalizeStream()
+      schedulePump()
       return
     }
     const generation = attachGeneration
@@ -399,6 +466,7 @@ export function useRenditions(options: {
       appendedEnd++
       if (finalized && appendedEnd >= segments.length) {
         finalizeStream()
+        schedulePump()
         return
       }
       pump()
@@ -464,6 +532,8 @@ export function useRenditions(options: {
       }
     }
     if (sourceBuffer && !bufferedCovers(video.currentTime)) {
+      ended = false
+      for (const control of artifactRequests) control.abort()
       // Out-of-buffer seek: steer the append window to the target segment.
       pendingSeek = video.currentTime
       pump()
@@ -700,15 +770,15 @@ export function useRenditions(options: {
     video = target
     filePath = path
     attachGeneration++
-    // The original always starts playing immediately; upgrades below switch
-    // the source once the manifest is known.
+    // Choose the manifest source first; do not start a redundant raw 8 GiB
+    // fetch immediately before attaching an already available rendition.
     activeQuality.value = 'original'
-    video.src = options.decryptUrl()
     const { prefs } = usePreferences()
     try {
       await refresh()
     } catch (reason) {
       console.warn('rendition manifest unavailable:', reason)
+      if (selection === selectionGeneration && video === target) await playOriginal()
       return
     }
     if (selection !== selectionGeneration || video !== target) return
@@ -732,6 +802,7 @@ export function useRenditions(options: {
       // original playing and tell the user how to get it.
       notify.info(t('quality.preferred_missing', { profile: preference.toUpperCase() }))
     }
+    await playOriginal()
   }
 
   /** Snapshot for the "stats for nerds" overlay. */
