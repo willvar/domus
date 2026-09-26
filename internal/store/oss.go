@@ -544,6 +544,16 @@ func (c *OSSClient) ListParts(key, uploadID string) ([]PartInfo, error) {
 			return nil, err
 		}
 		for _, p := range result.ObjectParts {
+			// Some S3-compatible stores include the marker itself on the next
+			// page. Accept only an identical boundary entry, never a conflicting
+			// duplicate that would hide a changed or incomplete upload.
+			if partMarker > 0 && p.PartNumber == partMarker && len(allParts) > 0 {
+				previous := allParts[len(allParts)-1]
+				if previous.PartNumber != p.PartNumber || previous.Size != p.Size || previous.ETag != p.ETag {
+					return nil, errors.New("multipart pagination returned a conflicting boundary part")
+				}
+				continue
+			}
 			allParts = append(allParts, PartInfo{
 				PartNumber: p.PartNumber,
 				Size:       p.Size,
@@ -552,6 +562,9 @@ func (c *OSSClient) ListParts(key, uploadID string) ([]PartInfo, error) {
 		}
 		if !result.IsTruncated {
 			break
+		}
+		if result.NextPartNumberMarker <= partMarker || result.NextPartNumberMarker > 10000 {
+			return nil, errors.New("multipart pagination did not advance")
 		}
 		partMarker = result.NextPartNumberMarker
 	}
