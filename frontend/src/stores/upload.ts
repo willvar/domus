@@ -7,10 +7,11 @@ import { useI18n } from '../composables/useI18n'
 import { showConfirm, showDuplicateDialog } from '../composables/useNativeDialog'
 import { useActivityStore } from './activity'
 import { useFileSystemStore } from './fileSystem'
+import { UploadClient } from '../uploads/client'
+import { ResourcePool } from '../uploads/resources'
 import {
   generateDEK,
   generateThumbnail,
-  encryptBlob,
 } from '../composables/useCryptoUpload'
 import type {
   UploadSession,
@@ -36,15 +37,30 @@ export const useUploadStore = defineStore('upload', () => {
   const activeUploads: ComputedRef<UploadSession[]> = computed(() => uploads.value.filter(u => u.status === 'uploading' || u.status === 'paused'))
   const hasActive: ComputedRef<boolean> = computed(() => activeUploads.value.length > 0)
 
-  // Active encrypt workers keyed by upload id
-  const workers = new Map<string, Worker>()
+  const uploader = new UploadClient()
+  const initCapacity = new ResourcePool([0, 1, 2, 3])
+  const thumbnailCapacity = new ResourcePool([true])
+  const controls = new Map<string, AbortController>()
+  const thumbnailControls = new Map<string, AbortController>()
 
-  // Once the server-side task reaches a terminal state, the persisted task
-  // becomes the source of truth and the local upload session can disappear.
+  // Keep failures visible with the original response error and File for retry.
   ws.on('task.update', (data: TaskUpdateEvent) => {
     const entry = uploads.value.find(u => u.taskId === data.task_id)
     if (!entry) return
-    if (data.status === 'completed' || data.status === 'failed' || data.status === 'cancelled') {
+    if (data.status === 'failed') {
+      // Publication already has an authoritative HTTP result in flight. A
+      // generic task event must not abort it or replace its response error.
+      if (entry.status === 'processing' && controls.has(entry.id)) return
+      const alreadyFailed = entry.status === 'failed'
+      entry.status = 'failed'
+      entry.phase = undefined
+      entry.error ||= t('upload.status_failed')
+      if (!alreadyFailed) controls.get(entry.id)?.abort()
+    } else if (data.status === 'completed' || data.status === 'cancelled') {
+      if (data.status === 'cancelled') {
+        entry.status = 'cancelled'
+        controls.get(entry.id)?.abort()
+      }
       removeUploadSession(entry.id)
     }
   })
@@ -106,7 +122,7 @@ export const useUploadStore = defineStore('upload', () => {
     for (const file of files) {
       const strategy = strategies.get(file.name) || null
       const entry = createSession(file, targetPath)
-      startUpload(entry, zeroByteFiles.length > 0, strategy)
+      void startUpload(entry, zeroByteFiles.length > 0, strategy)
     }
   }
 
@@ -145,7 +161,7 @@ export const useUploadStore = defineStore('upload', () => {
       case 'generating':
         return 0.05
       case 'encrypting':
-        return 0.1
+      case 'queued':
       case 'uploading':
         return Math.max(0.1, Math.min(0.9, ratio * 0.9))
       case 'thumbnail':
@@ -173,6 +189,7 @@ export const useUploadStore = defineStore('upload', () => {
     const force = !!opts.force || !!status
 
     if (!force) {
+      if (now - lastAt < 300) return
       const progressDelta = Math.abs(progress - lastProgress)
       const phaseChanged = phase !== lastPhase
       if (!phaseChanged && progressDelta < 0.01 && now - lastAt < 300) {
@@ -225,7 +242,7 @@ export const useUploadStore = defineStore('upload', () => {
     }
     uploads.value.push(entry)
     try { activityStore.show() } catch { /* ignore */ }
-    return entry
+    return uploads.value.find(item => item.id === entry.id)!
   }
 
   async function startUpload(entry: UploadSession, allowZeroByte = false, conflictStrategy: string | null = null): Promise<void> {
@@ -233,8 +250,12 @@ export const useUploadStore = defineStore('upload', () => {
     const file = entry._file as File
     const targetPath = entry.targetPath
     const upload = entry
+    const control = new AbortController()
+    const signal = control.signal
+    controls.set(upload.id, control)
     upload.phase = 'generating'
     upload.startTime = Date.now()
+    let completed = false
 
     try {
       if (!file.size && !allowZeroByte) {
@@ -245,6 +266,8 @@ export const useUploadStore = defineStore('upload', () => {
 
       const dek = await generateDEK()
       upload.dekHex = dek.hex
+      signal.throwIfAborted()
+      await waitUntilResumed(upload, signal)
 
       // 1. Init — reserve a DOFS generation and create an OSS multipart session.
       const initPayload: Record<string, unknown> = {
@@ -257,11 +280,7 @@ export const useUploadStore = defineStore('upload', () => {
       }
       if (conflictStrategy) initPayload.conflict_strategy = conflictStrategy
 
-      const initRes = await api.post<InitResponse>('/file/upload', initPayload)
-      const init = initRes.data
-      const effectiveDekHex = init.dek || dek.hex
-      const effectiveDekRaw = hexKey(effectiveDekHex)
-      upload.dekHex = effectiveDekHex
+      const init = await initializeUpload(upload, initPayload, signal)
 
       if (init.file_name && init.file_name !== file.name) {
         upload.fileName = init.file_name
@@ -270,50 +289,64 @@ export const useUploadStore = defineStore('upload', () => {
       upload.taskId = init.task_id || null
       upload.partSize = init.part_size
       upload.totalParts = init.total_parts
+      signal.throwIfAborted()
+      const effectiveDekHex = init.dek || dek.hex
+      const effectiveDekRaw = hexKey(effectiveDekHex)
+      upload.dekHex = effectiveDekHex
       await syncTask(upload, { phase: 'generating', force: true })
+      await waitUntilResumed(upload, signal)
 
-      // 2. Generate a local thumbnail. File plaintext is never included in a
-      // Domus API request; ciphertext is sent directly to object storage.
-      const thumbnail = await generateThumbnail(file)
-
-      if ((upload.status as string) === 'cancelled') return
-
-      // 3. Enter encrypting phase
-      upload.phase = 'encrypting'
-      await syncTask(upload, { phase: 'encrypting', force: true })
-
-      // 4. Get first batch of presigned URLs
-      const presignRes = await api.get<PresignResponse>('/file/upload/presign', {
-        params: { upload_id: init.upload_id, start: 1, count: PRESIGN_BATCH },
-      })
-      const partUrls = presignRes.data.parts.map(p => p.presigned_url)
-
-      if ((upload.status as string) === 'cancelled') return
-
-      // 5. Encrypt + hash + upload (all in worker, main thread stays free)
-      upload.phase = 'uploading'
-      await syncTask(upload, { phase: 'uploading', force: true })
+      // 2. Acquire capacity in the shared worker before reading or signing.
+      if (upload.status !== 'paused') upload.phase = 'queued'
       const workerResult = await runEncryptWorker(
         upload,
         file,
         effectiveDekRaw,
-        partUrls,
         init.part_size,
         init.total_parts,
         init.upload_id,
+        signal,
       )
 
       if (upload.status === 'cancelled' || !workerResult) return
 
-      // 6. Upload thumbnail as a separate encrypted file
+      // 3. Upload thumbnail as a separate encrypted file
+      await waitUntilResumed(upload, signal)
+      upload.phase = 'thumbnail'
+      let thumbnail: { width: number; height: number; duration?: number } | null = null
       let thumbnailUploadId: string | null = null
-      if (thumbnail) {
-        upload.phase = 'thumbnail'
-        await syncTask(upload, { phase: 'thumbnail', force: true })
-        thumbnailUploadId = await uploadThumbnail(upload, thumbnail, targetPath)
+      for (;;) {
+        await waitUntilResumed(upload, signal)
+        const stage = new AbortController()
+        const abort = () => stage.abort(signal.reason)
+        signal.addEventListener('abort', abort, { once: true })
+        thumbnailControls.set(upload.id, stage)
+        let lease: boolean | undefined
+        try {
+          lease = await thumbnailCapacity.acquire(stage.signal)
+          stage.signal.throwIfAborted()
+          const generated = await generateThumbnail(file, stage.signal)
+          stage.signal.throwIfAborted()
+          if (generated) {
+            upload.phase = 'thumbnail'
+            await syncTask(upload, { phase: 'thumbnail', force: true })
+            thumbnailUploadId = await uploadThumbnail(upload, generated, stage.signal)
+            thumbnail = { width: generated.width, height: generated.height, duration: generated.duration }
+          }
+          break
+        } catch (error) {
+          signal.throwIfAborted()
+          if (!stage.signal.aborted) throw error
+          thumbnail = null
+        } finally {
+          if (lease !== undefined) thumbnailCapacity.release(lease)
+          signal.removeEventListener('abort', abort)
+          thumbnailControls.delete(upload.id)
+        }
       }
+      signal.throwIfAborted()
 
-      // 7. Complete
+      // 4. Complete. Once publication starts, await its authoritative result.
       upload.phase = 'processing'
       upload.status = 'processing'
       await syncTask(upload, { phase: 'processing', force: true })
@@ -329,7 +362,9 @@ export const useUploadStore = defineStore('upload', () => {
       }
       if (thumbnailUploadId) completePayload.thumbnail_upload_id = thumbnailUploadId
 
+      signal.throwIfAborted()
       await api.post('/file/upload', completePayload, { timeout: 120000 })
+      completed = true
 
       upload.progress = 100
       upload.speed = 0
@@ -344,28 +379,62 @@ export const useUploadStore = defineStore('upload', () => {
       fs.refresh()
 
     } catch (e: unknown) {
-      if (upload.status !== 'cancelled') {
+      if (upload.status !== 'cancelled' && !signal.aborted) {
         upload.status = 'failed'
         upload.phase = undefined
         const err = e as { response?: { data?: { error?: string } }; message?: string }
         upload.error = err.response?.data?.error || err.message
-        if (upload.uploadId) {
-          try {
+      }
+      if (!signal.aborted) console.error('Upload failed:', e)
+    } finally {
+      // The running lifecycle owns remote cleanup, including late init
+      // responses. UI cancellation only signals it, so cleanup runs once.
+      const failedLocally = upload.status === 'failed' && !signal.aborted
+      const cancelled = signal.aborted && upload.status !== 'failed'
+      if (!completed && (failedLocally || cancelled)) {
+        const status = failedLocally ? 'failed' : 'cancelled'
+        try {
+          if (upload.uploadId) {
             await api.post('/file/upload/cancel', {
-              upload_id: upload.uploadId,
-              task_id: upload.taskId || '',
-              reason: 'upload_failed',
-              status: 'failed',
+              upload_id: upload.uploadId, task_id: upload.taskId || '',
+              reason: failedLocally ? 'upload_failed' : 'user_cancel', status,
             })
-          } catch {
-            await syncTask(upload, { status: 'failed', force: true })
+          } else {
+            await syncTask(upload, { status, force: true })
           }
-        } else {
-          await syncTask(upload, { status: 'failed', force: true })
+        } catch {
+          await syncTask(upload, { status, force: true })
         }
       }
-      console.error('Upload failed:', e)
+      controls.delete(upload.id)
+      upload._resume = null
+      upload.dekHex = null
     }
+  }
+
+  async function initializeUpload(upload: UploadSession, payload: Record<string, unknown>, signal: AbortSignal): Promise<InitResponse> {
+    for (;;) {
+      await waitUntilResumed(upload, signal)
+      const lease = await initCapacity.acquire(signal)
+      try {
+        signal.throwIfAborted()
+        if (upload.status === 'paused') continue
+        // Do not discard an in-flight response: cancellation needs its upload ID
+        // to release the remote reservation. Queued init requests are abortable.
+        const response = await api.post<InitResponse>('/file/upload', payload, { 'axios-retry': { retries: 0 } })
+        return response.data
+      } finally { initCapacity.release(lease) }
+    }
+  }
+
+  async function waitUntilResumed(upload: UploadSession, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted()
+    while (upload.status === 'paused') await new Promise<void>((resolve, reject) => {
+      const abort = () => { upload._resume = null; reject(signal.reason) }
+      upload._resume = () => { signal.removeEventListener('abort', abort); upload._resume = null; resolve() }
+      signal.addEventListener('abort', abort, { once: true })
+    })
+    signal.throwIfAborted()
   }
 
   // ── Encrypt worker ─────────────────────────────────────────────────────
@@ -378,77 +447,40 @@ export const useUploadStore = defineStore('upload', () => {
     upload: UploadSession,
     file: File,
     dekRaw: Uint8Array,
-    initialUrls: string[],
     partSize: number,
     totalParts: number,
     uploadId: string,
+    signal: AbortSignal,
   ): Promise<WorkerResult | null> {
-    return new Promise((resolve, reject) => {
-      const worker = new Worker(
-        new URL('../workers/encrypt.worker.ts', import.meta.url),
-        { type: 'module' },
-      )
-      workers.set(upload.id, worker)
-
-      worker.onmessage = async (e: MessageEvent) => {
-        const msg = e.data
-        switch (msg.type) {
-          case 'progress': {
-            const pct = msg.total > 0 ? Math.floor((msg.uploaded / msg.total) * 100) : 0
-            upload.progress = pct
-            upload.bytesUploaded = msg.uploaded
-            upload.phase = 'uploading'
-            void syncTask(upload, { phase: 'uploading' })
-            break
-          }
-          case 'part':
-            break
-          case 'need-urls':
-            // Worker needs more presigned URLs
-            try {
-              if (!Number.isInteger(msg.from) || !Number.isInteger(msg.count) || msg.from < 1 || msg.count < 1) {
-                throw new Error(`Invalid presign request: from=${msg.from} count=${msg.count}`)
-              }
-              const res = await api.get<PresignResponse>('/file/upload/presign', {
-                params: { upload_id: uploadId, start: msg.from, count: msg.count },
-              })
-              worker.postMessage({
-                type: 'add-urls',
-                partUrls: res.data.parts.map((p: { presigned_url: string }) => p.presigned_url),
-              })
-            } catch (err) {
-              worker.postMessage({ type: 'cancel' })
-              reject(err)
-            }
-            break
-          case 'done':
-            workers.delete(upload.id)
-            worker.terminate()
-            resolve({ contentHash: msg.contentHash })
-            break
-          case 'error':
-            workers.delete(upload.id)
-            worker.terminate()
-            reject(new Error(msg.message))
-            break
+    let firstPart = 1
+    let urls: string[] = []
+    let expiresAt = 0
+    return uploader.upload({ id: upload.id, file, dekRaw: dekRaw.buffer as ArrayBuffer, partSize, totalParts, paused: upload.status === 'paused' }, {
+      async url(part, requestSignal) {
+        if (!Number.isInteger(part) || part < 1 || part > totalParts) throw new Error('Invalid presign part')
+        if (part < firstPart || part >= firstPart + urls.length || Date.now() >= expiresAt) {
+          const res = await api.get<PresignResponse>('/file/upload/presign', {
+            params: { upload_id: uploadId, start: part, count: PRESIGN_BATCH }, signal: requestSignal,
+          })
+          firstPart = part
+          urls = res.data.parts.map(item => item.presigned_url)
+          expiresAt = Date.now() + Math.max(0, res.data.expires_in - 60) * 1000
         }
-      }
-
-      worker.onerror = (err) => {
-        workers.delete(upload.id)
-        worker.terminate()
-        reject(new Error(err.message))
-      }
-
-      worker.postMessage({
-        type: 'start',
-        file,
-        dekRaw: dekRaw.buffer,
-        partUrls: initialUrls,
-        partSize,
-        totalParts,
-      })
-    })
+        const url = urls[part - firstPart]
+        if (!url) throw new Error('Upload URL was not issued')
+        return url
+      },
+      progress(uploaded, total) {
+        upload.progress = total > 0 ? Math.floor(uploaded / total * 100) : 0
+        upload.bytesUploaded = uploaded
+        if (upload.status !== 'paused') upload.phase = 'uploading'
+        void syncTask(upload)
+      },
+      phase(phase) {
+        if (upload.status !== 'paused') upload.phase = phase
+        void syncTask(upload)
+      },
+    }, signal).then(contentHash => contentHash === null ? null : { contentHash })
   }
 
   // ── Thumbnail upload (as a separate encrypted file) ──────────────────
@@ -456,11 +488,12 @@ export const useUploadStore = defineStore('upload', () => {
   async function uploadThumbnail(
     parentUpload: UploadSession,
     thumb: { blob: Blob; width: number; height: number; duration?: number },
-    targetPath: string,
+    signal: AbortSignal,
   ): Promise<string | null> {
+    let thumbnailID = ''
     try {
+      signal.throwIfAborted()
       const thumbDek = await generateDEK()
-      const encrypted = await encryptBlob(thumbDek.raw, await thumb.blob.arrayBuffer())
 
       // Init a mini upload for the thumbnail
       const initRes = await api.post<InitResponse>('/file/upload', {
@@ -470,27 +503,42 @@ export const useUploadStore = defineStore('upload', () => {
         content_type: 'image/webp',
         internal: true,
         dek: thumbDek.hex,
+        conflict_strategy: 'replace',
       })
       const thumbInit = initRes.data
-
-      // Get presigned URL for the single part
-      const presignRes = await api.get<PresignResponse>('/file/upload/presign', {
-        params: { upload_id: thumbInit.upload_id, start: 1, count: 1 },
-      })
-      const url = presignRes.data.parts[0].presigned_url
-
-      // Upload encrypted thumbnail
-      const resp = await fetch(url, { method: 'PUT', body: encrypted.slice().buffer })
-      if (!resp.ok) throw new Error(`Thumbnail upload failed: ${resp.status}`)
+      thumbnailID = thumbInit.upload_id
+      signal.throwIfAborted()
+      // Thumbnails use the same encryption, disk leases and retry path.
+      const contentHash = await uploader.upload({
+        id: `thumbnail:${thumbInit.upload_id}`,
+        file: new File([thumb.blob], 'thumbnail.webp', { type: 'image/webp' }),
+        dekRaw: hexKey(thumbInit.dek || thumbDek.hex).buffer as ArrayBuffer,
+        partSize: thumbInit.part_size, totalParts: thumbInit.total_parts,
+      }, {
+        async url(part, requestSignal) {
+          const res = await api.get<PresignResponse>('/file/upload/presign', {
+            params: { upload_id: thumbInit.upload_id, start: part, count: 1 }, signal: requestSignal,
+          })
+          const url = res.data.parts[0]?.presigned_url
+          if (!url) throw new Error('Thumbnail upload URL was not issued')
+          return url
+        },
+        progress() {}, phase() {},
+      }, signal)
+      signal.throwIfAborted()
+      if (!contentHash) throw new Error('Thumbnail upload cancelled')
 
       // Complete thumbnail upload
       await api.post('/file/upload', {
         upload_id: thumbInit.upload_id,
-        encrypted_size: encrypted.byteLength,
-      })
+        encrypted_size: encryptedFileSize(thumb.blob.size),
+        content_hash: contentHash,
+      }, { signal })
 
       return thumbInit.upload_id
     } catch (e) {
+      if (thumbnailID) await api.post('/file/upload/cancel', { upload_id: thumbnailID, reason: 'thumbnail_failed' }).catch(() => {})
+      signal.throwIfAborted()
       console.warn('Thumbnail upload failed:', e)
       return null
     }
@@ -502,8 +550,9 @@ export const useUploadStore = defineStore('upload', () => {
     const upload = uploads.value.find(u => u.id === id)
     if (upload && upload.status === 'uploading') {
       upload.status = 'paused'
-      const worker = workers.get(id)
-      if (worker) worker.postMessage({ type: 'pause' })
+      upload.phase = 'paused'
+      uploader.pause(id)
+      thumbnailControls.get(id)?.abort(new DOMException('Upload paused', 'AbortError'))
     }
   }
 
@@ -514,51 +563,34 @@ export const useUploadStore = defineStore('upload', () => {
       upload.phase = 'uploading'
       upload.startTime = Date.now()
       upload.startProgress = upload.progress
-      const worker = workers.get(id)
-      if (worker) worker.postMessage({ type: 'resume' })
+      upload._resume?.()
+      uploader.resume(id)
       void syncTask(upload, { phase: 'uploading', force: true })
     }
   }
 
-  async function cancelUpload(id: string): Promise<void> {
+  function cancelUpload(id: string): void {
     const upload = uploads.value.find(u => u.id === id)
-    if (!upload) return
+    if (!upload || upload.status === 'processing') return
 
     upload.status = 'cancelled'
     upload.phase = undefined
     removeUploadSession(id)
-    const worker = workers.get(id)
-    if (worker) {
-      worker.postMessage({ type: 'cancel' })
-      worker.terminate()
-      workers.delete(id)
-    }
-    if (upload.uploadId) {
-      try {
-        await api.post('/file/upload/cancel', {
-          upload_id: upload.uploadId,
-          task_id: upload.taskId || '',
-          reason: 'user_cancel',
-        })
-      } catch {
-        await syncTask(upload, { status: 'cancelled', force: true })
-      }
-    } else {
-      await syncTask(upload, { status: 'cancelled', force: true })
-    }
+    controls.get(id)?.abort()
   }
 
   function retryUpload(id: string): void {
     const u = uploads.value.find(u => u.id === id)
-    if (!u || !u._file) return
+    if (!u || !u._file || controls.has(id) || !['failed', 'interrupted'].includes(u.status)) return
     const file: File = u._file
     const targetPath: string = u.targetPath
     removeUploadSession(id)
     const entry = createSession(file, targetPath)
-    startUpload(entry)
+    void startUpload(entry, file.size === 0)
   }
 
   function abortUploads(reason: 'page_unload' | 'startup_reconcile'): void {
+    for (const control of controls.values()) control.abort()
     const targets = uploads.value.filter(u =>
       !!u.uploadId && (u.status === 'uploading' || u.status === 'paused')
     )

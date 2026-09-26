@@ -103,27 +103,32 @@ let thumbnailQueue: Promise<unknown> = Promise.resolve()
 
 const THUMB_TIMEOUT_MS = 15000
 
-export function generateThumbnail(file: File): Promise<ThumbnailResult | null> {
-  const run = (): Promise<ThumbnailResult | null> => generateThumbnailNow(file)
-  const withTimeout = (): Promise<ThumbnailResult | null> => Promise.race([
-    run(),
-    new Promise<null>((resolve) => { setTimeout(() => resolve(null), THUMB_TIMEOUT_MS) }),
-  ])
-  const result = thumbnailQueue.then(withTimeout, withTimeout)
+export function generateThumbnail(file: File, signal?: AbortSignal): Promise<ThumbnailResult | null> {
+  const run = async (): Promise<ThumbnailResult | null> => {
+    signal?.throwIfAborted()
+    const control = new AbortController()
+    const abort = () => control.abort(signal?.reason)
+    signal?.addEventListener('abort', abort, { once: true })
+    const timer = setTimeout(() => control.abort(new Error('Thumbnail timed out')), THUMB_TIMEOUT_MS)
+    try { return await generateThumbnailNow(file, control.signal) }
+    finally { clearTimeout(timer); signal?.removeEventListener('abort', abort) }
+  }
+  // A timed-out decoder must actually finish cleanup before the next starts.
+  const result = thumbnailQueue.then(run, run)
   thumbnailQueue = result.catch(() => {})
   return result
 }
 
-async function generateThumbnailNow(file: File): Promise<ThumbnailResult | null> {
+async function generateThumbnailNow(file: File, signal: AbortSignal): Promise<ThumbnailResult | null> {
   try {
     if (file.type.startsWith('image/')) {
-      return await generateImageThumbnail(file)
+      return await generateImageThumbnail(file, signal)
     }
     if (isVideoFile(file)) {
-      return await generateVideoThumbnail(file)
+      return await generateVideoThumbnail(file, signal)
     }
     if (isPDFFile(file) && file.size <= PDF_THUMB_MAX_BYTES) {
-      return await generatePDFThumbnail(file)
+      return await generatePDFThumbnail(file, signal)
     }
   } catch (error) {
     // A malformed or browser-unsupported media file must never prevent the
@@ -133,16 +138,33 @@ async function generateThumbnailNow(file: File): Promise<ThumbnailResult | null>
   return null
 }
 
-async function generateImageThumbnail(file: File): Promise<ThumbnailResult> {
+function mediaEvent(target: EventTarget, name: string, signal: AbortSignal, start: () => void): Promise<void> {
+  signal.throwIfAborted()
+  return new Promise((resolve, reject) => {
+    const cleanup = () => {
+      target.removeEventListener(name, done)
+      target.removeEventListener('error', failed)
+      signal.removeEventListener('abort', aborted)
+    }
+    const done = () => { cleanup(); resolve() }
+    const failed = () => { cleanup(); reject(new Error('Media thumbnail decode failed')) }
+    const aborted = () => { cleanup(); reject(signal.reason) }
+    target.addEventListener(name, done, { once: true })
+    target.addEventListener('error', failed, { once: true })
+    signal.addEventListener('abort', aborted, { once: true })
+    try { start() } catch (error) { cleanup(); reject(error) }
+  })
+}
+
+async function generateImageThumbnail(file: File, signal: AbortSignal): Promise<ThumbnailResult> {
   const img = new Image()
   const url = URL.createObjectURL(file)
+  const canvas = document.createElement('canvas')
   try {
-    img.src = url
-    await img.decode()
+    await mediaEvent(img, 'load', signal, () => { img.src = url })
     const scale = thumbnailScale(img.naturalWidth, img.naturalHeight)
     const w = Math.round(img.naturalWidth * scale)
     const h = Math.round(img.naturalHeight * scale)
-    const canvas = document.createElement('canvas')
     canvas.width = w
     canvas.height = h
     canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
@@ -151,35 +173,27 @@ async function generateImageThumbnail(file: File): Promise<ThumbnailResult> {
     })
     return { blob, width: img.naturalWidth, height: img.naturalHeight }
   } finally {
+    img.removeAttribute('src')
+    canvas.width = canvas.height = 0
     URL.revokeObjectURL(url)
   }
 }
 
-async function generateVideoThumbnail(file: File): Promise<ThumbnailResult> {
+async function generateVideoThumbnail(file: File, signal: AbortSignal): Promise<ThumbnailResult> {
   const video = document.createElement('video')
   const url = URL.createObjectURL(file)
+  const canvas = document.createElement('canvas')
   try {
-    video.src = url
     video.muted = true
     video.preload = 'metadata'
-    await new Promise<void>((resolve, reject) => {
-      video.onloadedmetadata = () => resolve()
-      video.onerror = () => reject(new Error('video metadata load failed'))
-    })
+    await mediaEvent(video, 'loadedmetadata', signal, () => { video.src = url })
     // Seek to 1s or half duration, whichever is smaller. Some iOS codecs never
     // fire `seeked` — bail out instead of hanging the pipeline forever.
-    video.currentTime = Math.min(1, video.duration / 2)
-    await new Promise<void>((resolve, reject) => {
-      const fail = () => reject(new Error('video seek failed'))
-      video.onseeked = () => resolve()
-      video.onerror = fail
-      setTimeout(fail, 3000)
-    })
+    await mediaEvent(video, 'seeked', signal, () => { video.currentTime = Math.min(1, video.duration / 2) })
 
     const scale = thumbnailScale(video.videoWidth, video.videoHeight)
     const w = Math.round(video.videoWidth * scale)
     const h = Math.round(video.videoHeight * scale)
-    const canvas = document.createElement('canvas')
     canvas.width = w
     canvas.height = h
     canvas.getContext('2d')!.drawImage(video, 0, 0, w, h)
@@ -188,28 +202,40 @@ async function generateVideoThumbnail(file: File): Promise<ThumbnailResult> {
     })
     return { blob, width: video.videoWidth, height: video.videoHeight, duration: video.duration }
   } finally {
+    video.pause()
+    video.removeAttribute('src')
+    video.load()
+    canvas.width = canvas.height = 0
     URL.revokeObjectURL(url)
   }
 }
 
-async function generatePDFThumbnail(file: File): Promise<ThumbnailResult> {
+async function generatePDFThumbnail(file: File, signal: AbortSignal): Promise<ThumbnailResult> {
   const pdfjs = await import('pdfjs-dist')
+  signal.throwIfAborted()
   pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerURL
+  const data = new Uint8Array(await file.arrayBuffer())
+  signal.throwIfAborted()
   const loadingTask = pdfjs.getDocument({
-    data: new Uint8Array(await file.arrayBuffer()),
+    data,
   })
+  let destroying: Promise<void> | undefined
+  const destroy = () => (destroying ??= loadingTask.destroy())
+  const abort = () => { void destroy().catch(() => {}) }
+  signal.addEventListener('abort', abort, { once: true })
+  const canvas = window.document.createElement('canvas')
   try {
     const pdfDocument = await loadingTask.promise
     const page = await pdfDocument.getPage(1)
     const naturalViewport = page.getViewport({ scale: 1 })
     const scale = thumbnailScale(naturalViewport.width, naturalViewport.height)
     const viewport = page.getViewport({ scale })
-    const canvas = window.document.createElement('canvas')
     canvas.width = Math.max(1, Math.round(viewport.width))
     canvas.height = Math.max(1, Math.round(viewport.height))
     const context = canvas.getContext('2d')
     if (!context) throw new Error('Canvas 2D context unavailable')
     await page.render({ canvas, canvasContext: context, viewport }).promise
+    signal.throwIfAborted()
     const blob = await new Promise<Blob>((resolve, reject) => {
       canvas.toBlob((value) => (value ? resolve(value) : reject(new Error('toBlob failed'))), 'image/webp', 0.8)
     })
@@ -219,7 +245,9 @@ async function generatePDFThumbnail(file: File): Promise<ThumbnailResult> {
       height: Math.round(naturalViewport.height),
     }
   } finally {
-    await loadingTask.destroy()
+    signal.removeEventListener('abort', abort)
+    canvas.width = canvas.height = 0
+    await destroy()
   }
 }
 
