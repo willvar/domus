@@ -58,6 +58,16 @@ make dev
 `make dev` 同时启动 Domus Web 和 Vite，默认入口为 `http://127.0.0.1:8089`，API 默认
 为 `http://127.0.0.1:8088`。后端状态隔离在 `tmp/dev`。
 
+自定义开发域名在 `frontend/.env.development.local` 中设置（已被 Git 忽略）：
+
+```dotenv
+DOMUS_DEV_ALLOWED_HOSTS=dev.example.test
+```
+
+多个域名用逗号分隔。生产前端默认请求同源 API；确需跨域部署时，在构建环境设置
+`VITE_API_BASE`，或写入被忽略的 `frontend/.env.production.local`。仓库中的配置示例
+和测试数据使用通用域名及文档保留地址，本机配置与凭据不提交。
+
 ### 对象存储与 worker
 
 `make dev` 默认带起本地 SeaweedFS，浏览器加密直传、DOFS 解密挂载、worker 派生文件
@@ -134,6 +144,9 @@ make test-dofs
 ```
 
 ## 数据路径与安全边界
+
+上传资源约束、暂停检查点、大分片磁盘暂存与压力测试见 [浏览器上传流水线](docs/upload-pipeline.md)。
+原画／分段播放的读取和缓冲约束见 [播放资源边界](docs/playback-resources.md)。
 
 文件正文不经过 Domus HTTP：
 
