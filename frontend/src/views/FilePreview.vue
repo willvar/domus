@@ -884,7 +884,14 @@ async function onQualitySelect(key: string | number): Promise<void> {
 
     <section
       class="preview-canvas"
-      :class="[`preview-canvas--${previewKind}`, { 'preview-canvas--editing': editing }]"
+      :class="[
+        `preview-canvas--${previewKind}`,
+        {
+          'preview-canvas--editing': editing,
+          'preview-canvas--document': ['text', 'markdown', 'csv', 'notebook'].includes(previewKind),
+          'preview-canvas--html': isHtmlFile && !editing,
+        },
+      ]"
     >
       <div v-if="loading" class="preview-state">
         <NSpin size="large" />
@@ -991,7 +998,8 @@ async function onQualitySelect(key: string | number): Promise<void> {
           <strong>{{ name }}</strong>
           <audio :src="decryptUrl" controls preload="metadata" />
         </div>
-        <iframe v-else-if="viewerType === 'pdf'" :src="decryptUrl" class="preview-pdf" :title="name" />
+        <iframe v-else-if="viewerType === 'pdf'" :src="`${decryptUrl}#view=Fit&navpanes=0`" class="preview-pdf" :title="name" />
+        <iframe v-else-if="isHtmlFile" :srcdoc="textContent" sandbox="" class="preview-html" :title="name" />
         <article v-else-if="viewerType === 'markdown'" class="document-preview markdown-body" v-html="renderedHTML" />
         <div v-else-if="viewerType === 'csv'" class="table-preview">
           <table>
@@ -1134,6 +1142,9 @@ async function onQualitySelect(key: string | number): Promise<void> {
 .preview-actions { display: flex; gap: 8px; }
 
 .preview-canvas { position: fixed; inset: 72px 0 0; display: grid; place-items: center; overflow: auto; padding: 30px; }
+.preview-canvas--pdf, .preview-canvas--html { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); overflow: hidden; padding: 12px; }
+.preview-canvas--document { display: block; padding: 12px; }
+.preview-shell--bar .preview-canvas--pdf, .preview-shell--bar .preview-canvas--html, .preview-shell--bar .preview-canvas--document { bottom: calc(64px + env(safe-area-inset-bottom)); }
 .preview-canvas--editing { display: block; overflow: hidden; padding: 16px; }
 .preview-canvas--image, .preview-canvas--video { background: #151a24; }
 .preview-image, .preview-media { display: block; max-width: 100%; max-height: calc(100dvh - 128px); object-fit: contain; box-shadow: 0 24px 70px rgb(0 0 0 / 24%); }
@@ -1176,7 +1187,7 @@ async function onQualitySelect(key: string | number): Promise<void> {
   line-height: 1.8;
   user-select: text;
 }
-.preview-pdf { width: min(1120px, 100%); height: calc(100dvh - 128px); border: 0; border-radius: 12px; background: var(--domus-surface); box-shadow: 0 18px 58px rgb(30 38 58 / 15%); }
+.preview-pdf, .preview-html { display: block; width: 100%; height: 100%; min-width: 0; min-height: 0; border: 0; border-radius: 12px; background: var(--domus-surface); box-shadow: 0 18px 58px rgb(30 38 58 / 15%); }
 .preview-state { display: flex; min-height: 280px; align-items: center; justify-content: center; flex-direction: column; gap: 9px; color: var(--muted); text-align: center; }
 .preview-state > svg { width: 38px; height: 38px; color: var(--muted); }
 .preview-state strong { color: var(--ink); font-size: 16px; }
@@ -1184,7 +1195,7 @@ async function onQualitySelect(key: string | number): Promise<void> {
 
 .edit-workspace {
   display: flex;
-  width: min(1480px, 100%);
+  width: 100%;
   height: 100%;
   margin: 0 auto;
   overflow: hidden;
@@ -1229,7 +1240,8 @@ async function onQualitySelect(key: string | number): Promise<void> {
 .edit-panes--split .edit-render { border-left: 1px solid var(--line); }
 
 .document-preview, .text-preview, .table-preview, .notebook-preview, .archive-preview, .font-preview {
-  width: min(1050px, 100%);
+  width: 100%;
+  min-width: 0;
   min-height: calc(100dvh - 136px);
   margin: auto;
   border-radius: 16px;
@@ -1238,13 +1250,14 @@ async function onQualitySelect(key: string | number): Promise<void> {
   box-shadow: var(--domus-shadow-md);
   user-select: text;
 }
-.document-preview { width: min(860px, 100%); padding: clamp(28px, 5vw, 72px); font-size: 15px; line-height: 1.78; }
+.document-preview { width: 100%; min-height: 100%; padding: clamp(20px, 2.5vw, 48px); font-size: 15px; line-height: 1.78; }
+.preview-canvas--html { display: grid; }
 .markdown-body :deep(h1), .markdown-body :deep(h2), .markdown-body :deep(h3) { margin: 1.2em 0 .5em; line-height: 1.2; }
 .markdown-body :deep(h1:first-child), .markdown-body :deep(h2:first-child) { margin-top: 0; }
 .markdown-body :deep(pre) { overflow: auto; padding: 14px; border-radius: 8px; background: var(--domus-surface-2); }
 .markdown-body :deep(code) { padding: .12em .3em; border-radius: 4px; background: var(--domus-surface-2); }
 .markdown-body :deep(img) { max-width: 100%; }
-.markdown-body :deep(table) { width: 100%; border-collapse: collapse; }
+.markdown-body :deep(table) { display: block; width: 100%; overflow-x: auto; border-collapse: collapse; }
 .markdown-body :deep(th), .markdown-body :deep(td) { padding: 8px 10px; border: 1px solid var(--line); text-align: left; }
 .text-preview { padding: 26px; overflow: auto; font-family: "SFMono-Regular", Consolas, monospace; font-size: 13px; line-height: 1.68; white-space: pre-wrap; word-break: break-word; }
 .table-preview { overflow: auto; }
@@ -1283,7 +1296,7 @@ async function onQualitySelect(key: string | number): Promise<void> {
 }
 .exif-heading + .n-descriptions { margin-bottom: 4px; }
 
-@media (max-width: 680px) {
+@media (max-width: 767px) {
   .preview-header { height: 64px; padding: max(8px, env(safe-area-inset-top)) 12px 8px; }
   .preview-actions button { width: 42px; height: 42px; padding: 0; }
   .preview-actions button span { display: none; }
@@ -1294,10 +1307,9 @@ async function onQualitySelect(key: string | number): Promise<void> {
   .preview-canvas { inset: 64px 0 0; padding: 10px; }
   .preview-canvas--editing { padding: 8px; }
   .preview-image, .preview-media { max-height: calc(100dvh - 84px); }
-  .preview-pdf { height: calc(100dvh - 84px); border-radius: 6px; }
+  .preview-pdf, .preview-html { border-radius: 6px; }
   /* Keep media above the fixed bottom bar. */
   .preview-shell--bar .preview-image, .preview-shell--bar .preview-media { max-height: calc(100dvh - 148px); }
-  .preview-shell--bar .preview-pdf { height: calc(100dvh - 148px); }
   .preview-shell--bar .document-preview, .preview-shell--bar .text-preview,
   .preview-shell--bar .table-preview, .preview-shell--bar .notebook-preview,
   .preview-shell--bar .archive-preview, .preview-shell--bar .font-preview {
@@ -1359,7 +1371,6 @@ async function onQualitySelect(key: string | number): Promise<void> {
   .preview-canvas { inset: 64px 0 0; padding: 10px; }
   .preview-canvas--editing { padding: 8px; }
   .preview-image, .preview-media { max-height: calc(100dvh - 84px); }
-  .preview-pdf { height: calc(100dvh - 84px); border-radius: 6px; }
   .document-preview, .text-preview, .table-preview, .notebook-preview, .archive-preview, .font-preview { min-height: calc(100dvh - 84px); border-radius: 10px; }
   .document-preview { padding: 22px 18px; font-size: 13px; }
   .text-preview { padding: 15px; font-size: 11px; }
