@@ -111,3 +111,21 @@ worker 内的真实对象读取失败进行无限重试。
 
 2026-10-01（HKT）回归覆盖正常返回、预览期间停止 worker、另一目录先恢复、搜索
 结果返回，以及延迟注册确认的竞态。测试走真实 Chromium、加密 WebP 与生产解密流。
+
+### 清除缓存并重载
+
+账户菜单在开发和生产环境都提供此操作。确认后绕过浏览器 HTTP 缓存重新请求 HTML
+入口（30 秒超时），成功后注销 Domus 的根 Service Worker，删除 `domus-*` 和旧
+`zephyr-decrypt` Cache API 缓存并重载页面。
+登录 cookie、画质记忆等 localStorage、sessionStorage、离线操作 IndexedDB 和上传
+OPFS 暂存不删除；有未完成或暂停的浏览器上传时禁用操作。失败会显示提示，不静默重载。
+确认后、入口请求后和重载前再次检查上传状态，避免异步等待期间新开始的上传被中断。
+
+这是应用自身的缓存恢复入口，不会清除其他应用缓存、浏览器全部 HTTP 缓存或 CDN
+缓存，也不删除对象存储数据。重新加载后客户端重新注册解密映射。
+
+回归：`e2e/cache-purge.spec.ts` 覆盖桌面／移动端确认取消、worker 重建、应用缓存清除、
+其他缓存和 worker 不受影响、cookie／画质／sessionStorage／待处理操作／OPFS 保留，
+以及请求／清理失败和新上传竞态。`npm run build` 后使用
+`DOMUS_E2E_PRODUCTION=1 npm run test:e2e -- e2e/cache-purge.spec.ts` 在隔离的生产静态
+服务上执行同一套回归；默认执行开发构建。

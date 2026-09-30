@@ -1,9 +1,13 @@
 <script setup lang="ts">
+import { computed, ref } from 'vue'
 import { NAvatar, NButton, NDivider, NSwitch, NThing } from 'naive-ui'
 import { useI18n } from '../composables/useI18n'
 import { useTheme } from '../composables/useTheme'
-import { purgeClientState } from '../utils/devPurge'
-import { IconAccountCircle, IconArrowLeft, IconContrastCircle, IconDeleteOutline, IconFolderHome, IconViewGridOutline } from '../barrels/icons'
+import { purgeClientState } from '../utils/cachePurge'
+import { showConfirm } from '../composables/useNativeDialog'
+import { useUploadStore } from '../stores/upload'
+import { useAppMessage } from '../ui/feedback'
+import { IconAccountCircle, IconArrowLeft, IconBroom, IconContrastCircle, IconDeleteOutline, IconFolderHome, IconViewGridOutline } from '../barrels/icons'
 
 const props = defineProps<{
   avatarUrl?: string
@@ -26,9 +30,29 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const { isDark, toggleDark } = useTheme()
-// Dev-only client-state purge: lives just above the sign-out button.
-const isDev = import.meta.env.DEV
+const message = useAppMessage()
+const upload = useUploadStore()
+const clearingCache = ref(false)
+const pendingUploads = computed(() => upload.uploads.some(item => !['completed', 'failed', 'cancelled'].includes(item.status)))
 
+async function clearCacheAndReload(): Promise<void> {
+  if (clearingCache.value || pendingUploads.value) return
+  clearingCache.value = true
+  try {
+    if (!await showConfirm(t('cache.confirm_title'), t('cache.confirm_body'), {
+      icon: 'warning', positiveText: t('cache.purge_reload'),
+    })) return
+    if (pendingUploads.value) {
+      message.warning(t('cache.wait_uploads'))
+      return
+    }
+    if (!await purgeClientState(() => !pendingUploads.value)) message.warning(t('cache.wait_uploads'))
+  } catch {
+    message.error(t('cache.failed'))
+  } finally {
+    clearingCache.value = false
+  }
+}
 </script>
 
 <template>
@@ -109,8 +133,17 @@ const isDev = import.meta.env.DEV
         <template #icon><IconAccountCircle /></template>
         {{ t('titlebar.admin_panel') }}
       </NButton>
-      <NButton v-if="isDev" quaternary block size="small" @click="purgeClientState()">
-        {{ t('dev.purge_reload') }}
+      <NButton
+        quaternary
+        block
+        size="small"
+        :loading="clearingCache"
+        :disabled="pendingUploads"
+        :title="pendingUploads ? t('cache.wait_uploads') : t('cache.purge_reload')"
+        @click="clearCacheAndReload"
+      >
+        <template #icon><IconBroom /></template>
+        {{ t('cache.purge_reload') }}
       </NButton>
       <NButton quaternary block type="error" size="small" @click="emit('logout')">
         <template #icon><IconArrowLeft /></template>
