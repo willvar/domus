@@ -248,10 +248,10 @@ test('MSE byte-budget and quota eviction preserve the current keyframe segment',
     const video = document.createElement('video')
     video.id = 'budget-video'; video.muted = true
     document.body.appendChild(video)
-    const removals: Array<{ time: number; end: number }> = []
+    const removals: Array<{ time: number; start: number; end: number }> = []
     const remove = SourceBuffer.prototype.remove
     SourceBuffer.prototype.remove = function (start, end) {
-      removals.push({ time: video.currentTime, end })
+      removals.push({ time: video.currentTime, start, end })
       return remove.call(this, start, end)
     }
     const quality = useRenditions({ decryptUrl: () => '/__unexpected_raw_fetch__' })
@@ -262,8 +262,22 @@ test('MSE byte-budget and quota eviction preserve the current keyframe segment',
   await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.readyState)).toBeGreaterThanOrEqual(2)
   await video.evaluate((v: HTMLVideoElement) => { v.currentTime = 1.5 })
   await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.buffered.end(v.buffered.length - 1))).toBeGreaterThan(3.9)
-  await page.waitForTimeout(750)
+  await expect.poll(() => video.evaluate((v: HTMLVideoElement) => !v.seeking && v.readyState >= 2)).toBeTruthy()
   expect(await video.evaluate((v: HTMLVideoElement) => v.buffered.start(0))).toBe(0)
+
+  // Require a real forward eviction, not just a timing-dependent startup one.
+  const removalCount = await page.evaluate(() => (window as any).__budgetPlayback.removals.length)
+  await video.evaluate((v: HTMLVideoElement) => { v.currentTime = 0 })
+  await expect.poll(() => page.evaluate(count => (window as any).__budgetPlayback.removals.slice(count).some(
+    (removal: { time: number; start: number }) => removal.time === 0 && removal.start >= 2,
+  ), removalCount)).toBeTruthy()
+  await expect.poll(() => video.evaluate((v: HTMLVideoElement) =>
+    !v.seeking && v.readyState >= 2 && v.buffered.length > 0 && v.buffered.end(v.buffered.length - 1) <= 2,
+  )).toBeTruthy()
+  expect(await video.evaluate((v: HTMLVideoElement) => v.buffered.start(0))).toBe(0)
+  await video.evaluate((v: HTMLVideoElement) => { v.currentTime = 1.5 })
+  await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.buffered.end(v.buffered.length - 1))).toBeGreaterThan(3.9)
+  await expect.poll(() => video.evaluate((v: HTMLVideoElement) => !v.seeking && v.readyState >= 2)).toBeTruthy()
 
   // Force the tighter quota-recovery path when the next segment is appended.
   await page.evaluate(() => {
@@ -280,9 +294,21 @@ test('MSE byte-budget and quota eviction preserve the current keyframe segment',
   await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.buffered.start(0))).toBe(2)
   await video.evaluate((v: HTMLVideoElement) => v.play())
   await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime)).toBeGreaterThan(4.5)
-  const removals = await page.evaluate(() => (window as any).__budgetPlayback.removals) as Array<{ time: number; end: number }>
+
+  const removals = await page.evaluate(() => (window as any).__budgetPlayback.removals) as Array<{ time: number; start: number; end: number }>
   expect(removals.length).toBeGreaterThan(0)
-  for (const removal of removals) expect(removal.end).toBeLessThanOrEqual(Math.floor(removal.time / 2) * 2)
+  for (const removal of removals) {
+    const segmentStart = Math.floor(removal.time / 2) * 2
+    // Only the boundary next to the current GOP must be aligned. The far end
+    // of a buffered range can end just before a whole second (e.g. 3.999999).
+    if (removal.start > removal.time) {
+      expect(removal.start, JSON.stringify(removal)).toBeGreaterThanOrEqual(segmentStart + 2)
+      expect(removal.start % 2).toBe(0)
+    } else {
+      expect(removal.end, JSON.stringify(removal)).toBeLessThanOrEqual(segmentStart)
+      expect(removal.end % 2).toBe(0)
+    }
+  }
   await page.evaluate(() => { (window as any).__budgetPlayback.quality.detach(); delete (window as any).__budgetPlayback })
 })
 
