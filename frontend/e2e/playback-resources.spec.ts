@@ -286,6 +286,107 @@ test('MSE byte-budget and quota eviction preserve the current keyframe segment',
   await page.evaluate(() => { (window as any).__budgetPlayback.quality.detach(); delete (window as any).__budgetPlayback })
 })
 
+test('player remembers manual quality across videos, reloads and accounts without a default setting', async ({ page }) => {
+  let username = 'quality-fixture'
+  let available = true
+  let transcodes = 0
+  const storageKey = 'domus_playback_quality:quality-fixture'
+  const artifact = (name: string) => ({ url: `http://127.0.0.1:${port}/${name}`, size: files.get(name)!.size, dek: key.toString('hex'), duration: 2 })
+  await page.routeWebSocket('**/ws', socket => socket.onMessage(message => {
+    const request = JSON.parse(String(message))
+    if (request.id) socket.send(JSON.stringify({ id: request.id, ok: true, data: {} }))
+  }))
+  await page.route('**/user', route => route.fulfill({ json: { username, role: 'user' } }))
+  await page.route('**/file/?*', route => route.fulfill({ json: { files: ['fixture.mp4', 'another.mp4'].map(name => ({
+    inode: 1, name, path: `/${name}`, is_dir: false, size: sourceSize,
+    created_at: '2026-01-01T00:00:00Z', last_modified: '2026-01-01T00:00:00Z', status: 'ready',
+  })) } }))
+  await page.route('**/file/access?*', route => {
+    const path = new URL(route.request().url()).searchParams.get('path')!
+    return route.fulfill({ json: {
+      path, name: path.slice(1), inode: 1, generation: 1, size: sourceSize,
+      url: `http://127.0.0.1:${port}/large`, dek: key.toString('hex'), chunk_size: CHUNK, content_type: 'video/mp4',
+    } })
+  })
+  await page.route('**/file/renditions?*', route => route.fulfill({ json: {
+    source_height: 1080,
+    renditions: (available ? ['original', '480p'] : ['original']).map(profile => ({
+      profile, status: 'ready', codecs: 'avc1.42C00C', duration: 150,
+      init: artifact('init.mp4'), segments: segments.map(artifact),
+    })),
+  } }))
+  await page.route('**/file/transcode', route => { transcodes++; return route.fulfill({ status: 400, json: {} }) })
+  await page.route('**/task/', route => route.fulfill({ json: [] }))
+  await page.route('**/file/upload/cleanup', route => route.fulfill({ json: {} }))
+  await page.route('**/audit/', route => route.fulfill({ json: {} }))
+  await prepare(page)
+
+  await page.locator('.sidebar-account').click()
+  await expect(page.locator('.account-popover')).toBeVisible()
+  await expect(page.getByText(/默认画质|Default quality/, { exact: true })).toHaveCount(0)
+  await expect(page.locator('.quality-select')).toHaveCount(0)
+  await page.locator('.sidebar-account').click()
+
+  const video = page.locator('video.preview-media')
+  const quality = page.getByTestId('quality-menu')
+  const assertQuality = async (label: RegExp) => {
+    await expect(quality).toHaveText(label)
+    await expect.poll(() => video.evaluate((element: HTMLVideoElement) => element.readyState)).toBeGreaterThanOrEqual(2)
+  }
+  const openVideo = async (name: string) => {
+    await page.locator('.file-item').filter({ has: page.locator('.file-name').getByText(name, { exact: true }) }).dblclick()
+  }
+  const select = async (label: string | RegExp) => {
+    await quality.click()
+    await page.locator('.n-dropdown-menu').getByText(label, { exact: true }).click()
+  }
+  await openVideo('fixture.mp4')
+  await assertQuality(/原画|Original/)
+  await select('480P')
+  await assertQuality(/480P/)
+  expect(await page.evaluate(key => localStorage.getItem(key), storageKey)).toBe('480p')
+
+  await page.locator('.back-button').click()
+  await openVideo('another.mp4')
+  await assertQuality(/480P/)
+  await page.reload()
+  await assertQuality(/480P/)
+
+  available = false
+  await page.reload()
+  await assertQuality(/原画|Original/)
+  expect(await page.evaluate(key => localStorage.getItem(key), storageKey)).toBe('480p')
+  expect(transcodes).toBe(0)
+  await select('1080P')
+  const confirmation = page.locator('.domus-confirm-dialog')
+  await expect(confirmation).toBeVisible()
+  await confirmation.getByRole('button', { name: /取消|Cancel/, exact: true }).click()
+  expect(await page.evaluate(key => localStorage.getItem(key), storageKey)).toBe('480p')
+  expect(transcodes).toBe(0)
+
+  // The same browser's next account must not borrow this account's memory.
+  username = 'another-quality-fixture'
+  available = true
+  await page.reload()
+  await assertQuality(/原画|Original/)
+  username = 'quality-fixture'
+  await page.reload()
+  await assertQuality(/480P/)
+
+  // Manual original is remembered even if an automatic fallback is already
+  // playing it; merely falling back above must not replace the saved choice.
+  available = false
+  await page.reload()
+  await assertQuality(/原画|Original/)
+  await select(/原画|Original/)
+  await assertQuality(/原画|Original/)
+  expect(await page.evaluate(key => localStorage.getItem(key), storageKey)).toBe('original')
+  available = true
+  await page.reload()
+  await assertQuality(/原画|Original/)
+  expect(transcodes).toBe(0)
+})
+
 for (const scenario of ['normal', 'worker-stop', 'worker-stop-other-directory', 'worker-stop-search', 'worker-stop-delayed-registration']) {
 test(`file-list thumbnails survive playback, return and reload (${scenario})`, async ({ page }) => {
   await prepare(page)

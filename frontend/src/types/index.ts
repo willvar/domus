@@ -438,7 +438,6 @@ export interface UserPreferences {
   wallpaperPath: string
   wallpaperFit: 'cover' | 'contain' | 'fill' | string
   wallpaperFiles: string[]
-  playbackQuality: string
 }
 
 // -----------------------------------------------------------------------------

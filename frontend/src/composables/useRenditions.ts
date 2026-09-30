@@ -1,7 +1,7 @@
 import { ref } from 'vue'
 import api from './useApi'
 import { useI18n } from './useI18n'
-import { usePreferences } from './usePreferences'
+import { useAuthStore } from '../stores/auth'
 import { useServiceWorker } from './useServiceWorker'
 import { useAppMessage } from '../ui/feedback'
 import type { RenditionArtifact, RenditionSummary, RenditionsResponse } from '../types'
@@ -96,6 +96,22 @@ export function useRenditions(options: {
 
   const { t } = useI18n()
   const notify = useAppMessage()
+  const auth = useAuthStore()
+
+  // Playback memory is device-local and account-scoped, not a cloud setting.
+  function qualityStorageKey(): string | null {
+    return auth.username ? `domus_playback_quality:${auth.username}` : null
+  }
+
+  function rememberedQuality(): string {
+    try {
+      const key = qualityStorageKey()
+      const saved = key ? localStorage.getItem(key) : null
+      return saved === 'original' ? saved : RENDITION_PROFILES.find(profile => profile === saved) || 'original'
+    } catch {
+      return 'original'
+    }
+  }
 
   function findRendition(profile: string): RenditionSummary | undefined {
     return renditions.value.find(rendition => rendition.profile === profile)
@@ -697,11 +713,13 @@ export function useRenditions(options: {
     }
   }
 
-  /** Switches playback quality. Manual picks here never overwrite the saved
-   *  default preference (AccountMenu) — that preference only drives which
-   *  quality attach() applies when a video is opened. */
+  /** Remembers only explicit player selections, never automatic fallbacks. */
   async function selectQuality(profile: string, opts: { silent?: boolean } = {}): Promise<void> {
-    if (!video) return
+    if (!video || (profile !== 'original' && !RENDITION_PROFILES.some(value => value === profile))) return
+    try {
+      const key = qualityStorageKey()
+      if (key) localStorage.setItem(key, profile)
+    } catch { /* Playback still works when browser storage is unavailable. */ }
     const rendition = findRendition(profile)
     const failed = rendition?.status === 'failed' || rendition?.status === 'cancelled'
     if (profile === activeQuality.value && !failed &&
@@ -761,7 +779,7 @@ export function useRenditions(options: {
     if (profile !== 'original') await pending
   }
 
-  /** Loads the rendition manifest for a file and applies the saved default. */
+  /** Applies the last manually selected quality if this file can play it. */
   async function attach(target: HTMLVideoElement, path: string): Promise<void> {
     detach()
     renditions.value = []
@@ -773,7 +791,6 @@ export function useRenditions(options: {
     // Choose the manifest source first; do not start a redundant raw 8 GiB
     // fetch immediately before attaching an already available rendition.
     activeQuality.value = 'original'
-    const { prefs } = usePreferences()
     try {
       await refresh()
     } catch (reason) {
@@ -782,25 +799,14 @@ export function useRenditions(options: {
       return
     }
     if (selection !== selectionGeneration || video !== target) return
-    const preference = prefs.playbackQuality === 'auto' ? 'original' : prefs.playbackQuality
-    // 'auto' was removed as a choice; stored values fall back to original.
-    // The explicit 'original' preference only ever uses the remuxed original
-    // or the raw source — it must not fall back to downscaled transcodes.
-    const candidates = !preference || preference === 'original'
-      ? ['original']
-      : [preference]
-    const wanted = candidates.find(profile => {
-      const rendition = findRendition(profile)
-      return rendition?.status === 'ready' || (rendition?.status === 'running' && rendition.init)
-    })
-    if (wanted && findRendition(wanted)) {
-      await playRendition(wanted)
+    const preference = rememberedQuality()
+    const rendition = findRendition(preference)
+    if (rendition?.status === 'ready' || (rendition?.status === 'running' && rendition.init)) {
+      await playRendition(preference)
       return
     }
-    if (preference && preference !== 'auto' && preference !== 'original') {
-      // The remembered default has no rendition for this file yet: keep the
-      // original playing and tell the user how to get it.
-      notify.info(t('quality.preferred_missing', { profile: preference.toUpperCase() }))
+    if (preference !== 'original') {
+      notify.info(t('quality.remembered_missing', { profile: preference.toUpperCase() }))
     }
     await playOriginal()
   }

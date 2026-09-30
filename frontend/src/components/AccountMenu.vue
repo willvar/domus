@@ -1,8 +1,6 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { NAvatar, NButton, NDivider, NSelect, NSwitch, NThing } from 'naive-ui'
+import { NAvatar, NButton, NDivider, NSwitch, NThing } from 'naive-ui'
 import { useI18n } from '../composables/useI18n'
-import { usePreferences } from '../composables/usePreferences'
 import { useTheme } from '../composables/useTheme'
 import { purgeClientState } from '../utils/devPurge'
 import { IconAccountCircle, IconArrowLeft, IconContrastCircle, IconDeleteOutline, IconFolderHome, IconViewGridOutline } from '../barrels/icons'
@@ -28,18 +26,9 @@ const emit = defineEmits<{
 
 const { t } = useI18n()
 const { isDark, toggleDark } = useTheme()
-const { prefs, update } = usePreferences()
 // Dev-only client-state purge: lives just above the sign-out button.
 const isDev = import.meta.env.DEV
 
-const qualityChoices = computed(() => [
-  { label: t('quality.original'), value: 'original' },
-  { label: '2160p', value: '2160p' },
-  { label: '1440p', value: '1440p' },
-  { label: '1080p', value: '1080p' },
-  { label: '720p', value: '720p' },
-  { label: '480p', value: '480p' },
-])
 </script>
 
 <template>
@@ -93,21 +82,6 @@ const qualityChoices = computed(() => [
           size="small"
           :aria-label="t('files.dark_mode')"
           @update:value="toggleDark"
-        />
-      </div>
-
-      <div class="preference-row preference-row--quality">
-        <span>
-          <strong>{{ t('quality.default') }}</strong>
-          <small>{{ t('quality.default_hint') }}</small>
-        </span>
-        <NSelect
-          :value="prefs.playbackQuality"
-          size="small"
-          :options="qualityChoices"
-          :aria-label="t('quality.default')"
-          class="quality-select"
-          @update:value="value => update({ playbackQuality: String(value) })"
         />
       </div>
 
@@ -189,10 +163,6 @@ const qualityChoices = computed(() => [
   border-radius: 11px;
   background: var(--domus-surface-2);
 }
-
-.preference-row--quality { grid-template-columns: minmax(0, 1fr) auto; }
-
-.quality-select { min-width: 92px; }
 
 .preference-row > svg {
   color: var(--domus-muted);

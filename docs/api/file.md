@@ -455,7 +455,8 @@ Content-Type: application/json
 - 取消走既有 `DELETE /task/:id`：queued 直接取消；running 置 cancelling，worker 在
   分片间检测并中止。
 - 播放器画质菜单（原画 + 档位）按清单驱动；生成中的档位可“边转边播”（fMP4 分片
-  增量发布，seek 限制在已生成区间，完成后为完整 VOD）。账户菜单提供“默认画质”。
+  增量发布，seek 限制在已生成区间，完成后为完整 VOD）。播放器记忆最后手动选择的
+  画质（当前浏览器内按账号隔离）；不可用时仅本次回退原画，不覆盖记忆或自动转码。
 
 源文件被覆盖（新 generation）、永久删除、用户注销时，rendition 级联清理；worker 崩溃
 残留的 running 任务在下次启动时自动 requeue。
