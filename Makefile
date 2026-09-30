@@ -60,15 +60,13 @@ build-prod: build
 dev: s3-if-local
 	@command -v setsid >/dev/null 2>&1 || { echo "setsid is required for managed development processes" >&2; exit 1; }
 	@bash -eu -o pipefail -c '\
-		backend_pid=""; dofs_pid=""; worker_pid=""; frontend_pid=""; \
+		backend_pid=""; frontend_pid=""; \
 		cleanup() { \
 			status="$$?"; \
 			trap - EXIT INT TERM; \
 			if [[ -n "$$frontend_pid" ]]; then kill -TERM -- "-$$frontend_pid" 2>/dev/null || true; fi; \
-			if [[ -n "$$worker_pid" ]]; then kill -TERM -- "-$$worker_pid" 2>/dev/null || true; fi; \
-			if [[ -n "$$dofs_pid" ]]; then kill -TERM -- "-$$dofs_pid" 2>/dev/null || true; fi; \
 			if [[ -n "$$backend_pid" ]]; then kill -TERM -- "-$$backend_pid" 2>/dev/null || true; fi; \
-			for pid in "$$frontend_pid" "$$worker_pid" "$$dofs_pid" "$$backend_pid"; do \
+			for pid in "$$frontend_pid" "$$backend_pid"; do \
 				if [[ -n "$$pid" ]]; then wait "$$pid" 2>/dev/null || true; fi; \
 			done; \
 			exit "$$status"; \
@@ -76,20 +74,11 @@ dev: s3-if-local
 		trap cleanup EXIT; \
 		trap "exit 130" INT; \
 		trap "exit 143" TERM; \
-		setsid go run . dev -c "$(DEV_CONFIG)" --runtime-root "$(DEV_RUNTIME_ROOT)" & \
+		setsid go run . dev -c "$(DEV_CONFIG)" --runtime-root "$(DEV_RUNTIME_ROOT)" --with-worker & \
 		backend_pid="$$!"; \
-		for _ in $$(seq 1 60); do \
-			[[ -f "$(DEV_RUNTIME_ROOT)/config.yaml" ]] && break; \
-			sleep 0.5; \
-		done; \
-		[[ -f "$(DEV_RUNTIME_ROOT)/config.yaml" ]] || { echo "dev: runtime config did not appear" >&2; exit 1; }; \
-		setsid go run . dofs serve -c "$(DEV_RUNTIME_ROOT)/config.yaml" & \
-		dofs_pid="$$!"; \
-		setsid go run . worker -c "$(DEV_RUNTIME_ROOT)/config.yaml" --interval 5 & \
-		worker_pid="$$!"; \
 		setsid env VITE_API_BASE="$(DEV_API_BASE)" npm --prefix frontend run dev -- --host "$(DEV_FRONTEND_HOST)" --port "$(DEV_FRONTEND_PORT)" --strictPort & \
 		frontend_pid="$$!"; \
-		wait -n "$$backend_pid" "$$dofs_pid" "$$worker_pid" "$$frontend_pid"\
+		wait -n "$$backend_pid" "$$frontend_pid"\
 	'
 
 dev-web:

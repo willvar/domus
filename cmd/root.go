@@ -871,4 +871,5 @@ func printHelp() {
 	fmt.Println("  domus dofs serve -c /etc/domus/config.yaml")
 	fmt.Println("  domus dofs status -c /etc/domus/config.yaml")
 	fmt.Println("  domus dev -c config.yaml --runtime-root ./tmp/dev")
+	fmt.Println("  domus dev -c config.yaml --runtime-root ./tmp/dev --with-worker")
 }

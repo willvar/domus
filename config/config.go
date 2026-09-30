@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -498,12 +499,57 @@ func loadOptionalInto(path string, cfg *Config) error {
 	return nil
 }
 
-// Save writes the Config as YAML to the given path.
+// Save atomically publishes the Config so concurrent readers see either the
+// previous complete configuration or the new one, never a truncated file.
 func Save(path string, cfg *Config) error {
+	// Preserve explicit symlink configurations instead of replacing the link.
+	// The development runtime separately rejects symlink paths.
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			return fmt.Errorf("resolve config path: %w", err)
+		}
+		path = resolved
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect config path: %w", err)
+	}
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
 	// Config may contain secrets (session/encryption/SMTP credentials).
-	return os.WriteFile(path, data, 0600)
+	parent := filepath.Dir(path)
+	temporary, err := os.CreateTemp(parent, ".domus-config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary config: %w", err)
+	}
+	defer func() {
+		_ = temporary.Close()
+		_ = os.Remove(temporary.Name())
+	}()
+	if _, err := temporary.Write(data); err != nil {
+		return fmt.Errorf("write temporary config: %w", err)
+	}
+	if err := temporary.Sync(); err != nil {
+		return fmt.Errorf("sync temporary config: %w", err)
+	}
+	if err := temporary.Close(); err != nil {
+		return fmt.Errorf("close temporary config: %w", err)
+	}
+	if err := os.Rename(temporary.Name(), path); err != nil {
+		return fmt.Errorf("publish config: %w", err)
+	}
+	// Windows does not support syncing directory handles.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	directory, err := os.Open(parent)
+	if err != nil {
+		return fmt.Errorf("open config directory: %w", err)
+	}
+	defer directory.Close()
+	if err := directory.Sync(); err != nil {
+		return fmt.Errorf("sync config directory: %w", err)
+	}
+	return nil
 }

@@ -90,9 +90,11 @@ make s3-reset                                    # 停本地 S3 并删除数据�
 `tmp/dev` 里的旧条目会失效，删掉重建即可。loopback 端点自动使用明文 HTTP；生产
 非 loopback 端点始终要求 HTTPS。
 
-`make dev` 已把 dofs serve 和 worker 一起带起（backend 先生成运行时配置，
-dofs serve 挂 FUSE，worker 每 5 秒扫一次队列，随 `Ctrl-C` 一并退出），日常开发
-无需手动起它们。需要单独驱动时：
+`make dev` 通过 `domus dev --with-worker` 统一管理 Web、dofs serve 和 worker。
+运行时配置先以 0600 权限原子写入，再启动 Web；Web 就绪后启动 dofs serve，控制
+Socket 可用后才启动 worker（每 5 秒扫一次队列）。不以旧的 `tmp/dev/config.yaml`
+是否存在判断本次启动是否就绪。任一服务退出会停止其他子进程，`Ctrl-C` 一并退出。
+直接运行 `domus dev` 仍只启动 Web，保持浏览器测试的可选 FUSE 边界。需要单独驱动时：
 
 ```bash
 go build -o tmp/dev/domus-bin .

@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -19,11 +20,13 @@ import (
 	"time"
 
 	"domus/config"
+	"domus/internal/dofs"
 	"domus/shared/logger"
 )
 
 type devOptions struct {
 	runtimeRoot string
+	withWorker  bool
 }
 
 type devChild struct {
@@ -42,6 +45,7 @@ func devCommand(defaultConfigPath string, args []string) {
 	options := devOptions{runtimeRoot: "tmp/dev"}
 	flags.StringVar(&configPath, "c", configPath, "配置文件路径")
 	flags.StringVar(&options.runtimeRoot, "runtime-root", options.runtimeRoot, "本地运行状态目录")
+	flags.BoolVar(&options.withWorker, "with-worker", false, "同时启动 DOFS FUSE 服务和派生 worker")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return
@@ -110,6 +114,11 @@ func runDev(configPath string, options devOptions) error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
+	if options.withWorker {
+		if err := cfg.ValidateWorker(); err != nil {
+			return err
+		}
+	}
 	if err := os.MkdirAll(filepath.Join(runtimeRoot, "run"), 0700); err != nil {
 		return fmt.Errorf("create development runtime directory: %w", err)
 	}
@@ -120,48 +129,92 @@ func runDev(configPath string, options devOptions) error {
 	if err := config.Save(generatedConfig, cfg); err != nil {
 		return fmt.Errorf("write generated development config: %w", err)
 	}
-	if err := os.Chmod(generatedConfig, 0600); err != nil {
-		return fmt.Errorf("secure generated development config: %w", err)
-	}
-
 	executable, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve Domus executable: %w", err)
 	}
-	children := make([]*devChild, 0, 1)
-	shutdown := func() {
+	serviceContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	err = runDevServices(serviceContext, executable, generatedConfig, cfg, options.withWorker)
+	if serviceContext.Err() != nil {
+		return nil
+	}
+	return err
+}
+
+// Configuration is published before entering this supervisor. The optional
+// services use this invocation's config, not an old file-existence signal.
+func runDevServices(parent context.Context, executable, generatedConfig string, cfg *config.Config, withWorker bool) error {
+	ctx, cancel := context.WithCancelCause(parent)
+	defer cancel(nil)
+	children := make([]*devChild, 0, 3)
+	defer func() {
 		for index := len(children) - 1; index >= 0; index-- {
 			stopDevChild(children[index], 2*time.Minute)
 		}
+	}()
+	start := func(name string, args ...string) (*devChild, error) {
+		if ctx.Err() != nil {
+			return nil, context.Cause(ctx)
+		}
+		child, err := startDevChild(name, executable, args...)
+		if err != nil {
+			return nil, err
+		}
+		children = append(children, child)
+		go func() {
+			<-child.done
+			cancel(devChildExitError(child))
+		}()
+		return child, nil
 	}
-	defer shutdown()
 
-	webChild, err := startDevChild("Web", executable, "start", "-c", generatedConfig)
+	webChild, err := start("Web", "start", "-c", generatedConfig)
 	if err != nil {
 		return err
 	}
-	children = append(children, webChild)
-	if err := waitForDevService(webChild, 30*time.Second, func(ctx context.Context) error {
-		dialer := net.Dialer{Timeout: 250 * time.Millisecond}
-		connection, dialErr := dialer.DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Server.Port)))
-		if dialErr == nil {
-			_ = connection.Close()
+	webClient := &http.Client{Timeout: time.Second}
+	if err := waitForDevService(ctx, webChild, 30*time.Second, func(ctx context.Context) error {
+		url := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(cfg.Server.Port)) + "/auth"
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
 		}
-		return dialErr
+		response, err := webClient.Do(request)
+		if err != nil {
+			return err
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return fmt.Errorf("Web readiness returned HTTP %d", response.StatusCode)
+		}
+		return nil
 	}); err != nil {
 		return err
 	}
 
-	logger.Info("Development stack ready: web http://127.0.0.1:%d, runtime %s", cfg.Server.Port, runtimeRoot)
-	serviceContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
-	select {
-	case <-serviceContext.Done():
-		logger.Info("Stopping development stack...")
-		return nil
-	case <-webChild.done:
-		return devChildExitError(webChild)
+	if withWorker {
+		dofsChild, err := start("DOFS", "dofs", "serve", "-c", generatedConfig)
+		if err != nil {
+			return err
+		}
+		control := dofs.ControlClient{SocketPath: cfg.DOFS.ControlSocket, Timeout: time.Second}
+		if err := waitForDevService(ctx, dofsChild, 30*time.Second, func(ctx context.Context) error {
+			_, err := control.Health(ctx, false)
+			return err
+		}); err != nil {
+			return err
+		}
+		if _, err := start("worker", "worker", "-c", generatedConfig, "--interval", "5"); err != nil {
+			return err
+		}
 	}
+
+	runtimeRoot := filepath.Dir(generatedConfig)
+	logger.Info("Development stack ready: web http://127.0.0.1:%d, runtime %s", cfg.Server.Port, runtimeRoot)
+	<-ctx.Done()
+	logger.Info("Stopping development stack...")
+	return context.Cause(ctx)
 }
 
 func applyDevRuntimeConfig(cfg *config.Config, runtimeRoot string) {
@@ -310,7 +363,7 @@ func startDevChild(name, executable string, args ...string) (*devChild, error) {
 	return child, nil
 }
 
-func waitForDevService(child *devChild, timeout time.Duration, check func(context.Context) error) error {
+func waitForDevService(ctx context.Context, child *devChild, timeout time.Duration, check func(context.Context) error) error {
 	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(100 * time.Millisecond)
@@ -318,12 +371,17 @@ func waitForDevService(child *devChild, timeout time.Duration, check func(contex
 	var lastErr error
 	for {
 		select {
+		case <-ctx.Done():
+			return context.Cause(ctx)
 		case <-child.done:
 			return devChildExitError(child)
 		case <-deadline.C:
+			if lastErr == nil {
+				return fmt.Errorf("%s readiness timed out", child.name)
+			}
 			return fmt.Errorf("%s readiness timed out: %w", child.name, lastErr)
 		case <-ticker.C:
-			checkContext, cancel := context.WithTimeout(context.Background(), time.Second)
+			checkContext, cancel := context.WithTimeout(ctx, time.Second)
 			lastErr = check(checkContext)
 			cancel()
 			if lastErr == nil {
