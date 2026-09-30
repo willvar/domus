@@ -929,7 +929,7 @@ function phaseLabel(phase?: string): string {
         :value="activePlace"
         :options="placeOptions"
         :indent="12"
-        :root-indent="8"
+        :root-indent="24"
         @update:value="value => choosePlace(value as 'files' | 'trash')"
       />
 
@@ -1110,6 +1110,7 @@ function phaseLabel(phase?: string): string {
               size="small"
               :aria-label="t('menu.empty_trash')"
               :title="t('menu.empty_trash')"
+              :disabled="!fs.canEmptyTrash"
               @click="fs.emptyTrash()"
             >
               <template #icon><IconDeleteOutline /></template>

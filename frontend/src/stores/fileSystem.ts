@@ -251,6 +251,9 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const isTrash: ComputedRef<boolean> = computed(() => isTrashLocation(currentPath.value))
   const isTrashRoot: ComputedRef<boolean> = computed(() => currentPath.value === TRASH_ROOT_LOCATION)
   const isShared: ComputedRef<boolean> = computed(() => currentPath.value === '__shared__/')
+  const canEmptyTrash: ComputedRef<boolean> = computed(() =>
+    isTrashRoot.value && !searchMode.value && !loading.value && !error.value && files.value.some(file => !!file.trash_id),
+  )
 
   const canGoBack: ComputedRef<boolean> = computed(() => historyIndex.value > 0)
   const canGoForward: ComputedRef<boolean> = computed(() => historyIndex.value < history.value.length - 1)
@@ -964,7 +967,9 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   async function emptyTrash(): Promise<void> {
+    if (!canEmptyTrash.value) return
     if (!await showConfirm(t('dialog.empty_trash_title'), t('dialog.confirm_empty_trash'), { icon: 'warning', positiveType: 'error' })) return
+    if (!canEmptyTrash.value) return
     try {
       await api.delete('/trash/')
     } catch (e: any) {
@@ -1642,6 +1647,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     emptyTrash,
     isTrash,
     isTrashRoot,
+    canEmptyTrash,
     isShared,
     openSelected,
     downloadFile,
