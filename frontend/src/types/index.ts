@@ -96,6 +96,8 @@ export interface FileListItem extends FileInfo {
   deleted_at?: string
   /** Original OSS thumbnail URL, kept so the decrypt mapping can be re-registered after a Service Worker restart. */
   _thumbSource?: string
+  /** Service Worker boot that owns this record's thumbnail decrypt mapping. */
+  _thumbBootId?: string
 }
 
 /** Share record. Mirrors model.Share. */

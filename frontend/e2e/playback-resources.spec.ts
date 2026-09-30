@@ -286,7 +286,8 @@ test('MSE byte-budget and quota eviction preserve the current keyframe segment',
   await page.evaluate(() => { (window as any).__budgetPlayback.quality.detach(); delete (window as any).__budgetPlayback })
 })
 
-test('file-list thumbnails decode before playback, after returning, and after a page reload', async ({ page }) => {
+for (const scenario of ['normal', 'worker-stop', 'worker-stop-other-directory', 'worker-stop-search', 'worker-stop-delayed-registration']) {
+test(`file-list thumbnails survive playback, return and reload (${scenario})`, async ({ page }) => {
   await prepare(page)
   await page.evaluate(() => localStorage.setItem('domus_show_thumbnails', '1'))
   await page.routeWebSocket('**/ws', socket => {
@@ -302,6 +303,7 @@ test('file-list thumbnails decode before playback, after returning, and after a 
     content_type: 'video/mp4', thumbnail_url: `http://127.0.0.1:${port}/thumbnail.webp`, thumbnail_dek: key.toString('hex'),
   }
   await page.route('**/file/?*', route => route.fulfill({ json: { files: [file] } }))
+  await page.route('**/file/search?*', route => route.fulfill({ json: { results: [file] } }))
   await page.route('**/file/access?*', route => {
     if (new URL(route.request().url()).searchParams.get('path') !== file.path) return route.fulfill({ status: 404, json: {} })
     return route.fulfill({ json: { ...file, url: `http://127.0.0.1:${port}/large`, dek: key.toString('hex'), chunk_size: CHUNK, generation: 1 } })
@@ -311,6 +313,13 @@ test('file-list thumbnails decode before playback, after returning, and after a 
   await page.route('**/file/upload/cleanup', route => route.fulfill({ json: {} }))
   await page.route('**/audit/', route => route.fulfill({ json: {} }))
   await page.reload()
+  if (scenario.endsWith('-search')) {
+    await expect(page.locator('.file-item')).toBeVisible()
+    await page.evaluate(async () => {
+      const url = '/src/stores/fileSystem.ts'
+      await (await import(url)).useFileSystemStore().performSearch('fixture')
+    })
+  }
 
   const item = page.locator('.file-item').filter({ has: page.locator('.file-name').getByText(file.name, { exact: true }) })
   const thumbnail = item.locator('img.file-thumbnail')
@@ -331,12 +340,65 @@ test('file-list thumbnails decode before playback, after returning, and after a 
   await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.readyState)).toBeGreaterThanOrEqual(2)
   await video.evaluate((v: HTMLVideoElement) => { v.muted = true; return v.play() })
   await expect.poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime)).toBeGreaterThan(0.5)
+  if (scenario !== 'normal') {
+    await video.evaluate((v: HTMLVideoElement) => v.pause())
+    const session = await page.context().newCDPSession(page)
+    let versionID = ''
+    let stopped = false
+    session.on('ServiceWorker.workerVersionUpdated', event => {
+      for (const version of event.versions) {
+        if (version.scriptURL.endsWith('/sw.js') && version.status === 'activated' && version.runningStatus === 'running') versionID = version.versionId
+        if (version.versionId === versionID && version.runningStatus === 'stopped') stopped = true
+      }
+    })
+    await session.send('ServiceWorker.enable')
+    await expect.poll(() => versionID).not.toBe('')
+    await session.send('ServiceWorker.stopWorker', { versionId: versionID })
+    await expect.poll(() => stopped).toBeTruthy()
+    await session.detach()
+    if (scenario.endsWith('-delayed-registration')) {
+      // Force the registry acknowledgement to arrive after an unguarded img
+      // could already request its new src. Preserve message FIFO ordering.
+      await page.evaluate(() => {
+        const post = ServiceWorker.prototype.postMessage
+        let pending = Promise.resolve()
+        ServiceWorker.prototype.postMessage = function (message, transfer) {
+          if (message.type === 'register' || message.type === 'flush') {
+            pending = pending.then(() => new Promise<void>(resolve => setTimeout(resolve, 100)))
+              .then(() => { post.call(this, message, transfer as Transferable[]) })
+          } else {
+            post.call(this, message, transfer as Transferable[])
+          }
+        }
+      })
+    }
+    if (scenario.endsWith('-other-directory')) {
+      // A fresh listing after the restart cannot mark an older cached
+      // directory's URLs current. Both tabs share the Store, not their leases.
+      const tabID = await page.evaluate(async () => {
+        const url = '/src/stores/fileSystem.ts'
+        const fs = (await import(url)).useFileSystemStore()
+        const previous = fs.activeTabId
+        fs.createTab('/other/')
+        return previous
+      })
+      await expect.poll(() => page.evaluate(async () => {
+        const url = '/src/stores/fileSystem.ts'
+        return (await import(url)).useFileSystemStore().files.length
+      })).toBe(1)
+      await page.evaluate(async id => {
+        const url = '/src/stores/fileSystem.ts'
+        ;(await import(url)).useFileSystemStore().switchTab(id)
+      }, tabID)
+    }
+  }
   await page.locator('.back-button').click()
   await expect(page).toHaveURL(/\/files/)
   await assertThumbnail()
   await page.reload()
   await assertThumbnail()
 })
+}
 
 test('natural playback reclamation without inspector network recording', async () => {
   test.skip(process.env.DOMUS_E2E_PLAYBACK_MEMORY !== '1', 'Optional memory diagnostic')

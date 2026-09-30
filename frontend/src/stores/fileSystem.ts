@@ -197,7 +197,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         params: { query, limit: 100 },
       })
       const results = res.data.results || []
-      registerThumbnails(results)
+      await ensureThumbnails(results)
       searchResults.value = results
     } catch {
       searchResults.value = []
@@ -411,8 +411,9 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   async function loadFiles(path: string): Promise<void> {
     const cached = cache.get(path)
     if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      await ensureThumbnails(cached.data)
+      if (currentPath.value !== path) return
       files.value = cached.data
-      void ensureThumbnails(cached.data)
       fetchFiles(path).then(data => {
         if (data && currentPath.value === path) {
           files.value = data
@@ -463,7 +464,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
             last_modified: file.deleted_at || file.last_modified,
           }
         })
-        await syncThumbnails(list)
+        await ensureThumbnails(list)
         return list
       }
       const res = await api.get<{ files?: FileListItem[]; trash?: { id: string; name: string } }>(
@@ -476,7 +477,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         ...file,
         path: trashItemLocation(trashID, file.relative_path),
       }))
-      await syncThumbnails(list)
+      await ensureThumbnails(list)
       return list
     }
     if (path === '__shared__/') {
@@ -510,7 +511,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     }
     const res = await api.get<{ files?: FileListItem[] }>('/file/', { params: { path } })
     const list = res.data.files || []
-    await syncThumbnails(list)
+    await ensureThumbnails(list)
     return list
   }
 
@@ -518,60 +519,50 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     message.warning(t('preview.decrypt_unavailable'))
   }
 
-  /** Registers fresh thumbnails and records the SW boot id they belong to. */
-  async function syncThumbnails(list: FileListItem[]): Promise<void> {
-    const sw = useServiceWorker()
-    registerThumbnails(list)
-    await sw.flush()
-    thumbnailBootId = await sw.getBootId()
-  }
-
-  /** Boot id of the SW instance the current thumbnail URLs belong to. */
-  let thumbnailBootId: string | null = null
-
-  /** Register thumbnails with the Service Worker for client-side decryption.
-   *  The DEK stays on the record and the original URL is kept in
-   *  `_thumbSource` so mappings can be re-registered after a SW restart. */
-  function registerThumbnails(list: FileListItem[]): void {
-    const sw = useServiceWorker()
-    for (const file of list) {
-      if (!file.thumbnail_url || !file.thumbnail_dek) continue
-      if (file.thumbnail_url.startsWith('/__decrypt__/')) continue
-      const decryptUrl = sw.registerDecrypt({
-        url: file.thumbnail_url,
-        size: null,
-        chunkSize: 0,
-        contentType: 'image/webp',
-        filename: '',
-        dek: file.thumbnail_dek,
-      })
-      if (!decryptUrl) continue
-      file._thumbSource = file.thumbnail_url
-      file.thumbnail_url = decryptUrl
-    }
-  }
-
   /** Re-registers cached thumbnail decrypt mappings when the SW has been
-   *  restarted (its registry is memory-only, old /__decrypt__/ URLs 404). */
-  async function ensureThumbnails(list: FileListItem[]): Promise<void> {
+   *  restarted (its registry is memory-only, old /__decrypt__/ URLs 404).
+   *  Track the boot per record: refreshing one directory must not make another
+   *  directory's cached mappings appear current. Also handles search results. */
+  let thumbnailSync: Promise<void> = Promise.resolve()
+  function ensureThumbnails(list: FileListItem[]): Promise<void> {
+    const next = thumbnailSync.then(() => registerCurrentThumbnails(list))
+    thumbnailSync = next.catch(() => {})
+    return next
+  }
+
+  async function registerCurrentThumbnails(list: FileListItem[]): Promise<void> {
     const sw = useServiceWorker()
     const bootId = await sw.getBootId()
-    if (bootId === null || bootId === thumbnailBootId) return
-    thumbnailBootId = bootId
-    for (const file of list) {
-      if (!file._thumbSource || !file.thumbnail_dek) continue
-      if (file.thumbnail_url?.startsWith('/__decrypt__/')) sw.unregisterDecrypt(file.thumbnail_url)
+    if (bootId === null) return
+    const updates: Array<{ file: FileListItem; source: string; url: string; previous?: string }> = []
+    for (const record of list) {
+      const file = reactive(record)
+      if (!file.thumbnail_url || !file.thumbnail_dek) continue
+      const registered = file.thumbnail_url.startsWith('/__decrypt__/')
+      if (registered && file._thumbBootId === bootId) continue
+      const source = registered ? file._thumbSource : file.thumbnail_url
+      if (!source) continue
       const decryptUrl = sw.registerDecrypt({
-        url: file._thumbSource,
+        url: source,
         size: null,
         chunkSize: 0,
         contentType: 'image/webp',
         filename: '',
         dek: file.thumbnail_dek,
       })
-      if (decryptUrl) file.thumbnail_url = decryptUrl
+      if (decryptUrl) {
+        updates.push({ file, source, url: decryptUrl, previous: registered ? file.thumbnail_url : undefined })
+      }
     }
+    // Do not publish the new src until the SW has accepted its mapping. Image
+    // fetches can otherwise beat postMessage and permanently cache a 404.
     await sw.flush()
+    for (const { file, source, url, previous } of updates) {
+      file._thumbSource = source
+      file._thumbBootId = bootId
+      file.thumbnail_url = url
+      if (previous) sw.unregisterDecrypt(previous)
+    }
   }
 
   function goBack(): void {
@@ -1630,6 +1621,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     goUp,
     refresh,
     invalidateCache,
+    ensureThumbnails,
     selectFile,
     selectAll,
     clearSelection,

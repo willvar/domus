@@ -244,6 +244,10 @@ onMounted(async () => {
     )
     fs.createTab(requested)
   }
+  // The Store survives route changes, but a stopped SW loses its registry.
+  // Returning from preview does not reload the directory, so recover mappings
+  // on remount as well as on directory fetches.
+  await fs.ensureThumbnails(fs.sortedFiles)
   await Promise.allSettled([
     pendingOps.init(auth.username),
     tasks.fetchTasks(),
@@ -319,6 +323,7 @@ function revealCurrentBreadcrumb(): void {
 function setThumbnailDisplay(value: boolean): void {
   showThumbnails.value = value
   localStorage.setItem('domus_show_thumbnails', showThumbnails.value ? '1' : '0')
+  if (value) void fs.ensureThumbnails(fs.sortedFiles)
 }
 
 async function goTo(path: string): Promise<void> {
@@ -1242,7 +1247,7 @@ function phaseLabel(phase?: string): string {
               @keydown.enter="openItem(file)"
             >
               <div class="file-card__preview">
-                <img v-if="showThumbnails && file.thumbnail_url" :src="file.thumbnail_url" class="file-thumbnail" alt="" draggable="false" />
+                <img v-if="showThumbnails && file.thumbnail_url" :src="file.thumbnail_url" class="file-thumbnail" alt="" draggable="false" @error="fs.ensureThumbnails([file])" />
                 <component :is="getFileIcon(file.name, file.is_dir)" v-else width="56" height="56" />
                 <span
                   v-if="fs.selectMode || fs.selectedFiles.includes(file.path)"
@@ -1293,7 +1298,7 @@ function phaseLabel(phase?: string): string {
             >
               <div class="file-row__name" role="cell">
                 <span class="file-row__icon">
-                  <img v-if="showThumbnails && file.thumbnail_url" :src="file.thumbnail_url" class="file-thumbnail" alt="" draggable="false" />
+                  <img v-if="showThumbnails && file.thumbnail_url" :src="file.thumbnail_url" class="file-thumbnail" alt="" draggable="false" @error="fs.ensureThumbnails([file])" />
                   <component :is="getFileIcon(file.name, file.is_dir)" v-else />
                 </span>
                 <span>
@@ -1398,7 +1403,7 @@ function phaseLabel(phase?: string): string {
     >
       <NDrawerContent v-if="detailsFile" class="inspector" :title="detailsFile.name" closable>
         <div class="inspector__preview">
-          <img v-if="showThumbnails && detailsFile.thumbnail_url" :src="detailsFile.thumbnail_url" alt="" />
+          <img v-if="showThumbnails && detailsFile.thumbnail_url" :src="detailsFile.thumbnail_url" alt="" @error="fs.ensureThumbnails([detailsFile])" />
           <component :is="getFileIcon(detailsFile.name, detailsFile.is_dir)" v-else />
         </div>
         <NDescriptions :column="1" label-placement="top" bordered size="small">
