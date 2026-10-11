@@ -98,7 +98,6 @@ const searchText = ref('')
 const showAccount = ref(false)
 const showActivity = ref(false)
 const showInspector = ref(false)
-const showHistory = ref(false)
 const showThumbnails = ref(localStorage.getItem('domus_show_thumbnails') === '1')
 const historyLimit = ref(auth.user?.history_limit || 1)
 const detailsFile = ref<FileListItem | null>(null)
@@ -209,9 +208,6 @@ const actionMenuOptions = computed<DropdownOption[]>(() => {
   ]
   if (!file.is_dir) {
     options.push({ key: 'download', label: t('menu.download'), icon: renderIcon(IconDownload) })
-    if (!file._shareId) {
-      options.push({ key: 'history', label: t('menu.history'), icon: renderIcon(IconProgressClock) })
-    }
   }
   options.push(
     { key: 'details', label: t('menu.details'), icon: renderIcon(IconInformationOutline) },
@@ -597,7 +593,6 @@ async function handleActionSelect(key: string | number): Promise<void> {
   switch (key) {
     case 'open': await openItem(file); break
     case 'download': await downloadItem(file); break
-    case 'history': showHistoryFor(file); break
     case 'details': showDetails(file); break
     case 'copy': setClipboard(file, 'copy'); break
     case 'cut': setClipboard(file, 'cut'); break
@@ -605,12 +600,6 @@ async function handleActionSelect(key: string | number): Promise<void> {
     case 'restore': await restoreItem(file); break
     case 'delete': await deleteItem(file); break
   }
-}
-
-function showHistoryFor(file: FileListItem): void {
-  actionFile.value = null
-  detailsFile.value = file
-  showHistory.value = true
 }
 
 async function setHistoryLimit(value: number): Promise<void> {
@@ -640,6 +629,13 @@ function showDetails(file: FileListItem): void {
   detailsFile.value = file
   showInspector.value = true
   actionFile.value = null
+}
+
+async function handleHistoryRestored(): Promise<void> {
+  await fs.refresh()
+  if (!detailsFile.value) return
+  const updated = fs.files.find(file => file.path === detailsFile.value?.path)
+  if (updated) detailsFile.value = updated
 }
 
 watch(() => [detailsFile.value?.path, showInspector.value] as const, () => {
@@ -1430,13 +1426,6 @@ function phaseLabel(phase?: string): string {
       </NDrawerContent>
     </NDrawer>
 
-    <FileHistory
-      :show="showHistory"
-      :file="detailsFile"
-      @update:show="showHistory = $event"
-      @restored="fs.refresh()"
-    />
-
     <NDrawer
       :show="showInspector && Boolean(detailsFile)"
       :placement="isMobile ? 'bottom' : 'right'"
@@ -1469,6 +1458,12 @@ function phaseLabel(phase?: string): string {
             </NDescriptionsItem>
           </NDescriptions>
         </template>
+        <FileHistory
+          v-if="!detailsFile.is_dir && !detailsFile._shareId"
+          :show="showInspector"
+          :file="detailsFile"
+          @restored="handleHistoryRestored"
+        />
         <template #footer>
           <div class="inspector__actions">
             <NButton v-if="!detailsFile.is_dir" @click="downloadItem(detailsFile)">

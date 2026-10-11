@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, watch } from 'vue'
 import dayjs from 'dayjs'
-import { NButton, NDrawer, NDrawerContent, NEmpty, NList, NListItem, NSpin, NTag } from 'naive-ui'
+import { NButton, NEmpty, NList, NListItem, NSpin, NTag } from 'naive-ui'
 import { IconDownload, IconRestore } from '../barrels/icons'
 import api from '../composables/useApi'
 import { useServiceWorker } from '../composables/useServiceWorker'
@@ -16,7 +16,6 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'update:show': [value: boolean]
   restored: []
 }>()
 
@@ -119,7 +118,7 @@ async function restore(version: FileHistoryVersion): Promise<void> {
       expected_generation: props.file.generation,
     })
     message.success(t('history.restored'))
-    emit('update:show', false)
+    await load()
     emit('restored')
   } catch (cause: any) {
     if (cause?.response?.status === 409) message.error(t('history.conflict'))
@@ -146,38 +145,37 @@ watch(() => [props.show, props.file?.path] as const, () => { void load() }, { im
 </script>
 
 <template>
-  <NDrawer :show="props.show" :placement="'right'" :width="380" @update:show="emit('update:show', $event)">
-    <NDrawerContent v-if="props.file" :title="t('history.title')" closable>
-      <div class="history-file">{{ props.file.name }}</div>
-      <NSpin v-if="loading" size="small" />
-      <NEmpty v-else-if="error" :description="t('history.load_failed')" />
-      <NEmpty v-else-if="!versions.length" :description="t('history.empty')" />
-      <NList v-else bordered>
-        <NListItem v-for="version in versions" :key="version.generation">
-          <div class="history-version">
-            <div class="history-version__meta">
-              <strong>{{ t('history.version', { n: version.generation }) }}</strong>
-              <NTag v-if="version.current" size="small" type="success">{{ t('history.current') }}</NTag>
-              <span>{{ date(version.created_at) }}</span>
-              <span>{{ size(version.size) }}</span>
-            </div>
-            <div class="history-version__actions">
-              <NButton size="small" secondary type="primary" :loading="busyGeneration === version.generation" @click="download(version)">
-                <template #icon><IconDownload /></template>{{ t('menu.download') }}
-              </NButton>
-              <NButton v-if="!version.current" size="small" secondary type="primary" :loading="busyGeneration === version.generation" @click="restore(version)">
-                <template #icon><IconRestore /></template>{{ t('history.restore') }}
-              </NButton>
-            </div>
+  <section v-if="props.show && props.file" class="history-section">
+    <div class="history-heading">{{ t('history.title') }}</div>
+    <NSpin v-if="loading" size="small" />
+    <NEmpty v-else-if="error" :description="t('history.load_failed')" />
+    <NEmpty v-else-if="!versions.length" :description="t('history.empty')" />
+    <NList v-else bordered>
+      <NListItem v-for="version in versions" :key="version.generation">
+        <div class="history-version">
+          <div class="history-version__meta">
+            <strong>{{ t('history.version', { n: version.generation }) }}</strong>
+            <NTag v-if="version.current" size="small" type="success">{{ t('history.current') }}</NTag>
+            <span>{{ date(version.created_at) }}</span>
+            <span>{{ size(version.size) }}</span>
           </div>
-        </NListItem>
-      </NList>
-    </NDrawerContent>
-  </NDrawer>
+          <div class="history-version__actions">
+            <NButton size="small" secondary type="primary" :loading="busyGeneration === version.generation" @click="download(version)">
+              <template #icon><IconDownload /></template>{{ t('menu.download') }}
+            </NButton>
+            <NButton v-if="!version.current" size="small" secondary type="primary" :loading="busyGeneration === version.generation" @click="restore(version)">
+              <template #icon><IconRestore /></template>{{ t('history.restore') }}
+            </NButton>
+          </div>
+        </div>
+      </NListItem>
+    </NList>
+  </section>
 </template>
 
 <style scoped>
-.history-file { margin-bottom: 16px; overflow: hidden; color: var(--domus-muted); text-overflow: ellipsis; white-space: nowrap; }
+.history-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--domus-line, #e4e8f0); }
+.history-heading { margin-bottom: 12px; color: var(--domus-muted); font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
 .history-version { display: grid; gap: 10px; width: 100%; }
 .history-version__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 12px; }
 .history-version__meta strong { margin-right: auto; font-size: 13px; }
