@@ -1,10 +1,12 @@
 package handler
 
 import (
+	"errors"
 	"log"
 	"net/mail"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/willvar/dofs"
 
 	"domus/internal/auth"
 	"domus/internal/model"
@@ -32,6 +34,30 @@ func (h *Handler) handleStorageUsage(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"size":  size,
 		"count": count,
+	})
+}
+
+func (h *Handler) handleUpdateHistoryLimit(c *fiber.Ctx) error {
+	if h.DOFS == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+	}
+	var body struct {
+		HistoryLimit int64 `json:"history_limit"`
+	}
+	if err := c.BodyParser(&body); err != nil || body.HistoryLimit < dofs.DefaultHistoryLimit {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_history_limit"})
+	}
+	session := c.Locals("session").(*model.Session)
+	namespace, err := h.DOFS.SetHistoryLimit(c.UserContext(), session.UserID, body.HistoryLimit)
+	if errors.Is(err, dofs.ErrInvalidNamespace) {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_history_limit"})
+	}
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "history_limit_update_failed"})
+	}
+	return c.JSON(fiber.Map{
+		"ok":            true,
+		"history_limit": namespace.HistoryLimit,
 	})
 }
 

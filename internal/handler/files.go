@@ -98,6 +98,7 @@ func (h *Handler) handleList(c *fiber.Ctx) error {
 		}
 		fi := store.FileInfo{
 			Inode:         r.ID,
+			Generation:    r.Generation,
 			Name:          r.Name,
 			Path:          middleware.ToAppPath(r.Path, session.Username),
 			IsDir:         r.IsDir,
@@ -147,6 +148,7 @@ func (h *Handler) handleSearch(c *fiber.Ctx) error {
 	for _, r := range results {
 		items = append(items, fiber.Map{
 			"inode":         r.ID,
+			"generation":    r.Generation,
 			"path":          middleware.ToAppPath(r.Path, session.Username),
 			"parent":        middleware.ToAppPath(r.Parent, session.Username),
 			"name":          r.Name,
@@ -509,6 +511,124 @@ func (h *Handler) handleFileAccess(c *fiber.Ctx) error {
 		return c.Status(409).JSON(fiber.Map{"error": "file_not_ready"})
 	}
 	return h.sendFileAccessResponse(c, session, fileRecord, filepath.Base(resolvedPath), path)
+}
+
+func (h *Handler) handleFileHistory(c *fiber.Ctx) error {
+	if h.FileSystem == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+	}
+	pathValue := c.Query("path", "")
+	if pathValue == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
+	}
+	resolvedPath, err := middleware.ResolvePath(c, pathValue)
+	if err != nil {
+		return err
+	}
+	session := c.Locals("session").(*model.Session)
+	record, versions, err := h.FileSystem.ListHistory(c.UserContext(), session.UserID, resolvedPath)
+	if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, dofs.ErrNotFound) {
+		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	}
+	if errors.Is(err, dofs.ErrTypeMismatch) {
+		return c.Status(400).JSON(fiber.Map{"error": "not_file"})
+	}
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "history_failed"})
+	}
+	return c.JSON(fiber.Map{
+		"file": fiber.Map{
+			"inode":      record.ID,
+			"name":       record.Name,
+			"path":       pathValue,
+			"size":       record.Size,
+			"generation": record.Generation,
+		},
+		"versions": versions,
+	})
+}
+
+func historyGeneration(c *fiber.Ctx) (int64, error) {
+	raw := strings.TrimSpace(c.Query("generation", ""))
+	if raw == "" {
+		return 0, errors.New("generation required")
+	}
+	number, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || number <= 0 {
+		return 0, errors.New("invalid generation")
+	}
+	return number, nil
+}
+
+func (h *Handler) handleFileHistoryAccess(c *fiber.Ctx) error {
+	if h.FileSystem == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+	}
+	pathValue := c.Query("path", "")
+	if pathValue == "" {
+		return c.Status(400).JSON(fiber.Map{"error": "path_required"})
+	}
+	generation, err := historyGeneration(c)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	resolvedPath, err := middleware.ResolvePath(c, pathValue)
+	if err != nil {
+		return err
+	}
+	session := c.Locals("session").(*model.Session)
+	record, err := h.FileSystem.GenerationAccess(c.UserContext(), session.UserID, resolvedPath, generation)
+	if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, dofs.ErrNotFound) {
+		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	}
+	if errors.Is(err, dofs.ErrTypeMismatch) {
+		return c.Status(400).JSON(fiber.Map{"error": "not_file"})
+	}
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "history_access_failed"})
+	}
+	return h.sendFileAccessResponse(c, session, &record, filepath.Base(resolvedPath), pathValue+"#"+strconv.FormatInt(generation, 10))
+}
+
+func (h *Handler) handleFileHistoryRestore(c *fiber.Ctx) error {
+	if h.FileSystem == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+	}
+	var body struct {
+		Path               string `json:"path"`
+		Generation         int64  `json:"generation"`
+		ExpectedGeneration int64  `json:"expected_generation"`
+	}
+	if err := c.BodyParser(&body); err != nil || body.Path == "" || body.Generation <= 0 || body.ExpectedGeneration <= 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	}
+	resolvedPath, err := middleware.ResolvePath(c, body.Path)
+	if err != nil {
+		return err
+	}
+	session := c.Locals("session").(*model.Session)
+	restored, err := h.FileSystem.RestoreGeneration(c.UserContext(), session.UserID, resolvedPath, body.Generation, body.ExpectedGeneration)
+	if errors.Is(err, dofs.ErrConflict) {
+		return c.Status(409).JSON(fiber.Map{"error": "generation_conflict"})
+	}
+	if errors.Is(err, dofs.ErrQuotaExceeded) {
+		return c.Status(507).JSON(fiber.Map{"error": "quota_exceeded"})
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, dofs.ErrNotFound) {
+		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	}
+	if errors.Is(err, dofs.ErrTypeMismatch) {
+		return c.Status(400).JSON(fiber.Map{"error": "not_file"})
+	}
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "history_restore_failed"})
+	}
+	h.Audit.LogFromCtx(c, "file_history_restore", body.Path, strconv.FormatInt(body.Generation, 10), "success", 0)
+	return c.JSON(fiber.Map{
+		"ok":         true,
+		"generation": restored.Generation,
+		"size":       restored.Size,
+	})
 }
 
 func (h *Handler) sendFileAccessResponse(c *fiber.Ctx, session *model.Session, fileRecord *model.FileRecord, fileName, auditResource string) error {

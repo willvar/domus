@@ -28,6 +28,7 @@ type ObjectInfo struct {
 // metadata. It is not populated by listing object-storage paths.
 type FileInfo struct {
 	Inode         int64     `json:"inode"`
+	Generation    int64     `json:"generation,omitempty"`
 	Name          string    `json:"name"`
 	Path          string    `json:"path"`
 	IsDir         bool      `json:"is_dir"`

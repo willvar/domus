@@ -42,6 +42,7 @@ func (h *Handler) issueSession(c *fiber.Ctx, user *model.User, method string) er
 
 	needsSetup := user.Email == "" && !user.TOTPEnabled
 	avatarEndpoint := h.publicAvatarEndpoint(user)
+	historyLimit := h.historyLimit(c, user.ID)
 
 	return c.JSON(fiber.Map{
 		"user": fiber.Map{
@@ -52,9 +53,21 @@ func (h *Handler) issueSession(c *fiber.Ctx, user *model.User, method string) er
 			"email":           user.Email,
 			"totp_enabled":    user.TOTPEnabled,
 			"avatar_endpoint": avatarEndpoint,
+			"history_limit":   historyLimit,
 		},
 		"needs_setup": needsSetup,
 	})
+}
+
+func (h *Handler) historyLimit(c *fiber.Ctx, userID string) int64 {
+	if h.DOFS == nil {
+		return dofs.DefaultHistoryLimit
+	}
+	limit, err := h.DOFS.HistoryLimit(c.UserContext(), userID)
+	if err != nil || limit < dofs.DefaultHistoryLimit {
+		return dofs.DefaultHistoryLimit
+	}
+	return limit
 }
 
 func (h *Handler) checkLocked(c *fiber.Ctx, method, username string) error {
@@ -355,6 +368,7 @@ func (h *Handler) handleMe(c *fiber.Ctx) error {
 	}
 
 	avatarEndpoint := h.publicAvatarEndpoint(user)
+	historyLimit := h.historyLimit(c, user.ID)
 
 	return c.JSON(fiber.Map{
 		"id":              user.ID,
@@ -364,6 +378,7 @@ func (h *Handler) handleMe(c *fiber.Ctx) error {
 		"email":           user.Email,
 		"totp_enabled":    user.TOTPEnabled,
 		"avatar_endpoint": avatarEndpoint,
+		"history_limit":   historyLimit,
 	})
 }
 

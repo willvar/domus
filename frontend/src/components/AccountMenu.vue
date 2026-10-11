@@ -1,13 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { NAvatar, NButton, NDivider, NSwitch, NThing } from 'naive-ui'
+import { NAvatar, NButton, NDivider, NInputNumber, NSwitch, NThing } from 'naive-ui'
 import { useI18n } from '../composables/useI18n'
 import { useTheme } from '../composables/useTheme'
 import { purgeClientState } from '../utils/cachePurge'
 import { showConfirm } from '../composables/useNativeDialog'
 import { useUploadStore } from '../stores/upload'
 import { useAppMessage } from '../ui/feedback'
-import { IconAccountCircle, IconArrowLeft, IconBroom, IconContrastCircle, IconDeleteOutline, IconFolderHome, IconViewGridOutline } from '../barrels/icons'
+import { IconAccountCircle, IconArrowLeft, IconBroom, IconContrastCircle, IconDeleteOutline, IconFolderHome, IconProgressClock, IconViewGridOutline } from '../barrels/icons'
 
 const props = defineProps<{
   avatarUrl?: string
@@ -16,6 +16,7 @@ const props = defineProps<{
   role?: string
   root: boolean
   showThumbnails: boolean
+  historyLimit: number
   /** Renders the place-navigation section (mobile drawer). */
   places?: boolean
   activePlace?: 'files' | 'trash'
@@ -23,6 +24,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'update:showThumbnails': [value: boolean]
+  'update:historyLimit': [value: number]
   admin: []
   logout: []
   navigate: [place: 'files' | 'trash']
@@ -106,6 +108,24 @@ async function clearCacheAndReload(): Promise<void> {
           size="small"
           :aria-label="t('files.dark_mode')"
           @update:value="toggleDark"
+        />
+      </div>
+
+      <div class="preference-row history-row">
+        <IconProgressClock width="18" height="18" />
+        <span>
+          <strong>{{ t('account.history_limit') }}</strong>
+          <small>{{ t('account.history_limit_hint') }}</small>
+        </span>
+        <NInputNumber
+          :value="props.historyLimit"
+          :min="1"
+          :precision="0"
+          size="small"
+          :show-button="false"
+          style="width: 62px"
+          :aria-label="t('account.history_limit')"
+          @update:value="value => value != null && emit('update:historyLimit', value)"
         />
       </div>
 

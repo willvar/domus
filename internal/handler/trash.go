@@ -13,6 +13,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/willvar/dofs"
 	"gorm.io/gorm"
 
 	"domus/internal/middleware"
@@ -168,7 +169,7 @@ func (h *Handler) trashFileProjection(entry *model.TrashEntry, record *model.Fil
 	}
 	originalPath, _ := trashOriginalPath(entry, relativePath, record.IsDir)
 	info := store.FileInfo{
-		Inode: record.ID, Name: name, IsDir: record.IsDir, Size: record.Size,
+		Inode: record.ID, Generation: record.Generation, Name: name, IsDir: record.IsDir, Size: record.Size,
 		CreatedAt: record.CreatedAt, LastModified: record.UpdatedAt,
 		ContentType: record.ContentType, MediaWidth: record.MediaWidth,
 		MediaHeight: record.MediaHeight, MediaDuration: record.MediaDuration,
@@ -386,6 +387,120 @@ func (h *Handler) handleTrashAccess(c *fiber.Ctx) error {
 		name = entry.OriginalName
 	}
 	return h.sendFileAccessResponse(c, session, record, name, "trash:"+entry.ID+relativePath)
+}
+
+func (h *Handler) handleTrashHistory(c *fiber.Ctx) error {
+	if h.FileSystem == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+	}
+	entry, session, err := h.readyTrashEntry(c)
+	if err != nil {
+		return sendTrashHandlerError(c, err)
+	}
+	record, relativePath, err := h.trashRecord(session.UserID, entry, c.Query("path", "/"))
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	}
+	if err != nil || record.IsDir {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
+	}
+	_, versions, err := h.FileSystem.ListHistory(c.UserContext(), session.UserID, record.Path)
+	if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, dofs.ErrNotFound) {
+		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	}
+	if errors.Is(err, dofs.ErrTypeMismatch) {
+		return c.Status(400).JSON(fiber.Map{"error": "not_file"})
+	}
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "history_failed"})
+	}
+	name := record.Name
+	if relativePath == "/" {
+		name = entry.OriginalName
+	}
+	return c.JSON(fiber.Map{
+		"file": fiber.Map{
+			"inode":      record.ID,
+			"name":       name,
+			"path":       relativePath,
+			"size":       record.Size,
+			"generation": record.Generation,
+		},
+		"versions": versions,
+	})
+}
+
+func (h *Handler) handleTrashHistoryAccess(c *fiber.Ctx) error {
+	if h.FileSystem == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+	}
+	generation, err := historyGeneration(c)
+	if err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+	}
+	entry, session, err := h.readyTrashEntry(c)
+	if err != nil {
+		return sendTrashHandlerError(c, err)
+	}
+	record, relativePath, err := h.trashRecord(session.UserID, entry, c.Query("path", "/"))
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	}
+	if err != nil || record.IsDir {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
+	}
+	historical, err := h.FileSystem.GenerationAccess(c.UserContext(), session.UserID, record.Path, generation)
+	if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, dofs.ErrNotFound) {
+		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	}
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "history_access_failed"})
+	}
+	name := record.Name
+	if relativePath == "/" {
+		name = entry.OriginalName
+	}
+	return h.sendFileAccessResponse(c, session, &historical, name, "trash:"+entry.ID+relativePath+"#"+strconv.FormatInt(generation, 10))
+}
+
+func (h *Handler) handleTrashHistoryRestore(c *fiber.Ctx) error {
+	if h.FileSystem == nil {
+		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+	}
+	var body struct {
+		Path               string `json:"path"`
+		Generation         int64  `json:"generation"`
+		ExpectedGeneration int64  `json:"expected_generation"`
+	}
+	if err := c.BodyParser(&body); err != nil || body.Path == "" || body.Generation <= 0 || body.ExpectedGeneration <= 0 {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	}
+	entry, session, err := h.readyTrashEntry(c)
+	if err != nil {
+		return sendTrashHandlerError(c, err)
+	}
+	record, _, err := h.trashRecord(session.UserID, entry, body.Path)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	}
+	if err != nil || record.IsDir {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
+	}
+	restored, err := h.FileSystem.RestoreGeneration(c.UserContext(), session.UserID, record.Path, body.Generation, body.ExpectedGeneration)
+	if errors.Is(err, dofs.ErrConflict) {
+		return c.Status(409).JSON(fiber.Map{"error": "generation_conflict"})
+	}
+	if errors.Is(err, dofs.ErrQuotaExceeded) {
+		return c.Status(507).JSON(fiber.Map{"error": "quota_exceeded"})
+	}
+	if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, dofs.ErrNotFound) {
+		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+	}
+	if err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "history_restore_failed"})
+	}
+	h.Audit.LogFromCtx(c, "file_history_restore", "trash:"+entry.ID+body.Path, strconv.FormatInt(body.Generation, 10), "success", 0)
+	return c.JSON(fiber.Map{"ok": true, "generation": restored.Generation, "size": restored.Size})
 }
 
 func (h *Handler) nextAvailableRestorePath(userID, targetPath string, isDir bool) (string, error) {

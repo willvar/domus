@@ -150,7 +150,28 @@ func (r *Runtime) Usage(ctx context.Context, userID string) (int64, int, error) 
 			files++
 		}
 	}
-	return namespace.UsedBytes, files, nil
+	return namespace.UsedBytes + namespace.HistoryBytes, files, nil
+}
+
+func (r *Runtime) HistoryLimit(ctx context.Context, userID string) (int64, error) {
+	if r == nil || r.Metadata == nil {
+		return 0, errors.New("Domus DOFS runtime is incomplete")
+	}
+	namespace, err := r.Metadata.GetNamespace(ctx, userID)
+	if err != nil {
+		return 0, err
+	}
+	if namespace.HistoryLimit < dofs.DefaultHistoryLimit {
+		return dofs.DefaultHistoryLimit, nil
+	}
+	return namespace.HistoryLimit, nil
+}
+
+func (r *Runtime) SetHistoryLimit(ctx context.Context, userID string, limit int64) (dofs.Namespace, error) {
+	if r == nil || r.Metadata == nil {
+		return dofs.Namespace{}, errors.New("Domus DOFS runtime is incomplete")
+	}
+	return r.Metadata.SetHistoryLimit(ctx, userID, limit)
 }
 
 // ReclaimNamespace performs one idempotent physical-cleanup pass. Deleted

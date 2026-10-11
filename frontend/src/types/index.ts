@@ -21,6 +21,7 @@ export interface User {
   avatar_endpoint?: string
   /** Browser-local blob URL populated after direct OSS fetch and decryption. */
   avatar_url?: string
+  history_limit?: number
 }
 
 /** Auth verify step request. */
@@ -54,6 +55,7 @@ export interface LoginResponse {
  */
 export interface FileInfo {
   inode?: number
+  generation?: number
   name: string
   path: string
   is_dir: boolean
@@ -562,6 +564,24 @@ export interface FileAccessResponse {
   content_hash?: string
   media_codecs?: string
   media_meta?: string
+}
+
+export interface FileHistoryVersion {
+  generation: number
+  size: number
+  created_at: string
+  current: boolean
+}
+
+export interface FileHistoryResponse {
+  file: {
+    inode: number
+    name: string
+    path: string
+    size: number
+    generation: number
+  }
+  versions: FileHistoryVersion[]
 }
 
 // -----------------------------------------------------------------------------

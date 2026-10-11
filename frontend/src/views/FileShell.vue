@@ -75,6 +75,7 @@ import {
 } from '../utils/trashLocation'
 import AccountMenu from '../components/AccountMenu.vue'
 import ActivityCenter from '../components/ActivityCenter.vue'
+import FileHistory from '../components/FileHistory.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -97,7 +98,9 @@ const searchText = ref('')
 const showAccount = ref(false)
 const showActivity = ref(false)
 const showInspector = ref(false)
+const showHistory = ref(false)
 const showThumbnails = ref(localStorage.getItem('domus_show_thumbnails') === '1')
+const historyLimit = ref(auth.user?.history_limit || 1)
 const detailsFile = ref<FileListItem | null>(null)
 // Inspector extras: worker-probed media meta plus client-side parsing of
 // zip-based formats (zip archives, docx/xlsx/pptx document properties).
@@ -206,6 +209,9 @@ const actionMenuOptions = computed<DropdownOption[]>(() => {
   ]
   if (!file.is_dir) {
     options.push({ key: 'download', label: t('menu.download'), icon: renderIcon(IconDownload) })
+    if (!file._shareId) {
+      options.push({ key: 'history', label: t('menu.history'), icon: renderIcon(IconProgressClock) })
+    }
   }
   options.push(
     { key: 'details', label: t('menu.details'), icon: renderIcon(IconInformationOutline) },
@@ -228,6 +234,10 @@ const actionMenuOptions = computed<DropdownOption[]>(() => {
   })
   return options
 })
+
+watch(() => auth.user?.history_limit, (value) => {
+  if (typeof value === 'number' && value >= 1) historyLimit.value = value
+}, { immediate: true })
 
 onMounted(async () => {
   if (fs.tabs.length === 0) {
@@ -587,12 +597,33 @@ async function handleActionSelect(key: string | number): Promise<void> {
   switch (key) {
     case 'open': await openItem(file); break
     case 'download': await downloadItem(file); break
+    case 'history': showHistoryFor(file); break
     case 'details': showDetails(file); break
     case 'copy': setClipboard(file, 'copy'); break
     case 'cut': setClipboard(file, 'cut'); break
     case 'rename': await renameItem(file); break
     case 'restore': await restoreItem(file); break
     case 'delete': await deleteItem(file); break
+  }
+}
+
+function showHistoryFor(file: FileListItem): void {
+  actionFile.value = null
+  detailsFile.value = file
+  showHistory.value = true
+}
+
+async function setHistoryLimit(value: number): Promise<void> {
+  const previous = historyLimit.value
+  const next = Math.max(1, Math.floor(value || 1))
+  historyLimit.value = next
+  try {
+    const response = await api.put<{ history_limit: number }>('/user/history-limit', { history_limit: next })
+    historyLimit.value = response.data.history_limit
+    if (auth.user) auth.user.history_limit = response.data.history_limit
+  } catch {
+    historyLimit.value = previous
+    message.error(t('account.history_limit_failed'))
   }
 }
 
@@ -958,7 +989,9 @@ function phaseLabel(phase?: string): string {
           :role="auth.user?.role"
           :root="auth.isRoot"
           :show-thumbnails="showThumbnails"
+          :history-limit="historyLimit"
           @update:show-thumbnails="setThumbnailDisplay"
+          @update:history-limit="setHistoryLimit"
           @admin="openAdmin"
           @logout="logout"
         />
@@ -1034,9 +1067,11 @@ function phaseLabel(phase?: string): string {
               :role="auth.user?.role"
               :root="auth.isRoot"
               :show-thumbnails="showThumbnails"
+              :history-limit="historyLimit"
               :places="true"
               :active-place="activePlace"
               @update:show-thumbnails="setThumbnailDisplay"
+              @update:history-limit="setHistoryLimit"
               @admin="openAdmin"
               @logout="logout"
               @navigate="goToPlace"
@@ -1394,6 +1429,13 @@ function phaseLabel(phase?: string): string {
         />
       </NDrawerContent>
     </NDrawer>
+
+    <FileHistory
+      :show="showHistory"
+      :file="detailsFile"
+      @update:show="showHistory = $event"
+      @restored="fs.refresh()"
+    />
 
     <NDrawer
       :show="showInspector && Boolean(detailsFile)"
