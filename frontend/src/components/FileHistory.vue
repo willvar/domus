@@ -162,7 +162,7 @@ watch(() => [props.show, props.file?.path] as const, () => { void load() }, { im
               <span>{{ size(version.size) }}</span>
             </div>
             <div class="history-version__actions">
-              <NButton size="small" quaternary :loading="busyGeneration === version.generation" @click="download(version)">
+              <NButton size="small" secondary type="primary" :loading="busyGeneration === version.generation" @click="download(version)">
                 <template #icon><IconDownload /></template>{{ t('menu.download') }}
               </NButton>
               <NButton v-if="!version.current" size="small" secondary type="primary" :loading="busyGeneration === version.generation" @click="restore(version)">
