@@ -12,6 +12,7 @@ var fileControlFields = map[string]map[string]struct{}{
 	"/file/rename":           fieldSet("old_path", "new_path", "is_dir"),
 	"/file/copy":             fieldSet("src_path", "dst_path", "is_dir"),
 	"/file/move":             fieldSet("src_path", "dst_path", "is_dir"),
+	"/file/history/restore":  fieldSet("path", "generation", "expected_generation"),
 	"/file/upload/heartbeat": fieldSet("upload_id"),
 	"/file/upload/cancel":    fieldSet("upload_id", "task_id", "reason", "status"),
 	"/file/upload/cleanup":   fieldSet("client_instance_id"),
@@ -52,7 +53,9 @@ func rejectFileContentPayload(c *fiber.Ctx) error {
 	if path == "/file/upload" {
 		allowed = uploadControlFields
 	}
-	if strings.HasPrefix(path, "/trash/") && strings.HasSuffix(path, "/restore") {
+	if strings.HasPrefix(path, "/trash/") && strings.HasSuffix(path, "/history/restore") {
+		allowed = fieldSet("path", "generation", "expected_generation")
+	} else if strings.HasPrefix(path, "/trash/") && strings.HasSuffix(path, "/restore") {
 		allowed = fieldSet("path", "expected_inode", "conflict", "nested_conflict")
 	}
 	if allowed != nil {
