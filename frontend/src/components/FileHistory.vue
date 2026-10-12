@@ -2,13 +2,12 @@
 import { ref, watch } from 'vue'
 import dayjs from 'dayjs'
 import { NButton, NEmpty, NList, NListItem, NSpin, NTag } from 'naive-ui'
-import { IconDownload, IconRestore } from '../barrels/icons'
+import { IconRestore } from '../barrels/icons'
 import api from '../composables/useApi'
-import { useServiceWorker } from '../composables/useServiceWorker'
 import { useI18n } from '../composables/useI18n'
 import { useAppMessage } from '../ui/feedback'
 import { parseTrashLocation } from '../utils/trashLocation'
-import type { FileAccessResponse, FileHistoryResponse, FileHistoryVersion, FileListItem } from '../types'
+import type { FileHistoryResponse, FileHistoryVersion, FileListItem } from '../types'
 
 const props = defineProps<{
   show: boolean
@@ -48,57 +47,6 @@ async function load(): Promise<void> {
     error.value = true
   } finally {
     loading.value = false
-  }
-}
-
-function accessTarget(): { url: string; path: string } | null {
-  const target = requestTarget()
-  if (!target) return null
-  const trash = parseTrashLocation(props.file?.path || '')
-  if (trash?.id) {
-    return { url: `/trash/${encodeURIComponent(trash.id)}/history/access`, path: trash.relativePath }
-  }
-  return { url: '/file/history/access', path: props.file?.path || '' }
-}
-
-async function download(version: FileHistoryVersion): Promise<void> {
-  const target = accessTarget()
-  if (!target || !props.file) return
-  busyGeneration.value = version.generation
-  let decryptUrl: string | null = null
-  let objectUrl: string | null = null
-  try {
-    const response = await api.get<FileAccessResponse>(target.url, {
-      params: { path: target.path, generation: version.generation },
-    })
-    const access = response.data
-    const sw = useServiceWorker()
-    decryptUrl = sw.registerDecrypt({
-      url: access.url,
-      size: access.size,
-      chunkSize: access.chunk_size,
-      contentType: access.content_type,
-      filename: access.name,
-      dek: access.dek,
-      download: true,
-    })
-    if (!decryptUrl) throw new Error('decrypt unavailable')
-    await sw.flush()
-    const decrypted = await fetch(decryptUrl)
-    if (!decrypted.ok) throw new Error(`download failed: ${decrypted.status}`)
-    objectUrl = URL.createObjectURL(await decrypted.blob())
-    const anchor = document.createElement('a')
-    anchor.href = objectUrl
-    anchor.download = access.name || props.file.name
-    document.body.appendChild(anchor)
-    anchor.click()
-    anchor.remove()
-  } catch {
-    message.error(t('history.download_failed'))
-  } finally {
-    if (objectUrl) window.setTimeout(() => URL.revokeObjectURL(objectUrl!), 60000)
-    if (decryptUrl) useServiceWorker().unregisterDecrypt(decryptUrl)
-    busyGeneration.value = null
   }
 }
 
@@ -157,12 +105,17 @@ watch(() => [props.show, props.file?.path] as const, () => { void load() }, { im
             <span class="history-version__date">{{ date(version.created_at) }}</span>
             <NTag v-if="version.current" size="small" type="success">{{ t('history.current') }}</NTag>
             <span class="history-version__size">{{ size(version.size) }}</span>
-            <div class="history-version__actions">
-              <NButton size="small" secondary type="primary" :loading="busyGeneration === version.generation" @click="download(version)">
-                <template #icon><IconDownload /></template>{{ t('menu.download') }}
-              </NButton>
-              <NButton v-if="!version.current" size="small" secondary type="primary" :loading="busyGeneration === version.generation" @click="restore(version)">
-                <template #icon><IconRestore /></template>{{ t('history.restore') }}
+            <div v-if="!version.current" class="history-version__actions">
+              <NButton
+                size="small"
+                quaternary
+                type="primary"
+                :title="t('history.restore')"
+                :aria-label="t('history.restore')"
+                :loading="busyGeneration === version.generation"
+                @click="restore(version)"
+              >
+                <template #icon><IconRestore /></template>
               </NButton>
             </div>
           </div>
