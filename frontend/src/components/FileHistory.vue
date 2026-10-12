@@ -103,10 +103,11 @@ watch(() => [props.show, props.file?.path] as const, () => { void load() }, { im
         <div class="history-version">
           <div class="history-version__meta">
             <span class="history-version__date">{{ date(version.created_at) }}</span>
-            <NTag v-if="version.current" size="small" type="success">{{ t('history.current') }}</NTag>
             <span class="history-version__size">{{ size(version.size) }}</span>
-            <div v-if="!version.current" class="history-version__actions">
+            <div class="history-version__actions">
+              <NTag v-if="version.current" size="small" type="success">{{ t('history.current') }}</NTag>
               <NButton
+                v-else
                 size="small"
                 quaternary
                 type="primary"
