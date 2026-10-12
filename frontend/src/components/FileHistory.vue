@@ -15,7 +15,7 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  restored: []
+  restored: [generation: number, size: number]
 }>()
 
 const { t } = useI18n()
@@ -60,14 +60,14 @@ async function restore(version: FileHistoryVersion): Promise<void> {
     const url = trash?.id
       ? `/trash/${encodeURIComponent(trash.id)}/history/restore`
       : '/file/history/restore'
-    await api.post(url, {
+    const response = await api.post<{ generation: number; size: number }>(url, {
       path: target.path,
       generation: version.generation,
       expected_generation: props.file.generation,
     })
     message.success(t('history.restored'))
     await load()
-    emit('restored')
+    emit('restored', response.data.generation, response.data.size)
   } catch (cause: any) {
     if (cause?.response?.status === 409) message.error(t('history.conflict'))
     else if (cause?.response?.status === 507) message.error(t('history.quota_exceeded'))
@@ -133,5 +133,21 @@ watch(() => [props.show, props.file?.path] as const, () => { void load() }, { im
 .history-version__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; width: 100%; font-size: 12px; }
 .history-version__meta span { color: var(--domus-muted); }
 .history-version__date, .history-version__size { white-space: nowrap; }
-.history-version__actions { display: flex; gap: 6px; margin-left: auto; }
+.history-version__actions {
+  --history-action-width: 44px;
+  display: flex;
+  width: var(--history-action-width);
+  min-width: var(--history-action-width);
+  flex: 0 0 var(--history-action-width);
+  gap: 6px;
+  margin-left: auto;
+}
+.history-version__actions :deep(.n-button), .history-version__actions :deep(.n-tag) {
+  box-sizing: border-box;
+  width: var(--history-action-width);
+  min-width: var(--history-action-width);
+  justify-content: center;
+}
+.history-version__actions :deep(.n-button) { padding: 0; }
+.history-version__actions :deep(.n-tag) { padding-right: 0; padding-left: 0; }
 </style>

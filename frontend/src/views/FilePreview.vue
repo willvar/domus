@@ -41,6 +41,7 @@ import api from '../composables/useApi'
 import { useFileSystemStore } from '../stores/fileSystem'
 import { useAppMessage } from '../ui/feedback'
 import type { FileListItem, ViewerType } from '../types'
+import FileHistory from '../components/FileHistory.vue'
 import {
   isTrashLocation,
   parseTrashLocation,
@@ -392,6 +393,7 @@ onMounted(async () => {
       ...file.value,
       name: registered.access.name || file.value.name,
       inode: registered.access.inode || file.value.inode,
+      generation: registered.access.generation,
       size: registered.access.size,
       content_type: registered.access.content_type,
       media_codecs: registered.access.media_codecs,
@@ -410,6 +412,12 @@ onMounted(async () => {
     }
   }
 })
+
+function handleHistoryRestored(generation: number, size: number): void {
+  if (!file.value) return
+  file.value = { ...file.value, generation, size }
+  fileGeneration.value = generation
+}
 
 onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', preventDirtyUnload)
@@ -1094,6 +1102,11 @@ async function onQualitySelect(key: string | number): Promise<void> {
             </NDescriptionsItem>
           </NDescriptions>
         </template>
+        <FileHistory
+          :show="showDetails"
+          :file="file"
+          @restored="handleHistoryRestored"
+        />
         <template #footer>
           <NButton type="primary" block class="folder-button" @click="openContainingFolder">
             <template #icon><IconFolderOutline /></template>{{ t('files.open_containing_folder') }}
@@ -1119,6 +1132,7 @@ async function onQualitySelect(key: string | number): Promise<void> {
   font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   user-select: none;
 }
+.preview-details { user-select: text; }
 .preview-header {
   position: fixed;
   inset: 0 0 auto;
