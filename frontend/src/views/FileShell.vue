@@ -874,6 +874,10 @@ async function logout(): Promise<void> {
 function handleKeyboard(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null
   const typing = target?.matches('input, textarea, [contenteditable="true"]')
+  const selection = window.getSelection()
+  const hasSelectedText = Boolean(
+    selection && !selection.isCollapsed && selection.toString().length > 0,
+  )
   if ((event.ctrlKey || event.metaKey) && ['f', 'k'].includes(event.key.toLowerCase())) {
     event.preventDefault()
     searchInput.value?.focus()
@@ -887,6 +891,10 @@ function handleKeyboard(event: KeyboardEvent): void {
   } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && !fs.searchMode) {
     event.preventDefault()
     fs.selectAll()
+  } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c' && hasSelectedText) {
+    // Leave the browser's native text-copy behavior intact. The file copy
+    // shortcut only applies when the page has no text selection.
+    return
   } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'c' && selectionCount.value) {
     event.preventDefault()
     fs.copySelected()
@@ -1528,6 +1536,8 @@ function phaseLabel(phase?: string): string {
   font-size: 14px;
   user-select: none;
 }
+
+.inspector { user-select: text; }
 
 button, input, select { font: inherit; }
 

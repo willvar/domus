@@ -421,7 +421,7 @@ const zh: MessageMap = {
   "account.default_height": "默认高度",
   "history.title": "文件历史",
   "history.version": "版本 {n}",
-  "history.current": "当前版本",
+  "history.current": "当前",
   "history.restore": "恢复",
   "history.restored": "版本已恢复",
   "history.conflict": "文件已变化，请刷新后重试",

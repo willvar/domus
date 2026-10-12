@@ -130,7 +130,7 @@ async function restore(version: FileHistoryVersion): Promise<void> {
 }
 
 function date(value: string): string {
-  return value ? dayjs(value).format('YYYY-MM-DD HH:mm') : '—'
+  return value ? dayjs(value).format('YYYY-MM-DD HH:mm:ss') : '—'
 }
 
 function size(value: number): string {
@@ -154,18 +154,17 @@ watch(() => [props.show, props.file?.path] as const, () => { void load() }, { im
       <NListItem v-for="version in versions" :key="version.generation">
         <div class="history-version">
           <div class="history-version__meta">
-            <strong>{{ t('history.version', { n: version.generation }) }}</strong>
+            <span class="history-version__date">{{ date(version.created_at) }}</span>
             <NTag v-if="version.current" size="small" type="success">{{ t('history.current') }}</NTag>
-            <span>{{ date(version.created_at) }}</span>
-            <span>{{ size(version.size) }}</span>
-          </div>
-          <div class="history-version__actions">
-            <NButton size="small" secondary type="primary" :loading="busyGeneration === version.generation" @click="download(version)">
-              <template #icon><IconDownload /></template>{{ t('menu.download') }}
-            </NButton>
-            <NButton v-if="!version.current" size="small" secondary type="primary" :loading="busyGeneration === version.generation" @click="restore(version)">
-              <template #icon><IconRestore /></template>{{ t('history.restore') }}
-            </NButton>
+            <span class="history-version__size">{{ size(version.size) }}</span>
+            <div class="history-version__actions">
+              <NButton size="small" secondary type="primary" :loading="busyGeneration === version.generation" @click="download(version)">
+                <template #icon><IconDownload /></template>{{ t('menu.download') }}
+              </NButton>
+              <NButton v-if="!version.current" size="small" secondary type="primary" :loading="busyGeneration === version.generation" @click="restore(version)">
+                <template #icon><IconRestore /></template>{{ t('history.restore') }}
+              </NButton>
+            </div>
           </div>
         </div>
       </NListItem>
@@ -176,9 +175,9 @@ watch(() => [props.show, props.file?.path] as const, () => { void load() }, { im
 <style scoped>
 .history-section { margin-top: 20px; padding-top: 20px; border-top: 1px solid var(--domus-line, #e4e8f0); }
 .history-heading { margin-bottom: 12px; color: var(--domus-muted); font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
-.history-version { display: grid; gap: 10px; width: 100%; }
-.history-version__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; font-size: 12px; }
-.history-version__meta strong { margin-right: auto; font-size: 13px; }
+.history-version { width: 100%; }
+.history-version__meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; width: 100%; font-size: 12px; }
 .history-version__meta span { color: var(--domus-muted); }
-.history-version__actions { display: flex; gap: 6px; }
+.history-version__date, .history-version__size { white-space: nowrap; }
+.history-version__actions { display: flex; gap: 6px; margin-left: auto; }
 </style>
