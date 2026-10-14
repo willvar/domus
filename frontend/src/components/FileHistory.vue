@@ -1,11 +1,12 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import dayjs from 'dayjs'
 import { NButton, NEmpty, NList, NListItem, NSpin, NTag } from 'naive-ui'
 import { IconRestore } from '../barrels/icons'
 import api from '../composables/useApi'
 import { useI18n } from '../composables/useI18n'
 import { useAppMessage } from '../ui/feedback'
+import { useAuthStore } from '../stores/auth'
 import { parseTrashLocation } from '../utils/trashLocation'
 import type { FileHistoryResponse, FileHistoryVersion, FileListItem } from '../types'
 
@@ -19,11 +20,17 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const auth = useAuthStore()
 const message = useAppMessage()
 const versions = ref<FileHistoryVersion[]>([])
 const loading = ref(false)
 const error = ref(false)
 const busyGeneration = ref<number | null>(null)
+const historyLimit = computed(() => {
+  const value = auth.user?.history_limit
+  return typeof value === 'number' && value >= 1 ? Math.floor(value) : 1
+})
+const visibleVersions = computed(() => versions.value.slice(0, historyLimit.value))
 
 function requestTarget(): { url: string; path: string } | null {
   if (!props.file) return null
@@ -97,9 +104,9 @@ watch(() => [props.show, props.file?.path] as const, () => { void load() }, { im
     <div class="history-heading">{{ t('history.title') }}</div>
     <NSpin v-if="loading" size="small" />
     <NEmpty v-else-if="error" :description="t('history.load_failed')" />
-    <NEmpty v-else-if="!versions.length" :description="t('history.empty')" />
+    <NEmpty v-else-if="!visibleVersions.length" :description="t('history.empty')" />
     <NList v-else bordered>
-      <NListItem v-for="version in versions" :key="version.generation">
+      <NListItem v-for="version in visibleVersions" :key="version.generation">
         <div class="history-version">
           <div class="history-version__meta">
             <span class="history-version__date">{{ date(version.created_at) }}</span>

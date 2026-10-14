@@ -25,6 +25,8 @@ import { IconAccount, IconArrowLeft, IconCheck, IconEmailOutline, IconPlus } fro
 const router = useRouter()
 const { t, te } = useI18n()
 const message = useAppMessage()
+const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
+const emit = defineEmits<{ close: [] }>()
 
 const users = ref<any[]>([])
 const loading = ref(false)
@@ -41,6 +43,14 @@ const roleOptions = [
 
 const otpProtectedCount = computed(() => users.value.filter(user => user.totp_enabled).length)
 const emailLinkedCount = computed(() => users.value.filter(user => Boolean(user.email)).length)
+
+function closeAdmin(): void {
+  if (props.embedded) {
+    emit('close')
+    return
+  }
+  void router.push('/')
+}
 
 const columns = computed(() => [
   {
@@ -223,68 +233,70 @@ onMounted(() => {
 </script>
 
 <template>
-  <div class="admin-view">
-    <header class="admin-topbar">
-      <div class="admin-brand"><span>D</span><strong>DOMUS</strong></div>
-      <NButton quaternary @click="router.push('/')">
-        <template #icon><IconArrowLeft /></template>
-        {{ t('admin.back_to_files') }}
-      </NButton>
-    </header>
-
-    <main class="admin-content">
-      <div class="admin-header">
-        <div>
-          <span>{{ t('titlebar.admin_panel') }}</span>
-          <h1>{{ t('admin.title') }}</h1>
-          <p>{{ t('admin.subtitle') }}</p>
-        </div>
-        <NButton type="primary" @click="showCreate = true">
-          <template #icon><IconPlus /></template>
-          {{ t('admin.add_user') }}
+  <div class="admin-view" :class="{ 'admin-view--embedded': props.embedded }">
+    <div class="admin-panel">
+      <header class="admin-topbar">
+        <div class="admin-brand"><span>D</span><strong>DOMUS</strong></div>
+        <NButton quaternary @click="closeAdmin">
+          <template #icon><IconArrowLeft /></template>
+          {{ t('admin.back_to_files') }}
         </NButton>
-      </div>
+      </header>
 
-      <NAlert v-if="!corsOk" class="cors-warning" type="error" :title="t('admin.cors_warning_title')">
-        {{ t('admin.cors_warning_body') }}
-      </NAlert>
-
-      <section class="admin-stats">
-        <NCard :bordered="false">
-          <NStatistic :label="t('admin.total_users')" :value="users.length">
-            <template #prefix><IconAccount /></template>
-          </NStatistic>
-        </NCard>
-        <NCard :bordered="false">
-          <NStatistic :label="t('admin.otp_protected')" :value="otpProtectedCount">
-            <template #prefix><IconCheck /></template>
-          </NStatistic>
-        </NCard>
-        <NCard :bordered="false">
-          <NStatistic :label="t('admin.email_linked')" :value="emailLinkedCount">
-            <template #prefix><IconEmailOutline /></template>
-          </NStatistic>
-        </NCard>
-      </section>
-
-      <NCard class="users-card" :bordered="false">
-        <template #header>
-          <div class="users-card__header">
-            <div><strong>{{ t('admin.accounts') }}</strong><span>{{ t('admin.accounts_hint') }}</span></div>
-            <span>{{ users.length }}</span>
+      <main class="admin-content">
+        <div class="admin-header">
+          <div>
+            <span>{{ t('titlebar.admin_panel') }}</span>
+            <h1>{{ t('admin.title') }}</h1>
+            <p>{{ t('admin.subtitle') }}</p>
           </div>
-        </template>
-        <NDataTable
-          :columns="columns"
-          :data="users"
-          :loading="loading"
-          :row-key="(row) => row.id"
-          size="small"
-          :bordered="false"
-          :scroll-x="1050"
-        />
-      </NCard>
-    </main>
+          <NButton type="primary" @click="showCreate = true">
+            <template #icon><IconPlus /></template>
+            {{ t('admin.add_user') }}
+          </NButton>
+        </div>
+
+        <NAlert v-if="!corsOk" class="cors-warning" type="error" :title="t('admin.cors_warning_title')">
+          {{ t('admin.cors_warning_body') }}
+        </NAlert>
+
+        <section class="admin-stats">
+          <NCard :bordered="false">
+            <NStatistic :label="t('admin.total_users')" :value="users.length">
+              <template #prefix><IconAccount /></template>
+            </NStatistic>
+          </NCard>
+          <NCard :bordered="false">
+            <NStatistic :label="t('admin.otp_protected')" :value="otpProtectedCount">
+              <template #prefix><IconCheck /></template>
+            </NStatistic>
+          </NCard>
+          <NCard :bordered="false">
+            <NStatistic :label="t('admin.email_linked')" :value="emailLinkedCount">
+              <template #prefix><IconEmailOutline /></template>
+            </NStatistic>
+          </NCard>
+        </section>
+
+        <NCard class="users-card" :bordered="false">
+          <template #header>
+            <div class="users-card__header">
+              <div><strong>{{ t('admin.accounts') }}</strong><span>{{ t('admin.accounts_hint') }}</span></div>
+              <span>{{ users.length }}</span>
+            </div>
+          </template>
+          <NDataTable
+            :columns="columns"
+            :data="users"
+            :loading="loading"
+            :row-key="(row) => row.id"
+            size="small"
+            :bordered="false"
+            :scroll-x="1050"
+          />
+        </NCard>
+      </main>
+    </div>
 
     <!-- Create User Dialog -->
     <NModal
@@ -333,8 +345,19 @@ onMounted(() => {
 .admin-view {
   min-height: 100dvh;
   overflow: auto;
+}
+
+.admin-panel {
+  min-height: 100dvh;
+  overflow: auto;
   color: var(--domus-ink);
   background: var(--domus-canvas);
+}
+
+.admin-view--embedded,
+.admin-view--embedded .admin-panel {
+  min-height: 0;
+  height: 100%;
 }
 
 .admin-topbar {
@@ -403,7 +426,7 @@ onMounted(() => {
 .users-card__header strong,
 .users-card__header div span { display: block; }
 .users-card__header strong { font-size: 17px; }
-.users-card__header div span { margin-top: 4px; color: #68748a; font-size: 12px; font-weight: 400; }
+.users-card__header div span { margin-top: 4px; color: var(--domus-muted); font-size: 12px; font-weight: 400; }
 .users-card__header > span { display: grid; min-width: 32px; height: 26px; place-items: center; border-radius: 999px; color: var(--domus-primary); background: var(--domus-primary-soft); font-size: 12px; font-weight: 700; }
 
 .admin-dialog {

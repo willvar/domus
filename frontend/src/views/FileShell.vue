@@ -16,6 +16,7 @@ import {
   NEmpty,
   NInput,
   NMenu,
+  NModal,
   NPopover,
   NResult,
   NSelect,
@@ -75,6 +76,7 @@ import {
 } from '../utils/trashLocation'
 import AccountMenu from '../components/AccountMenu.vue'
 import ActivityCenter from '../components/ActivityCenter.vue'
+import AdminView from './AdminView.vue'
 import FileHistory from '../components/FileHistory.vue'
 
 const route = useRoute()
@@ -98,6 +100,7 @@ const searchText = ref('')
 const showAccount = ref(false)
 const showActivity = ref(false)
 const showInspector = ref(false)
+const showAdmin = ref(false)
 const showThumbnails = ref(localStorage.getItem('domus_show_thumbnails') === '1')
 const historyLimit = ref(auth.user?.history_limit || 1)
 const detailsFile = ref<FileListItem | null>(null)
@@ -618,7 +621,12 @@ async function setHistoryLimit(value: number): Promise<void> {
 
 function openAdmin(): void {
   showAccount.value = false
-  void router.push('/admin')
+  closeFloatingPanels()
+  if (isMobile.value) {
+    void router.push('/admin')
+    return
+  }
+  showAdmin.value = true
 }
 
 function dropdownNodeProps(): { role: string } {
@@ -1485,6 +1493,16 @@ function phaseLabel(phase?: string): string {
       </NDrawerContent>
     </NDrawer>
 
+    <NModal
+      v-model:show="showAdmin"
+      class="admin-modal"
+      preset="card"
+      :bordered="false"
+      :mask-closable="true"
+    >
+      <AdminView v-if="showAdmin" embedded @close="showAdmin = false" />
+    </NModal>
+
     <div v-if="draggingFiles" class="drop-overlay">
       <div><IconUpload /><strong>{{ t('fileview.drop') }}</strong><span>{{ t('files.drop_hint') }}</span></div>
     </div>
@@ -1902,6 +1920,19 @@ button, input, select { font: inherit; }
 
 @media (max-width: 420px) {
   .file-card__preview { aspect-ratio: 1.08; }
+}
+
+:global(.admin-modal) {
+  width: min(1180px, calc(100vw - 48px));
+  height: min(900px, calc(100dvh - 48px));
+  max-width: calc(100vw - 48px);
+  overflow: hidden;
+}
+
+:global(.admin-modal > .n-card__content) {
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {

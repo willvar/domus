@@ -40,6 +40,7 @@ import type { PlaybackStats } from '../composables/useRenditions'
 import api from '../composables/useApi'
 import { useFileSystemStore } from '../stores/fileSystem'
 import { useAppMessage } from '../ui/feedback'
+import { reloadPreviewComponent } from '../composables/usePreviewReload'
 import type { FileListItem, ViewerType } from '../types'
 import FileHistory from '../components/FileHistory.vue'
 import {
@@ -413,10 +414,8 @@ onMounted(async () => {
   }
 })
 
-function handleHistoryRestored(generation: number, size: number): void {
-  if (!file.value) return
-  file.value = { ...file.value, generation, size }
-  fileGeneration.value = generation
+function handleHistoryRestored(): void {
+  reloadPreviewComponent()
 }
 
 onBeforeUnmount(() => {
@@ -1121,11 +1120,14 @@ async function onQualitySelect(key: string | number): Promise<void> {
 .preview-shell {
   --ink: #172033;
   --muted: #626d82;
+  --ink-2: #626d82;
   --line: #e3e7ef;
   --accent: #4f5fe7;
   --canvas: #eef1f6;
   --surface: #ffffff;
   --header-bg: rgba(255, 255, 255, .92);
+  --nav-bg: rgb(255 255 255 / 94%);
+  --nav-border: rgba(224, 227, 236, .9);
   min-height: 100dvh;
   color: var(--ink);
   background: var(--canvas);

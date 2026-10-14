@@ -69,11 +69,14 @@ body {
 html[data-theme='dark'] .preview-shell {
   --ink: var(--domus-ink);
   --muted: var(--domus-muted);
+  --ink-2: #a6b0c3;
   --line: var(--domus-line);
   --accent: var(--domus-primary);
   --canvas: var(--domus-canvas);
   --surface: var(--domus-surface);
   --header-bg: rgb(24 28 38 / 92%);
+  --nav-bg: rgb(24 28 38 / 94%);
+  --nav-border: rgb(58 66 87 / 90%);
 }
 
 html[data-theme='dark'] .file-shell {

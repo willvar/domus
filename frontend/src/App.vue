@@ -1,13 +1,17 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, watchEffect } from 'vue'
+import { computed, onMounted, onUnmounted, watchEffect } from 'vue'
+import { useRoute } from 'vue-router'
 import { NSpin } from 'naive-ui'
 import { useAuthStore } from './stores/auth'
 import { useI18n } from './composables/useI18n'
+import { previewReloadKey } from './composables/usePreviewReload'
 import LoginPage from './components/LoginPage.vue'
 import NaiveProvider from './components/NaiveProvider.vue'
 
 const auth = useAuthStore()
+const route = useRoute()
 const { t } = useI18n()
+const routeViewKey = computed(() => `${route.fullPath}:${previewReloadKey.value}`)
 
 watchEffect(() => {
   document.title = t('app.title')
@@ -35,7 +39,7 @@ onUnmounted(() => {
 
     <LoginPage v-else-if="!auth.isLoggedIn" />
 
-    <router-view v-else />
+    <router-view v-else :key="routeViewKey" />
   </NaiveProvider>
 </template>
 
