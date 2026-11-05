@@ -5,16 +5,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/willvar/dofs"
 
 	"domus/internal/auth"
 	"domus/internal/filekind"
+	"domus/internal/httpx"
 	"domus/internal/middleware"
 	"domus/internal/model"
 	"domus/internal/store"
@@ -207,10 +208,14 @@ func authoritativeCompleteParts(parts []store.PartInfo, maximumCount int, expect
 }
 
 // handleUploadDispatch routes POST /file/upload to init, complete, or conflict check.
-func (h *Handler) handleUploadDispatch(c *fiber.Ctx) error {
-	fields, err := decodeUploadControlFields(c.Body())
+func (h *Handler) handleUploadDispatch(w http.ResponseWriter, r *http.Request) error {
+	payload, err := httpx.ReadBody(r)
 	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_upload_control_message"})
+		return err
+	}
+	fields, err := decodeUploadControlFields(payload)
+	if err != nil {
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_upload_control_message"})
 	}
 	allowed := uploadInitFields
 	_, complete := fields["upload_id"]
@@ -221,22 +226,17 @@ func (h *Handler) handleUploadDispatch(c *fiber.Ctx) error {
 		allowed = uploadConflictFields
 	}
 	if err := rejectUploadPayloadFields(fields, allowed); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_upload_control_message"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_upload_control_message"})
 	}
-	var peek struct {
-		UploadID string   `json:"upload_id"`
-		Names    []string `json:"names"`
-	}
-	if err := c.BodyParser(&peek); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
-	}
+	// Dispatch from the validated fields without consuming the request body;
+	// the selected handler decodes its own control message exactly once.
 	if complete {
-		return h.handleUploadComplete(c)
+		return h.handleUploadComplete(w, r)
 	}
 	if conflict {
-		return h.handleUploadConflictCheck(c)
+		return h.handleUploadConflictCheck(w, r)
 	}
-	return h.handleUploadInit(c)
+	return h.handleUploadInit(w, r)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -263,30 +263,30 @@ func splitFileName(name string) (string, string) {
 
 // ── conflict check (unchanged) ──────────────────────────────────────────────
 
-func (h *Handler) handleUploadConflictCheck(c *fiber.Ctx) error {
+func (h *Handler) handleUploadConflictCheck(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
 		Path  string   `json:"path"`
 		Names []string `json:"names"`
 	}
-	if err := c.BodyParser(&body); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_request"})
 	}
 	if !validUploadPath(body.Path) || len(body.Names) == 0 || len(body.Names) > maxConflictNames {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_request"})
 	}
 	for _, name := range body.Names {
 		if !validUploadName(name) {
-			return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+			return httpx.JSON(w, 400, map[string]any{"error": "invalid_request"})
 		}
 	}
 
-	session := c.Locals("session").(*model.Session)
+	session := middleware.Session(r)
 	dirPath := body.Path
 	if dirPath != "" && !strings.HasSuffix(dirPath, "/") {
 		dirPath += "/"
 	}
 
-	resolvedDir, err := middleware.ResolvePath(c, dirPath)
+	resolvedDir, err := middleware.ResolvePath(r, dirPath)
 	if err != nil {
 		return err
 	}
@@ -297,10 +297,10 @@ func (h *Handler) handleUploadConflictCheck(c *fiber.Ctx) error {
 		existingByName[allFiles[i].Name] = &allFiles[i]
 	}
 
-	var conflicts []fiber.Map
+	var conflicts []map[string]any
 	for _, name := range body.Names {
 		if existing, ok := existingByName[name]; ok {
-			conflicts = append(conflicts, fiber.Map{
+			conflicts = append(conflicts, map[string]any{
 				"name":          existing.Name,
 				"size":          existing.Size,
 				"is_dir":        existing.IsDir,
@@ -309,12 +309,12 @@ func (h *Handler) handleUploadConflictCheck(c *fiber.Ctx) error {
 		}
 	}
 
-	return c.JSON(fiber.Map{"conflicts": conflicts})
+	return httpx.JSON(w, http.StatusOK, map[string]any{"conflicts": conflicts})
 }
 
 // ── init ─────────────────────────────────────────────────────────────────────
 
-func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
+func (h *Handler) handleUploadInit(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
 		Path               string `json:"path"`
 		FileName           string `json:"file_name"`
@@ -326,31 +326,31 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 		DEK                string `json:"dek"`
 		ExpectedGeneration int64  `json:"expected_generation"`
 	}
-	if err := c.BodyParser(&body); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_request"})
 	}
 	if !validUploadPath(body.Path) || !validUploadName(body.FileName) ||
 		len(body.ContentType) > maxUploadContentType ||
 		len(body.ClientInstanceID) > maxClientInstanceIDBytes ||
 		body.ExpectedGeneration < 0 {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_request"})
 	}
 	if body.ConflictStrategy != "" && body.ConflictStrategy != "replace" && body.ConflictStrategy != "rename" {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_conflict_strategy"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_conflict_strategy"})
 	}
 
-	session := c.Locals("session").(*model.Session)
+	session := middleware.Session(r)
 	if h.FileSystem == nil {
-		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+		return httpx.JSON(w, 503, map[string]any{"error": "dofs_unavailable"})
 	}
 	fileKey, err := hex.DecodeString(strings.TrimSpace(body.DEK))
 	if err != nil || len(fileKey) != dofs.KeySize {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_dek"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_dek"})
 	}
 	defer dofs.Clear(fileKey)
 
 	if body.FileSize < 0 {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_file_size"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_file_size"})
 	}
 
 	ownerID := session.UserID
@@ -365,13 +365,13 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 	}
 	filePath = dirPath + fileName
 	if !body.Internal && isProtectedMutationRoot(filePath) {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_path"})
 	}
 	resolveUploadPath := middleware.ResolvePath
 	if body.Internal {
 		resolveUploadPath = middleware.ResolveInternalPath
 	}
-	resolvedPath, err = resolveUploadPath(c, filePath)
+	resolvedPath, err = resolveUploadPath(r, filePath)
 	if err != nil {
 		return err
 	}
@@ -381,11 +381,11 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 		switch body.ConflictStrategy {
 		case "replace":
 			if existing.IsDir || existing.Status != "ready" {
-				return c.Status(409).JSON(fiber.Map{"error": "replace_target_busy"})
+				return httpx.JSON(w, 409, map[string]any{"error": "replace_target_busy"})
 			}
 			replace = true
 		case "rename":
-			resolvedDir, dirErr := resolveUploadPath(c, dirPath)
+			resolvedDir, dirErr := resolveUploadPath(r, dirPath)
 			if dirErr != nil {
 				return dirErr
 			}
@@ -396,15 +396,15 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 			}
 			fileName = nextAvailableName(fileName, usedNames)
 			filePath = dirPath + fileName
-			resolvedPath, err = resolveUploadPath(c, filePath)
+			resolvedPath, err = resolveUploadPath(r, filePath)
 			if err != nil {
 				return err
 			}
 			existing = nil
 		default:
-			return c.Status(409).JSON(fiber.Map{
+			return httpx.JSON(w, 409, map[string]any{
 				"error": "file_already_exists",
-				"existing": fiber.Map{
+				"existing": map[string]any{
 					"name":          existing.Name,
 					"size":          existing.Size,
 					"is_dir":        existing.IsDir,
@@ -418,13 +418,13 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 		if existing != nil {
 			currentGeneration = existing.Generation
 		}
-		return c.Status(409).JSON(fiber.Map{
+		return httpx.JSON(w, 409, map[string]any{
 			"error": "generation_conflict", "current_generation": currentGeneration,
 		})
 	}
 	if body.Internal {
 		if err := h.ensureParentDirRecords(ownerID, resolvedPath, false); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "create_parent_failed"})
+			return httpx.JSON(w, 500, map[string]any{"error": "create_parent_failed"})
 		}
 	}
 
@@ -434,11 +434,11 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 	var retainedKey []byte
 	if replace {
 		if existing == nil || existing.WrappedDEK == "" {
-			return c.Status(409).JSON(fiber.Map{"error": "replace_target_unencrypted"})
+			return httpx.JSON(w, 409, map[string]any{"error": "replace_target_unencrypted"})
 		}
 		ownerKEK, keyErr := h.loadUserKEK(ownerID)
 		if keyErr != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "unwrap_failed"})
+			return httpx.JSON(w, 500, map[string]any{"error": "unwrap_failed"})
 		}
 		wrapped, decodeErr := hex.DecodeString(existing.WrappedDEK)
 		if decodeErr == nil {
@@ -449,7 +449,7 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 		dofs.Clear(ownerKEK)
 		if keyErr != nil || len(retainedKey) != dofs.KeySize {
 			dofs.Clear(retainedKey)
-			return c.Status(500).JSON(fiber.Map{"error": "unwrap_failed"})
+			return httpx.JSON(w, 500, map[string]any{"error": "unwrap_failed"})
 		}
 		defer dofs.Clear(retainedKey)
 		effectiveKey = retainedKey
@@ -458,22 +458,22 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 	// Encrypted file geometry
 	partSize, err := uploadPartSizeFor(body.FileSize)
 	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "file_too_large"})
+		return httpx.JSON(w, 400, map[string]any{"error": "file_too_large"})
 	}
 
 	uploadID := uuid.New().String()
 	direct, err := h.FileSystem.PrepareDirectUpload(
-		c.UserContext(), ownerID, uploadID, resolvedPath, body.FileSize,
+		r.Context(), ownerID, uploadID, resolvedPath, body.FileSize,
 		effectiveKey, replace, directUploadReservationTTL,
 	)
 	if err != nil {
 		switch {
 		case errors.Is(err, dofs.ErrAlreadyExists):
-			return c.Status(409).JSON(fiber.Map{"error": "file_already_exists"})
+			return httpx.JSON(w, 409, map[string]any{"error": "file_already_exists"})
 		case errors.Is(err, dofs.ErrConflict):
-			return c.Status(409).JSON(fiber.Map{"error": "upload_conflict"})
+			return httpx.JSON(w, 409, map[string]any{"error": "upload_conflict"})
 		default:
-			return c.Status(500).JSON(fiber.Map{"error": "reserve_upload_failed"})
+			return httpx.JSON(w, 500, map[string]any{"error": "reserve_upload_failed"})
 		}
 	}
 	// The reservation captures the current generation atomically in DOFS. A
@@ -481,15 +481,15 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 	// must compare against this authoritative value before any OSS upload is
 	// created.
 	if body.ExpectedGeneration > 0 && direct.ExpectedGeneration != body.ExpectedGeneration {
-		_ = h.FileSystem.AbortDirectUpload(c.UserContext(), ownerID, uploadID)
-		return c.Status(409).JSON(fiber.Map{
+		_ = h.FileSystem.AbortDirectUpload(r.Context(), ownerID, uploadID)
+		return httpx.JSON(w, 409, map[string]any{
 			"error": "generation_conflict", "current_generation": direct.ExpectedGeneration,
 		})
 	}
 	ossUploadID, err := h.Store.CreateMultipartUpload(direct.ObjectKey)
 	if err != nil {
-		_ = h.FileSystem.AbortDirectUpload(c.UserContext(), ownerID, uploadID)
-		return c.Status(500).JSON(fiber.Map{"error": "create_multipart_failed"})
+		_ = h.FileSystem.AbortDirectUpload(r.Context(), ownerID, uploadID)
+		return httpx.JSON(w, 500, map[string]any{"error": "create_multipart_failed"})
 	}
 
 	// Task + application upload projection. Ciphertext target and wrapped key
@@ -499,8 +499,8 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 		taskID = uuid.New().String()
 		if err := h.Repos.Tasks.Create(ownerID, taskID, "upload", fileName); err != nil {
 			_ = h.Store.AbortMultipartUpload(direct.ObjectKey, ossUploadID)
-			_ = h.FileSystem.AbortDirectUpload(c.UserContext(), ownerID, uploadID)
-			return c.Status(500).JSON(fiber.Map{"error": "create_task_failed"})
+			_ = h.FileSystem.AbortDirectUpload(r.Context(), ownerID, uploadID)
+			return httpx.JSON(w, 500, map[string]any{"error": "create_task_failed"})
 		}
 	}
 	contentType := filekind.ContentType(fileName, body.ContentType)
@@ -509,14 +509,14 @@ func (h *Handler) handleUploadInit(c *fiber.Ctx) error {
 			_ = h.Repos.Tasks.Delete(taskID)
 		}
 		_ = h.Store.AbortMultipartUpload(direct.ObjectKey, ossUploadID)
-		_ = h.FileSystem.AbortDirectUpload(c.UserContext(), ownerID, uploadID)
-		return c.Status(500).JSON(fiber.Map{"error": "record_upload_failed"})
+		_ = h.FileSystem.AbortDirectUpload(r.Context(), ownerID, uploadID)
+		return httpx.JSON(w, 500, map[string]any{"error": "record_upload_failed"})
 	}
 	if h.Hub != nil {
 		h.notifyParentDir(ownerID, resolvedPath)
 	}
 
-	return c.JSON(fiber.Map{
+	return httpx.JSON(w, http.StatusOK, map[string]any{
 		"upload_id":     uploadID,
 		"task_id":       taskID,
 		"file_name":     fileName,
@@ -536,13 +536,13 @@ func (h *Handler) authorizedUpload(userID, uploadID string) (*model.FileRecord, 
 	return h.FileSystem.GetUpload(userID, uploadID)
 }
 
-func (h *Handler) handleUploadPresign(c *fiber.Ctx) error {
-	uploadID := c.Query("upload_id", "")
+func (h *Handler) handleUploadPresign(w http.ResponseWriter, r *http.Request) error {
+	uploadID := httpx.Query(r, "upload_id", "")
 	if uploadID == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "upload_id required"})
+		return httpx.JSON(w, 400, map[string]any{"error": "upload_id required"})
 	}
-	start, _ := strconv.Atoi(c.Query("start", "1"))
-	count, _ := strconv.Atoi(c.Query("count", "100"))
+	start, _ := strconv.Atoi(httpx.Query(r, "start", "1"))
+	count, _ := strconv.Atoi(httpx.Query(r, "count", "100"))
 	if start < 1 {
 		start = 1
 	}
@@ -554,36 +554,36 @@ func (h *Handler) handleUploadPresign(c *fiber.Ctx) error {
 		count = maxBatch
 	}
 
-	session := c.Locals("session").(*model.Session)
+	session := middleware.Session(r)
 	record, err := h.authorizedUpload(session.UserID, uploadID)
 	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "upload_not_found"})
 	}
 	if record.Status != "uploading" {
-		return c.Status(409).JSON(fiber.Map{"error": "upload_not_active"})
+		return httpx.JSON(w, 409, map[string]any{"error": "upload_not_active"})
 	}
 	if h.FileSystem == nil {
-		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+		return httpx.JSON(w, 503, map[string]any{"error": "dofs_unavailable"})
 	}
-	direct, err := h.FileSystem.GetDirectUpload(c.UserContext(), record.UserID, uploadID)
+	direct, err := h.FileSystem.GetDirectUpload(r.Context(), record.UserID, uploadID)
 	if err != nil || direct.State != dofs.ExternalUploadActive || direct.ObjectKey != record.StorageKey() {
-		return c.Status(409).JSON(fiber.Map{"error": "upload_reservation_missing"})
+		return httpx.JSON(w, 409, map[string]any{"error": "upload_reservation_missing"})
 	}
 	partSize, partErr := uploadPartSizeFor(record.Size)
 	if partErr != nil {
-		return c.Status(409).JSON(fiber.Map{"error": "file_too_large"})
+		return httpx.JSON(w, 409, map[string]any{"error": "file_too_large"})
 	}
 	totalParts := encryptedMultipartPartCount(record.Size, partSize)
 	if start > totalParts {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_part_range"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_part_range"})
 	}
 	if remaining := totalParts - start + 1; count > remaining {
 		count = remaining
 	}
 	if _, err := h.FileSystem.RefreshDirectUpload(
-		c.UserContext(), record.UserID, uploadID, directUploadReservationTTL,
+		r.Context(), record.UserID, uploadID, directUploadReservationTTL,
 	); err != nil {
-		return c.Status(409).JSON(fiber.Map{"error": "upload_reservation_expired"})
+		return httpx.JSON(w, 409, map[string]any{"error": "upload_reservation_expired"})
 	}
 	_ = h.Repos.Files.TouchUpload(uploadID, time.Now())
 
@@ -596,12 +596,12 @@ func (h *Handler) handleUploadPresign(c *fiber.Ctx) error {
 		pn := start + i
 		url, err := h.Store.PresignedUploadPart(record.StorageKey(), record.OSSUploadID, pn, presignExpiry)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "presign_failed"})
+			return httpx.JSON(w, 500, map[string]any{"error": "presign_failed"})
 		}
 		parts = append(parts, partURL{PartNumber: pn, PresignedURL: url})
 	}
 
-	return c.JSON(fiber.Map{
+	return httpx.JSON(w, http.StatusOK, map[string]any{
 		"parts":      parts,
 		"expires_in": int(presignExpiry.Seconds()),
 	})
@@ -609,7 +609,7 @@ func (h *Handler) handleUploadPresign(c *fiber.Ctx) error {
 
 // ── complete ─────────────────────────────────────────────────────────────────
 
-func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
+func (h *Handler) handleUploadComplete(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
 		UploadID          string  `json:"upload_id"`
 		ContentHash       string  `json:"content_hash"`
@@ -619,52 +619,52 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		MediaDuration     float64 `json:"media_duration"`
 		ThumbnailUploadID string  `json:"thumbnail_upload_id"`
 	}
-	if err := c.BodyParser(&body); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_request"})
 	}
 	if _, err := uuid.Parse(body.UploadID); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_upload_id"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_upload_id"})
 	}
 	if !validHexDigest(body.ContentHash) {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_content_hash"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_content_hash"})
 	}
 	if body.MediaWidth < 0 || body.MediaHeight < 0 || body.MediaDuration < 0 {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_media_metadata"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_media_metadata"})
 	}
 	if body.ThumbnailUploadID != "" {
 		if _, err := uuid.Parse(body.ThumbnailUploadID); err != nil {
-			return c.Status(400).JSON(fiber.Map{"error": "invalid_thumbnail_upload_id"})
+			return httpx.JSON(w, 400, map[string]any{"error": "invalid_thumbnail_upload_id"})
 		}
 	}
 
-	session := c.Locals("session").(*model.Session)
+	session := middleware.Session(r)
 	record, err := h.authorizedUpload(session.UserID, body.UploadID)
 	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "upload_not_found"})
 	}
 	ownerID := record.UserID
 	if record.Status == "ready" {
 		current, currentErr := h.Repos.Files.GetByID(ownerID, record.ID)
 		if currentErr != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "resolve_published_file_failed"})
+			return httpx.JSON(w, 500, map[string]any{"error": "resolve_published_file_failed"})
 		}
 		// A previous request may have published the generation and committed the
 		// Domus projection before its response or acknowledgement was delivered.
 		// Retrying completion also finishes that final cleanup step.
-		_ = h.FileSystem.AcknowledgeDirectUpload(c.UserContext(), ownerID, body.UploadID)
-		return c.JSON(fiber.Map{"ok": true, "generation": current.Generation})
+		_ = h.FileSystem.AcknowledgeDirectUpload(r.Context(), ownerID, body.UploadID)
+		return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "generation": current.Generation})
 	}
 	if h.FileSystem == nil {
-		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+		return httpx.JSON(w, 503, map[string]any{"error": "dofs_unavailable"})
 	}
-	direct, err := h.FileSystem.GetDirectUpload(c.UserContext(), ownerID, body.UploadID)
+	direct, err := h.FileSystem.GetDirectUpload(r.Context(), ownerID, body.UploadID)
 	if err != nil {
-		return c.Status(409).JSON(fiber.Map{"error": "upload_reservation_missing"})
+		return httpx.JSON(w, 409, map[string]any{"error": "upload_reservation_missing"})
 	}
 
 	expectedEncryptedSize := encryptedFileSize(record.Size)
 	if body.EncryptedSize <= 0 || body.EncryptedSize != expectedEncryptedSize {
-		return c.Status(400).JSON(fiber.Map{
+		return httpx.JSON(w, 400, map[string]any{
 			"error":         "invalid_encrypted_size",
 			"expected_size": expectedEncryptedSize,
 			"actual_size":   body.EncryptedSize,
@@ -673,7 +673,7 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 
 	completionPartSize, partErr := uploadPartSizeFor(record.Size)
 	if partErr != nil {
-		return c.Status(409).JSON(fiber.Map{"error": "file_too_large"})
+		return httpx.JSON(w, 409, map[string]any{"error": "file_too_large"})
 	}
 	expectedTotalParts := encryptedMultipartPartCount(record.Size, completionPartSize)
 	if direct.State == dofs.ExternalUploadActive && record.OSSUploadID != "" {
@@ -683,33 +683,33 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		objectAlreadyComplete := false
 		if existing, headErr := h.Store.HeadObject(direct.ObjectKey); headErr == nil {
 			if existing.Size != expectedEncryptedSize {
-				return c.Status(409).JSON(fiber.Map{"error": "reserved_object_conflict"})
+				return httpx.JSON(w, 409, map[string]any{"error": "reserved_object_conflict"})
 			}
 			objectAlreadyComplete = true
 		}
 		if !objectAlreadyComplete {
 			listedParts, listErr := h.Store.ListParts(direct.ObjectKey, record.OSSUploadID)
 			if listErr != nil {
-				return c.Status(500).JSON(fiber.Map{"error": "verify_parts_failed"})
+				return httpx.JSON(w, 500, map[string]any{"error": "verify_parts_failed"})
 			}
 			completeParts, valid := authoritativeCompleteParts(listedParts, expectedTotalParts, expectedEncryptedSize)
 			if !valid {
-				return c.Status(400).JSON(fiber.Map{"error": "invalid_parts"})
+				return httpx.JSON(w, 400, map[string]any{"error": "invalid_parts"})
 			}
 			if completeErr := h.Store.CompleteMultipartUpload(direct.ObjectKey, record.OSSUploadID, completeParts); completeErr != nil {
-				return c.Status(500).JSON(fiber.Map{"error": "complete_multipart_failed"})
+				return httpx.JSON(w, 500, map[string]any{"error": "complete_multipart_failed"})
 			}
 		}
 	} else if direct.State == dofs.ExternalUploadActive {
-		return c.Status(409).JSON(fiber.Map{"error": "multipart_state_missing"})
+		return httpx.JSON(w, 409, map[string]any{"error": "multipart_state_missing"})
 	}
 
 	head, err := h.Store.HeadObject(direct.ObjectKey)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "verify_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "verify_failed"})
 	}
 	if head.Size != expectedEncryptedSize {
-		return c.Status(400).JSON(fiber.Map{
+		return httpx.JSON(w, 400, map[string]any{
 			"error":         "size_mismatch",
 			"expected_size": expectedEncryptedSize,
 			"actual_size":   head.Size,
@@ -731,21 +731,21 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		if thumbnailErr != nil || candidate.Status != "ready" || candidate.ID == record.ID ||
 			candidate.Path != expectedPath || candidate.Name != expectedName ||
 			candidate.ContentType != "image/webp" || candidate.Size <= 0 || candidate.Size > maxBrowserThumbnailSize {
-			return c.Status(409).JSON(fiber.Map{"error": "thumbnail_upload_not_ready"})
+			return httpx.JSON(w, 409, map[string]any{"error": "thumbnail_upload_not_ready"})
 		}
 		thumbnailRecord = candidate
 	}
 
-	published, err := h.FileSystem.CommitDirectUpload(c.UserContext(), ownerID, body.UploadID)
+	published, err := h.FileSystem.CommitDirectUpload(r.Context(), ownerID, body.UploadID)
 	if err != nil {
 		if errors.Is(err, dofs.ErrConflict) {
-			return c.Status(409).JSON(fiber.Map{"error": "generation_conflict"})
+			return httpx.JSON(w, 409, map[string]any{"error": "generation_conflict"})
 		}
-		return c.Status(500).JSON(fiber.Map{"error": "publish_upload_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "publish_upload_failed"})
 	}
 	current, err := h.Repos.Files.GetByID(ownerID, int64(published.Inode))
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "resolve_published_file_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "resolve_published_file_failed"})
 	}
 	record.Path, record.Parent, record.Name = current.Path, current.Parent, current.Name
 
@@ -754,7 +754,7 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		ownerID, record.Path, record.Name, false,
 		published.Size, contentType, body.ContentHash,
 	); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "record_finalize_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "record_finalize_failed"})
 	}
 
 	if previousSource != nil && previousSource.ThumbnailKey != "" &&
@@ -778,7 +778,7 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 			thumbnailRecord.StorageKey(), thumbnailRecord.WrappedDEK,
 			body.MediaWidth, body.MediaHeight, body.MediaDuration,
 		); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "thumbnail_attach_failed"})
+			return httpx.JSON(w, 500, map[string]any{"error": "thumbnail_attach_failed"})
 		}
 	} else if body.MediaWidth > 0 || body.MediaHeight > 0 {
 		_ = h.Repos.Files.UpdateThumbnail(
@@ -788,15 +788,15 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		)
 	}
 	if err := h.Repos.Files.UpdateStatus(body.UploadID, "ready"); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "record_status_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "record_status_failed"})
 	}
 
 	if record.TaskID != "" {
 		_ = h.Repos.Tasks.UpdateStatus(record.TaskID, "completed")
 	}
 
-	if err := h.FileSystem.AcknowledgeDirectUpload(c.UserContext(), ownerID, body.UploadID); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "acknowledge_upload_failed"})
+	if err := h.FileSystem.AcknowledgeDirectUpload(r.Context(), ownerID, body.UploadID); err != nil {
+		return httpx.JSON(w, 500, map[string]any{"error": "acknowledge_upload_failed"})
 	}
 
 	if h.Hub != nil {
@@ -807,49 +807,49 @@ func (h *Handler) handleUploadComplete(c *fiber.Ctx) error {
 		}
 	}
 
-	h.Audit.LogFromCtx(c, "file_upload", record.Path, record.Name, "completed", 0)
-	return c.JSON(fiber.Map{"ok": true, "generation": published.Generation})
+	h.audit(r, "file_upload", record.Path, record.Name, "completed", 0)
+	return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "generation": published.Generation})
 }
 
-func (h *Handler) handleUploadHeartbeat(c *fiber.Ctx) error {
+func (h *Handler) handleUploadHeartbeat(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
 		UploadID string `json:"upload_id"`
 	}
-	if err := c.BodyParser(&body); err != nil || strings.TrimSpace(body.UploadID) == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "upload_id required"})
+	if err := httpx.DecodeJSON(r, &body); err != nil || strings.TrimSpace(body.UploadID) == "" {
+		return httpx.JSON(w, 400, map[string]any{"error": "upload_id required"})
 	}
-	session := c.Locals("session").(*model.Session)
+	session := middleware.Session(r)
 	uploadID := strings.TrimSpace(body.UploadID)
 	record, err := h.authorizedUpload(session.UserID, uploadID)
 	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "upload_not_found"})
 	}
 	if record.Status != "uploading" {
-		return c.Status(409).JSON(fiber.Map{"error": "upload_not_active"})
+		return httpx.JSON(w, 409, map[string]any{"error": "upload_not_active"})
 	}
 	if h.FileSystem == nil {
-		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+		return httpx.JSON(w, 503, map[string]any{"error": "dofs_unavailable"})
 	}
 	if _, err := h.FileSystem.RefreshDirectUpload(
-		c.UserContext(), record.UserID, uploadID, directUploadReservationTTL,
+		r.Context(), record.UserID, uploadID, directUploadReservationTTL,
 	); err != nil {
-		return c.Status(409).JSON(fiber.Map{"error": "upload_reservation_expired"})
+		return httpx.JSON(w, 409, map[string]any{"error": "upload_reservation_expired"})
 	}
 	if err := h.Repos.Files.TouchUpload(uploadID, time.Now()); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "heartbeat_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "heartbeat_failed"})
 	}
-	return c.JSON(fiber.Map{"ok": true})
+	return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (h *Handler) handleUploadCancel(c *fiber.Ctx) error {
+func (h *Handler) handleUploadCancel(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
 		UploadID string `json:"upload_id"`
 		TaskID   string `json:"task_id"`
 		Reason   string `json:"reason"`
 		Status   string `json:"status"`
 	}
-	if err := c.BodyParser(&body); err != nil || strings.TrimSpace(body.UploadID) == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "upload_id required"})
+	if err := httpx.DecodeJSON(r, &body); err != nil || strings.TrimSpace(body.UploadID) == "" {
+		return httpx.JSON(w, 400, map[string]any{"error": "upload_id required"})
 	}
 
 	uploadID := strings.TrimSpace(body.UploadID)
@@ -859,18 +859,18 @@ func (h *Handler) handleUploadCancel(c *fiber.Ctx) error {
 	if status != "failed" {
 		status = "cancelled"
 	}
-	session := c.Locals("session").(*model.Session)
+	session := middleware.Session(r)
 	if h.FileSystem == nil {
-		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+		return httpx.JSON(w, 503, map[string]any{"error": "dofs_unavailable"})
 	}
 	record, err := h.FileSystem.GetUpload(session.UserID, uploadID)
 	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "upload_not_found"})
 	}
 	if record.OSSUploadID != "" {
 		_ = h.Store.AbortMultipartUpload(record.StorageKey(), record.OSSUploadID)
 	}
-	_ = h.FileSystem.AbortDirectUpload(c.UserContext(), record.UserID, uploadID)
+	_ = h.FileSystem.AbortDirectUpload(r.Context(), record.UserID, uploadID)
 	if taskID == "" {
 		taskID = record.TaskID
 	}
@@ -881,29 +881,29 @@ func (h *Handler) handleUploadCancel(c *fiber.Ctx) error {
 		h.notifyParentDir(record.UserID, record.Path)
 	}
 	if reason != "" {
-		h.Audit.LogFromCtx(c, "file_upload_abort", record.Path, reason, status, 0)
+		h.audit(r, "file_upload_abort", record.Path, reason, status, 0)
 	}
-	return c.JSON(fiber.Map{"ok": true})
+	return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (h *Handler) handleUploadCleanup(c *fiber.Ctx) error {
+func (h *Handler) handleUploadCleanup(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
 		ClientInstanceID string `json:"client_instance_id"`
 	}
-	_ = c.BodyParser(&body)
-	session := c.Locals("session").(*model.Session)
+	_ = httpx.DecodeJSON(r, &body)
+	session := middleware.Session(r)
 	clientInstanceID := strings.TrimSpace(body.ClientInstanceID)
 	cutoff := time.Now().Add(-15 * time.Second)
 	records, err := h.Repos.Files.CancelUploadsForOtherInstances(session.UserID, clientInstanceID, cutoff)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "cleanup_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "cleanup_failed"})
 	}
 	for _, record := range records {
 		if record.OSSUploadID != "" {
 			_ = h.Store.AbortMultipartUpload(record.StorageKey(), record.OSSUploadID)
 		}
 		if h.FileSystem != nil {
-			_ = h.FileSystem.AbortDirectUpload(c.UserContext(), session.UserID, record.UploadID)
+			_ = h.FileSystem.AbortDirectUpload(r.Context(), session.UserID, record.UploadID)
 		}
 		if record.TaskID != "" {
 			_ = h.Repos.Tasks.UpdateStatus(record.TaskID, "cancelled")
@@ -912,21 +912,21 @@ func (h *Handler) handleUploadCleanup(c *fiber.Ctx) error {
 			h.notifyParentDir(session.UserID, record.Path)
 		}
 	}
-	return c.JSON(fiber.Map{"ok": true, "count": len(records)})
+	return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(records)})
 }
 
 // ── status ───────────────────────────────────────────────────────────────────
 
-func (h *Handler) handleUploadStatus(c *fiber.Ctx) error {
-	uploadID := c.Query("upload_id", "")
+func (h *Handler) handleUploadStatus(w http.ResponseWriter, r *http.Request) error {
+	uploadID := httpx.Query(r, "upload_id", "")
 	if uploadID == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "upload_id required"})
+		return httpx.JSON(w, 400, map[string]any{"error": "upload_id required"})
 	}
 
-	session := c.Locals("session").(*model.Session)
+	session := middleware.Session(r)
 	record, err := h.authorizedUpload(session.UserID, uploadID)
 	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "upload_not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "upload_not_found"})
 	}
 
 	// Query completed parts from OSS
@@ -943,7 +943,7 @@ func (h *Handler) handleUploadStatus(c *fiber.Ctx) error {
 		status = "active"
 	}
 
-	return c.JSON(fiber.Map{
+	return httpx.JSON(w, http.StatusOK, map[string]any{
 		"upload_id":     record.UploadID,
 		"task_id":       record.TaskID,
 		"oss_upload_id": record.OSSUploadID,

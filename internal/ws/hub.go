@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/fasthttp/websocket"
+	"github.com/gorilla/websocket"
 
 	"domus/internal/model"
 	"domus/shared/logger"

@@ -21,7 +21,7 @@ func TestAdminUpdateUserRoleChangeRevokesSessionsHTTP(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/audit/user/"+victim.ID, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: adminCookie})
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func TestAdminUpdateUserRoleChangeRevokesSessionsHTTP(t *testing.T) {
 
 	meReq := httptest.NewRequest("GET", "/user/", nil)
 	meReq.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: victimCookie})
-	meResp, err := app.Test(meReq)
+	meResp, err := testRequest(app, meReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestAdminUpdateUserRejectsInvalidRoleHTTP(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/audit/user/"+victim.ID, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: adminCookie})
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestAdminUpdateUserRejectsInvalidRoleHTTP(t *testing.T) {
 
 	meReq := httptest.NewRequest("GET", "/user/", nil)
 	meReq.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: victimCookie})
-	meResp, err := app.Test(meReq)
+	meResp, err := testRequest(app, meReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +102,7 @@ func TestAdminUpdateUserRejectsDemotingLastRootHTTP(t *testing.T) {
 	req := httptest.NewRequest("PUT", "/audit/user/"+rootUser.ID, bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: rootCookie})
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestAdminUpdateUserRejectsDemotingLastRootHTTP(t *testing.T) {
 
 	meReq := httptest.NewRequest("GET", "/user/", nil)
 	meReq.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: rootCookie})
-	meResp, err := app.Test(meReq)
+	meResp, err := testRequest(app, meReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestAdminResetUserOTPRevokesSessionsHTTP(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/audit/user/"+victim.ID+"/otp", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: adminCookie})
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestAdminResetUserOTPRevokesSessionsHTTP(t *testing.T) {
 
 	meReq := httptest.NewRequest("GET", "/user/", nil)
 	meReq.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: victimCookie})
-	meResp, err := app.Test(meReq)
+	meResp, err := testRequest(app, meReq)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +188,7 @@ func TestAdminResetUserEmailRevokesSessionsHTTP(t *testing.T) {
 
 	req := httptest.NewRequest("DELETE", "/audit/user/"+victim.ID+"/email", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: adminCookie})
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestAdminResetUserEmailRevokesSessionsHTTP(t *testing.T) {
 
 	meReq := httptest.NewRequest("GET", "/user/", nil)
 	meReq.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: victimCookie})
-	meResp, err := app.Test(meReq)
+	meResp, err := testRequest(app, meReq)
 	if err != nil {
 		t.Fatal(err)
 	}

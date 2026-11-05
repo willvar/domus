@@ -5,8 +5,6 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
-
-	"github.com/gofiber/fiber/v2"
 )
 
 func TestRejectFileContentPayloadAllowsHistoryRestoreFields(t *testing.T) {
@@ -14,14 +12,14 @@ func TestRejectFileContentPayloadAllowsHistoryRestoreFields(t *testing.T) {
 		"/file/history/restore",
 		"/trash/example/history/restore",
 	} {
-		app := fiber.New()
-		app.Post("/*", rejectFileContentPayload, func(c *fiber.Ctx) error {
-			return c.SendStatus(http.StatusNoContent)
-		})
+		app := http.NewServeMux()
+		app.Handle("POST /", rejectFileContentPayload(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		})))
 
 		request := httptest.NewRequest(http.MethodPost, route, strings.NewReader(`{"path":"/file.txt","generation":1,"expected_generation":2}`))
-		request.Header.Set(fiber.HeaderContentType, fiber.MIMEApplicationJSON)
-		response, err := app.Test(request)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := testRequest(app, request)
 		if err != nil {
 			t.Fatal(err)
 		}

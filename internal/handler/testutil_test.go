@@ -3,10 +3,10 @@ package handler
 import (
 	"encoding/hex"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
-
-	"github.com/gofiber/fiber/v2"
 
 	"domus/config"
 	"domus/internal/auth"
@@ -17,7 +17,7 @@ import (
 	"domus/internal/ws"
 )
 
-func setupTestApp(t *testing.T) (*fiber.App, *model.Repos, func(username, password string) string) {
+func setupTestApp(t *testing.T) (*http.ServeMux, *model.Repos, func(username, password string) string) {
 	t.Helper()
 
 	repos := model.NewMemRepos(nil)
@@ -58,7 +58,7 @@ func setupTestApp(t *testing.T) (*fiber.App, *model.Repos, func(username, passwo
 		Hub:        hub,
 	}
 
-	app := fiber.New()
+	app := http.NewServeMux()
 	h.RegisterRoutes(app)
 
 	loginAs := func(username, password string) string {
@@ -81,6 +81,12 @@ func setupTestApp(t *testing.T) (*fiber.App, *model.Repos, func(username, passwo
 	}
 
 	return app, repos, loginAs
+}
+
+func testRequest(app http.Handler, request *http.Request) (*http.Response, error) {
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	return response.Result(), nil
 }
 
 // MockFileStore implements the HTTP-facing store.ControlStore for testing.

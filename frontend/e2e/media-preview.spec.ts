@@ -74,11 +74,34 @@ test('浏览器上传 PDF 时生成加密缩略图，显示开关默认关闭且
     await waitForServiceWorker(page)
 
     expect(await page.evaluate(() => localStorage.getItem('domus_show_thumbnails'))).toBeNull()
-    await uploadFromToolbar(page, {
+    let releasePublication!: () => void
+    const publicationGate = new Promise<void>(resolve => { releasePublication = resolve })
+    let sawPublication!: () => void
+    const publicationSeen = new Promise<void>(resolve => { sawPublication = resolve })
+    await page.route('**/file/upload', async route => {
+      if (route.request().postDataJSON().thumbnail_upload_id) {
+        sawPublication()
+        await publicationGate
+      }
+      return route.continue()
+    })
+    let helperReturned = false
+    const upload = uploadFromToolbar(page, {
       name: fileName,
       mimeType: 'application/pdf',
       buffer: pdf,
-    })
+    }).then(() => { helperReturned = true })
+    let returnedBeforePublication = false
+    try {
+      await publicationSeen
+      await page.waitForTimeout(200)
+      returnedBeforePublication = helperReturned
+    } finally {
+      releasePublication()
+      await upload
+      await page.unroute('**/file/upload')
+    }
+    expect(returnedBeforePublication, 'thumbnail completion must not satisfy the source upload waiter').toBe(false)
 
     const fileItem = page.locator('.file-item').filter({ has: page.locator('.file-name').getByText(fileName, { exact: true }) })
     await expect(fileItem).toBeVisible({ timeout: 30_000 })
@@ -234,12 +257,13 @@ test('浏览器上传 PDF 时生成加密缩略图，显示开关默认关闭且
     await expect
       .poll(async () => {
         const source = (await listFiles(page, rootPath)).find(file => file.name === fileName)
-        return source?.thumbnail_url || ''
+        return Boolean(source?.status === 'ready' && source.thumbnail_url &&
+          new URL(source.thumbnail_url).pathname !== new URL(previousThumbnailURL).pathname)
       }, {
         timeout: 30_000,
         message: 'replacement did not rotate the generation-scoped thumbnail',
       })
-      .not.toBe(previousThumbnailURL)
+      .toBe(true)
     currentThumbnailURL = (await listFiles(page, rootPath)).find(file => file.name === fileName)?.thumbnail_url || ''
     expect(currentThumbnailURL).not.toBe('')
     await expect.poll(async () => (await fetch(previousThumbnailURL)).ok, {

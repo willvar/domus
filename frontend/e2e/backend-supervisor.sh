@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 
 set -euo pipefail
+umask 077
 
 if [[ "$#" -ne 0 ]]; then
   echo "usage: configure DOMUS_E2E_CONFIG, DOMUS_E2E_RUNTIME_ROOT and DOMUS_E2E_API_BASE" >&2

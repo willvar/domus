@@ -17,9 +17,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func trashRequest(t *testing.T, app interface {
-	Test(*http.Request, ...int) (*http.Response, error)
-}, cookie, method, target string, body any) *http.Response {
+func trashRequest(t *testing.T, app http.Handler, cookie, method, target string, body any) *http.Response {
 	t.Helper()
 	var reader io.Reader
 	if body != nil {
@@ -34,16 +32,14 @@ func trashRequest(t *testing.T, app interface {
 		request.Header.Set("Content-Type", "application/json")
 	}
 	request.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
-	response, err := app.Test(request)
+	response, err := testRequest(app, request)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return response
 }
 
-func trashVisiblePath(t *testing.T, app interface {
-	Test(*http.Request, ...int) (*http.Response, error)
-}, cookie, path string, inode int64) string {
+func trashVisiblePath(t *testing.T, app http.Handler, cookie, path string, inode int64) string {
 	t.Helper()
 	response := trashRequest(t, app, cookie, http.MethodPost, "/trash/", map[string]any{
 		"path": path, "expected_inode": inode,

@@ -15,13 +15,15 @@ Domus 是对象存储原生、应用层加密、多租户隔离的浏览器文�
 
 | 层级 | 技术 |
 | --- | --- |
-| 后端 | Go 1.26、Fiber、GORM |
+| 后端 | Go 1.26、net/http + ServeMux、GORM |
 | 产品数据库 | PostgreSQL |
 | 文件命名空间 | DOFS；单机默认 SQLite，多主机可选 PostgreSQL |
 | 文件对象 | S3-compatible 对象存储（包括阿里云 OSS） |
 | 前端 | Vue 3、Vue Router、Pinia、Vite、Naive UI |
 | 实时通信 | WebSocket（目录通知与上传任务进度） |
 | 浏览器测试 | Playwright |
+
+构建时使用 Go 1.26 的最新安全补丁版本或更高的受支持版本，不使用已过期的标准库补丁级别。
 
 主要实现入口：
 

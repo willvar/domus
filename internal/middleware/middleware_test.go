@@ -6,9 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
-
 	"domus/internal/auth"
+	"domus/internal/httpx"
 	"domus/internal/model"
 )
 
@@ -39,28 +38,30 @@ func (m *mockSessionRepo) CleanExpired() {}
 
 func (m *mockSessionRepo) SetPopulateKEK(func(*model.Session)) {}
 
-func resolvePathTestApp() *fiber.App {
-	app := fiber.New()
-	app.Get("/resolve", func(c *fiber.Ctx) error {
-		role := c.Query("role", "user")
-		username := c.Query("username", "alice")
-		c.Locals("session", &model.Session{
-			UserID: "test-user-id", Username: username, Role: role,
-		})
-		path := c.Query("path")
-		resolved, err := ResolvePath(c, path)
+func resolvePathTestApp() *http.ServeMux {
+	app := http.NewServeMux()
+	app.Handle("GET /resolve", httpx.Handler(func(w http.ResponseWriter, r *http.Request) error {
+		path := httpx.Query(r, "path")
+		resolved, err := ResolvePath(r, path)
 		if err != nil {
 			return err
 		}
-		return c.SendString(resolved)
-	})
+		_, err = w.Write([]byte(resolved))
+		return err
+	}))
 	return app
+}
+
+func testRequest(app http.Handler, request *http.Request) (*http.Response, error) {
+	response := httptest.NewRecorder()
+	app.ServeHTTP(response, request)
+	return response.Result(), nil
 }
 
 func TestResolvePath_UserEmptyPath(t *testing.T) {
 	app := resolvePathTestApp()
 	req := httptest.NewRequest("GET", "/resolve?username=alice&role=user&path=", nil)
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +77,7 @@ func TestResolvePath_UserEmptyPath(t *testing.T) {
 func TestResolvePath_UserValidPath(t *testing.T) {
 	app := resolvePathTestApp()
 	req := httptest.NewRequest("GET", "/resolve?username=alice&role=user&path=docs/file.txt", nil)
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,7 +93,7 @@ func TestResolvePath_UserValidPath(t *testing.T) {
 func TestResolvePath_UserPathTraversalNormalized(t *testing.T) {
 	app := resolvePathTestApp()
 	req := httptest.NewRequest("GET", "/resolve?username=alice&role=user&path=alice/../bob/secret.txt", nil)
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +109,7 @@ func TestResolvePath_UserPathTraversalNormalized(t *testing.T) {
 func TestResolvePath_IdentityComesFromSessionNotPath(t *testing.T) {
 	app := resolvePathTestApp()
 	req := httptest.NewRequest("GET", "/resolve?username=alice&role=user&path=bob/file.txt", nil)
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -124,7 +125,7 @@ func TestResolvePath_IdentityComesFromSessionNotPath(t *testing.T) {
 func TestResolvePath_RoleDoesNotChangeNamespaceRoot(t *testing.T) {
 	app := resolvePathTestApp()
 	req := httptest.NewRequest("GET", "/resolve?username=admin&role=admin&path=", nil)
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +141,7 @@ func TestResolvePath_RoleDoesNotChangeNamespaceRoot(t *testing.T) {
 func TestResolvePath_PathSegmentIsNotATenantSelector(t *testing.T) {
 	app := resolvePathTestApp()
 	req := httptest.NewRequest("GET", "/resolve?username=admin&role=admin&path=alice/file.txt", nil)
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +157,7 @@ func TestResolvePath_PathSegmentIsNotATenantSelector(t *testing.T) {
 func TestResolvePath_AllowsTrashNamedUserDirectory(t *testing.T) {
 	app := resolvePathTestApp()
 	req := httptest.NewRequest("GET", "/resolve?path=/__trash__/docs/file.txt", nil)
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +174,7 @@ func TestResolvePath_RejectsPrivateStorage(t *testing.T) {
 	app := resolvePathTestApp()
 	for _, requested := range []string{"/.domus/", "/.domus/trash/a", "/.user/preferences.json"} {
 		req := httptest.NewRequest("GET", "/resolve?path="+requested, nil)
-		resp, err := app.Test(req)
+		resp, err := testRequest(app, req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -198,13 +199,13 @@ func TestAuthRequired_NoCookie(t *testing.T) {
 	sessions := newMockSessionRepo()
 	m := New(sessions, "test")
 
-	app := fiber.New()
-	app.Get("/protected", m.AuthRequired(), func(c *fiber.Ctx) error {
-		return c.SendString("ok")
-	})
+	app := http.NewServeMux()
+	app.Handle("GET /protected", m.AuthRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})))
 
 	req := httptest.NewRequest("GET", "/protected", nil)
-	resp, _ := app.Test(req)
+	resp, _ := testRequest(app, req)
 	if resp.StatusCode != 401 {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
 	}
@@ -214,14 +215,14 @@ func TestAuthRequired_InvalidSignature(t *testing.T) {
 	sessions := newMockSessionRepo()
 	m := New(sessions, "test")
 
-	app := fiber.New()
-	app.Get("/protected", m.AuthRequired(), func(c *fiber.Ctx) error {
-		return c.SendString("ok")
-	})
+	app := http.NewServeMux()
+	app.Handle("GET /protected", m.AuthRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})))
 
 	req := httptest.NewRequest("GET", "/protected", nil)
 	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: "fake-id.fake-sig"})
-	resp, _ := app.Test(req)
+	resp, _ := testRequest(app, req)
 	if resp.StatusCode != 401 {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
 	}
@@ -234,15 +235,14 @@ func TestAuthRequired_ValidSession(t *testing.T) {
 	sessionID, _ := sessions.Create("test-user-id", "alice", "root")
 	cookie := auth.SignCookie(sessionID, "test")
 
-	app := fiber.New()
-	app.Get("/protected", m.AuthRequired(), func(c *fiber.Ctx) error {
-		session := c.Locals("session").(*model.Session)
-		return c.SendString(session.Username)
-	})
+	app := http.NewServeMux()
+	app.Handle("GET /protected", m.AuthRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(Session(r).Username))
+	})))
 
 	req := httptest.NewRequest("GET", "/protected", nil)
 	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: cookie})
-	resp, _ := app.Test(req)
+	resp, _ := testRequest(app, req)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -254,17 +254,17 @@ func TestAuthRequiredMigratesLegacySessionCookie(t *testing.T) {
 	sessionID, _ := sessions.Create("test-user-id", "alice", "user")
 	cookie := auth.SignCookie(sessionID, "test")
 
-	app := fiber.New()
-	app.Get("/protected", m.AuthRequired(), func(c *fiber.Ctx) error {
-		return c.SendStatus(fiber.StatusNoContent)
-	})
+	app := http.NewServeMux()
+	app.Handle("GET /protected", m.AuthRequired(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})))
 	req := httptest.NewRequest("GET", "/protected", nil)
 	req.AddCookie(&http.Cookie{Name: LegacySessionCookieName, Value: cookie})
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.StatusCode != fiber.StatusNoContent {
+	if resp.StatusCode != http.StatusNoContent {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 	found := false

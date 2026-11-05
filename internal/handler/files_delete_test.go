@@ -26,7 +26,7 @@ func TestTrashDirectoryCreatesOpaqueEntryAndMovesStableInode(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPost, "/trash/", bytes.NewReader(body))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
-	response, err := app.Test(request)
+	response, err := testRequest(app, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestPermanentDeleteMissingPathIsIdempotent(t *testing.T) {
 	cookie := loginAs("root", "password")
 	request := httptest.NewRequest(http.MethodDelete, "/file/delete?path=%2Fmissing%2F&permanent=true", nil)
 	request.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
-	response, err := app.Test(request)
+	response, err := testRequest(app, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,7 +69,7 @@ func TestPermanentDeleteRejectsStaleInode(t *testing.T) {
 	}
 	request := httptest.NewRequest(http.MethodDelete, "/file/delete?path=%2Fkeep.txt&permanent=true&expected_inode=999", nil)
 	request.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
-	response, err := app.Test(request)
+	response, err := testRequest(app, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestDeleteEndpointsRejectPathsCanonicalizingToRoot(t *testing.T) {
 	permanent := httptest.NewRequest(http.MethodDelete,
 		"/file/delete?path=%2Fkeep.txt%2F..&permanent=true&expected_inode=1", nil)
 	permanent.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
-	permanentResponse, err := app.Test(permanent)
+	permanentResponse, err := testRequest(app, permanent)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestDeleteEndpointsRejectPathsCanonicalizingToRoot(t *testing.T) {
 	trash := httptest.NewRequest(http.MethodPost, "/trash/", bytes.NewReader(body))
 	trash.Header.Set("Content-Type", "application/json")
 	trash.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
-	trashResponse, err := app.Test(trash)
+	trashResponse, err := testRequest(app, trash)
 	if err != nil {
 		t.Fatal(err)
 	}

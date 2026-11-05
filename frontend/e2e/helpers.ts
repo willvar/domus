@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, isAbsolute, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { expect, type Page, type Request } from '@playwright/test'
+import { expect, type Page, type Request, type Response, type Route } from '@playwright/test'
 
 export const apiBaseURL = (process.env.DOMUS_E2E_API_BASE || 'http://127.0.0.1:8088').replace(/\/$/, '')
 const isolatedPages = new WeakSet<Page>()
@@ -201,6 +201,11 @@ export async function uploadFromToolbar(
   page: Page,
   file: { name: string; mimeType: string; buffer: Buffer; conflictAction?: 'replace' | 'rename' },
 ): Promise<UploadObservation> {
+  // Chromium exposes file-backed upload bytes through interception, not always
+  // through passive request events. Continue every PUT to the real object store.
+  const multipartUpload = (url: URL) => url.searchParams.has('partNumber') && url.searchParams.has('uploadId')
+  const inspectUpload = (route: Route) => route.continue()
+  await page.context().route(multipartUpload, inspectUpload)
   const apiControlBodies: string[] = []
   const apiControlBodyBuffers: Buffer[] = []
   const objectUploadRequests: Array<{ url: string; body: Buffer | null }> = []
@@ -218,10 +223,10 @@ export async function uploadFromToolbar(
   }
   page.on('request', observeControlRequest)
 
-  const completionResponsePromise = page.waitForResponse((response) => {
+  const completionUploadID = (response: Response): string | undefined => {
     const url = new URL(response.url())
     if (url.origin !== apiBaseURL || url.pathname !== '/file/upload' || response.request().method() !== 'POST') {
-      return false
+      return undefined
     }
     try {
       const body = response.request().postDataJSON() as {
@@ -231,10 +236,26 @@ export async function uploadFromToolbar(
       }
       return typeof body.upload_id === 'string' &&
         typeof body.content_hash === 'string' &&
-        typeof body.encrypted_size === 'number'
+        typeof body.encrypted_size === 'number' ? body.upload_id : undefined
     } catch {
-      return false
+      return undefined
     }
+  }
+  // A thumbnail is an independent upload. Its successful completion must not
+  // release a waiter for the source file. Keep fast source responses too.
+  const completions = new Map<string, Response>()
+  const observeCompletion = (response: Response) => {
+    const id = completionUploadID(response)
+    if (id) completions.set(id, response)
+  }
+  page.on('response', observeCompletion)
+  const initializationResponsePromise = page.waitForResponse(response => {
+    const url = new URL(response.url())
+    if (url.origin !== apiBaseURL || url.pathname !== '/file/upload' || response.request().method() !== 'POST') return false
+    try {
+      const body = response.request().postDataJSON()
+      return body.file_name === file.name && body.internal !== true
+    } catch { return false }
   }, { timeout: 120_000 })
 
   try {
@@ -256,7 +277,14 @@ export async function uploadFromToolbar(
       await zeroByteDialog.locator('.n-dialog__action button').last().click()
     }
 
-    const completionResponse = await completionResponsePromise
+    const initializationResponse = await initializationResponsePromise
+    const initialization = await initializationResponse.json() as { upload_id?: string; error?: string }
+    expect(initializationResponse.ok(), `upload init failed with HTTP ${initializationResponse.status()} (${initialization.error || ''})`).toBeTruthy()
+    expect(typeof initialization.upload_id).toBe('string')
+    const completionResponse = completions.get(initialization.upload_id!) || await page.waitForResponse(
+      response => completionUploadID(response) === initialization.upload_id,
+      { timeout: 120_000 },
+    )
     const completionBody = await completionResponse.json().catch(() => ({})) as { error?: unknown }
     const completionError = typeof completionBody.error === 'string' ? ` (${completionBody.error})` : ''
     expect(
@@ -265,6 +293,8 @@ export async function uploadFromToolbar(
     ).toBeTruthy()
   } finally {
     page.off('request', observeControlRequest)
+    page.off('response', observeCompletion)
+    await page.context().unroute(multipartUpload, inspectUpload)
   }
 
   expect(objectUploadRequests.length, 'browser did not issue a multipart PUT to object storage').toBeGreaterThan(0)

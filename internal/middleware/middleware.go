@@ -1,13 +1,13 @@
 package middleware
 
 import (
+	"context"
+	"net/http"
 	"path"
 	"strings"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/websocket/v2"
-
 	"domus/internal/auth"
+	"domus/internal/httpx"
 	"domus/internal/model"
 )
 
@@ -16,17 +16,21 @@ const (
 	LegacySessionCookieName = "zephyr_session"
 )
 
-func sessionCookie(c *fiber.Ctx) (string, bool) {
-	if value := c.Cookies(SessionCookieName); value != "" {
-		return value, false
+func sessionCookie(r *http.Request) (string, bool) {
+	if cookie, err := r.Cookie(SessionCookieName); err == nil && cookie.Value != "" {
+		return cookie.Value, false
 	}
-	return c.Cookies(LegacySessionCookieName), true
+	cookie, err := r.Cookie(LegacySessionCookieName)
+	if err != nil {
+		return "", true
+	}
+	return cookie.Value, true
 }
 
-func migrateLegacySessionCookie(c *fiber.Ctx, value string) {
-	c.Cookie(&fiber.Cookie{
-		Name: SessionCookieName, Value: value, HTTPOnly: true,
-		Secure: strings.EqualFold(c.Protocol(), "https"), SameSite: "Lax",
+func migrateLegacySessionCookie(w http.ResponseWriter, r *http.Request, value string) {
+	http.SetCookie(w, &http.Cookie{
+		Name: SessionCookieName, Value: value, HttpOnly: true,
+		Secure: httpx.Secure(r), SameSite: http.SameSiteLaxMode,
 		MaxAge: 86400 * 7, Path: "/",
 	})
 }
@@ -46,80 +50,68 @@ func New(sessions model.SessionRepo, sessionSecret string) *Middleware {
 }
 
 // AuthRequired checks for valid session with HMAC signature verification.
-func (m *Middleware) AuthRequired() fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		cookieValue, legacy := sessionCookie(c)
+func (m *Middleware) AuthRequired(next http.Handler) http.Handler {
+	return httpx.Handler(func(w http.ResponseWriter, r *http.Request) error {
+		cookieValue, legacy := sessionCookie(r)
 		if cookieValue == "" {
-			return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
+			return httpx.JSON(w, 401, map[string]any{"error": "unauthorized"})
 		}
 
 		sessionID, err := auth.VerifyCookie(cookieValue, m.SessionSecret)
 		if err != nil {
-			return c.Status(401).JSON(fiber.Map{"error": "invalid_session"})
+			return httpx.JSON(w, 401, map[string]any{"error": "invalid_session"})
 		}
 
 		session := m.Sessions.Get(sessionID)
 		if session == nil {
-			return c.Status(401).JSON(fiber.Map{"error": "session_expired"})
+			return httpx.JSON(w, 401, map[string]any{"error": "session_expired"})
 		}
 
-		c.Locals("session", session)
-		c.Locals("sessionID", sessionID)
 		if legacy {
-			migrateLegacySessionCookie(c, cookieValue)
+			migrateLegacySessionCookie(w, r, cookieValue)
 		}
-		return c.Next()
-	}
+		next.ServeHTTP(w, WithSession(r, session, sessionID))
+		return nil
+	})
+}
+
+type sessionKey struct{}
+type sessionIDKey struct{}
+
+func WithSession(r *http.Request, session *model.Session, id string) *http.Request {
+	ctx := context.WithValue(r.Context(), sessionKey{}, session)
+	return r.WithContext(context.WithValue(ctx, sessionIDKey{}, id))
+}
+
+func Session(r *http.Request) *model.Session {
+	session, _ := r.Context().Value(sessionKey{}).(*model.Session)
+	return session
+}
+
+func SessionID(r *http.Request) string {
+	id, _ := r.Context().Value(sessionIDKey{}).(string)
+	return id
 }
 
 // RoleRequired checks that user has one of the allowed roles.
-func RoleRequired(roles ...string) fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		session := c.Locals("session").(*model.Session)
-		for _, r := range roles {
-			if session.Role == r {
-				return c.Next()
+func RoleRequired(roles ...string) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return httpx.Handler(func(w http.ResponseWriter, r *http.Request) error {
+			session := Session(r)
+			for _, role := range roles {
+				if session != nil && session.Role == role {
+					next.ServeHTTP(w, r)
+					return nil
+				}
 			}
-		}
-		return c.Status(403).JSON(fiber.Map{"error": "forbidden"})
+			return httpx.JSON(w, 403, map[string]any{"error": "forbidden"})
+		})
 	}
 }
 
 // RootRequired restricts to admin only.
-func RootRequired() fiber.Handler {
-	return RoleRequired("root")
-}
-
-// WebSocketUpgrade validates the session cookie during the HTTP upgrade request
-// and rejects unauthorized connections before the WebSocket handshake completes.
-func (m *Middleware) WebSocketUpgrade() fiber.Handler {
-	return func(c *fiber.Ctx) error {
-		if !websocket.IsWebSocketUpgrade(c) {
-			return fiber.ErrUpgradeRequired
-		}
-
-		cookieValue, legacy := sessionCookie(c)
-		if cookieValue == "" {
-			return c.Status(401).JSON(fiber.Map{"error": "unauthorized"})
-		}
-
-		sessionID, err := auth.VerifyCookie(cookieValue, m.SessionSecret)
-		if err != nil {
-			return c.Status(401).JSON(fiber.Map{"error": "invalid_session"})
-		}
-
-		session := m.Sessions.Get(sessionID)
-		if session == nil {
-			return c.Status(401).JSON(fiber.Map{"error": "session_expired"})
-		}
-
-		c.Locals("session", session)
-		c.Locals("sessionID", sessionID)
-		if legacy {
-			migrateLegacySessionCookie(c, cookieValue)
-		}
-		return c.Next()
-	}
+func RootRequired(next http.Handler) http.Handler {
+	return RoleRequired("root")(next)
 }
 
 const (
@@ -134,7 +126,7 @@ const (
 // DOFS namespace, and "/" is that namespace's root inode.
 func normalizePath(p string) (string, error) {
 	if strings.ContainsRune(p, '\x00') {
-		return "", fiber.NewError(fiber.StatusForbidden, "invalid path")
+		return "", httpx.NewError(http.StatusForbidden, "invalid path")
 	}
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
@@ -142,7 +134,7 @@ func normalizePath(p string) (string, error) {
 	trailingSlash := strings.HasSuffix(p, "/") && p != "/"
 	cleaned := path.Clean(p)
 	if !strings.HasPrefix(cleaned, "/") {
-		return "", fiber.NewError(fiber.StatusForbidden, "invalid path")
+		return "", httpx.NewError(http.StatusForbidden, "invalid path")
 	}
 	if trailingSlash && cleaned != "/" {
 		cleaned += "/"
@@ -160,12 +152,12 @@ func ResolveApplicationPath(p string) (string, error) {
 	}
 	if cleaned == strings.TrimSuffix(internalRootPath, "/") || strings.HasPrefix(cleaned, internalRootPath) ||
 		cleaned == strings.TrimSuffix(virtualPrivateUserPath, "/") || strings.HasPrefix(cleaned, virtualPrivateUserPath) {
-		return "", fiber.NewError(fiber.StatusForbidden, "reserved path")
+		return "", httpx.NewError(http.StatusForbidden, "reserved path")
 	}
 	return cleaned, nil
 }
 
-func ResolvePath(_ *fiber.Ctx, p string) (string, error) {
+func ResolvePath(_ *http.Request, p string) (string, error) {
 	return ResolveApplicationPath(p)
 }
 
@@ -186,10 +178,10 @@ func ResolveInternalApplicationPath(p string) (string, error) {
 		}
 		return internalUserPath + relative, nil
 	}
-	return "", fiber.NewError(fiber.StatusForbidden, "invalid internal path")
+	return "", httpx.NewError(http.StatusForbidden, "invalid internal path")
 }
 
-func ResolveInternalPath(_ *fiber.Ctx, p string) (string, error) {
+func ResolveInternalPath(_ *http.Request, p string) (string, error) {
 	return ResolveInternalApplicationPath(p)
 }
 

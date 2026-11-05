@@ -4,7 +4,6 @@ import (
 	"log"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
 	"gorm.io/gorm"
 )
 
@@ -89,14 +88,4 @@ func (w *AuditWorker) Log(userID, username, ip, action, resource, detail, status
 	default:
 		log.Printf("[audit] channel full, dropping: %s %s %s", action, username, resource)
 	}
-}
-
-// LogFromCtx is a convenience wrapper that extracts user info from the Fiber context.
-func (w *AuditWorker) LogFromCtx(c *fiber.Ctx, action, resource, detail, status string, duration int64) {
-	var userID, username string
-	if s, ok := c.Locals("session").(*Session); ok {
-		userID = s.UserID
-		username = s.Username
-	}
-	w.Log(userID, username, c.IP(), action, resource, detail, status, duration)
 }

@@ -130,7 +130,7 @@ func TestDeleteUserHTTPCleansRelatedData(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodDelete, "/audit/user/"+victim.ID, nil)
 	request.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: adminCookie})
-	response, err := app.Test(request)
+	response, err := testRequest(app, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +140,7 @@ func TestDeleteUserHTTPCleansRelatedData(t *testing.T) {
 
 	meRequest := httptest.NewRequest(http.MethodGet, "/user/", nil)
 	meRequest.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: victimCookie})
-	meResponse, err := app.Test(meRequest)
+	meResponse, err := testRequest(app, meRequest)
 	if err != nil {
 		t.Fatal(err)
 	}

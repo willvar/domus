@@ -4,13 +4,13 @@ import (
 	"crypto/hmac"
 	"encoding/hex"
 	"log"
-	"strings"
+	"net/http"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
 	"github.com/willvar/dofs"
 
 	"domus/internal/auth"
+	"domus/internal/httpx"
 	"domus/internal/middleware"
 	"domus/internal/model"
 	"domus/internal/service"
@@ -20,32 +20,32 @@ const maxPublicAvatarBytes = 10 * 1024 * 1024
 
 // --- helpers ---
 
-func (h *Handler) issueSession(c *fiber.Ctx, user *model.User, method string) error {
-	h.Challenges.ClearLoginAttempts(c.IP(), method, user.Username)
-	h.Audit.Log(user.ID, user.Username, c.IP(), "login", "", method, "success", 0)
+func (h *Handler) issueSession(w http.ResponseWriter, r *http.Request, user *model.User, method string) error {
+	h.Challenges.ClearLoginAttempts(httpx.ClientIP(r), method, user.Username)
+	h.Audit.Log(user.ID, user.Username, httpx.ClientIP(r), "login", "", method, "success", 0)
 
 	sessionID, err := h.Repos.Sessions.Create(user.ID, user.Username, user.Role)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "session_creation_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "session_creation_failed"})
 	}
 
-	secure := strings.EqualFold(c.Protocol(), "https")
-	c.Cookie(&fiber.Cookie{
+	secure := httpx.Secure(r)
+	http.SetCookie(w, &http.Cookie{
 		Name:     middleware.SessionCookieName,
 		Value:    auth.SignCookie(sessionID, h.Config.Server.SessionSecret),
-		HTTPOnly: true,
+		HttpOnly: true,
 		Secure:   secure,
-		SameSite: "Lax",
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   86400 * 7,
 		Path:     "/",
 	})
 
 	needsSetup := user.Email == "" && !user.TOTPEnabled
 	avatarEndpoint := h.publicAvatarEndpoint(user)
-	historyLimit := h.historyLimit(c, user.ID)
+	historyLimit := h.historyLimit(r, user.ID)
 
-	return c.JSON(fiber.Map{
-		"user": fiber.Map{
+	return httpx.JSON(w, http.StatusOK, map[string]any{
+		"user": map[string]any{
 			"id":              user.ID,
 			"username":        user.Username,
 			"display_name":    user.DisplayName,
@@ -59,37 +59,38 @@ func (h *Handler) issueSession(c *fiber.Ctx, user *model.User, method string) er
 	})
 }
 
-func (h *Handler) historyLimit(c *fiber.Ctx, userID string) int64 {
+func (h *Handler) historyLimit(r *http.Request, userID string) int64 {
 	if h.DOFS == nil {
 		return dofs.DefaultHistoryLimit
 	}
-	limit, err := h.DOFS.HistoryLimit(c.UserContext(), userID)
+	limit, err := h.DOFS.HistoryLimit(r.Context(), userID)
 	if err != nil || limit < dofs.DefaultHistoryLimit {
 		return dofs.DefaultHistoryLimit
 	}
 	return limit
 }
 
-func (h *Handler) checkLocked(c *fiber.Ctx, method, username string) error {
-	if h.Challenges.CheckLoginLocked(c.IP(), method, username) {
-		return c.Status(429).JSON(fiber.Map{
+func (h *Handler) checkLocked(w http.ResponseWriter, r *http.Request, method, username string) bool {
+	if h.Challenges.CheckLoginLocked(httpx.ClientIP(r), method, username) {
+		_ = httpx.JSON(w, 429, map[string]any{
 			"error":       "too_many_attempts",
 			"retry_after": int(auth.LockoutDuration.Seconds()),
 		})
+		return true
 	}
-	return nil
+	return false
 }
 
-func (h *Handler) loginFail(c *fiber.Ctx, method, username string) error {
-	if h.Challenges.RecordLoginFailure(c.IP(), method, username) {
-		h.Audit.Log("", username, c.IP(), "login_locked", "", method, "fail", 0)
-		return c.Status(429).JSON(fiber.Map{
+func (h *Handler) loginFail(w http.ResponseWriter, r *http.Request, method, username string) error {
+	if h.Challenges.RecordLoginFailure(httpx.ClientIP(r), method, username) {
+		h.Audit.Log("", username, httpx.ClientIP(r), "login_locked", "", method, "fail", 0)
+		return httpx.JSON(w, 429, map[string]any{
 			"error":       "too_many_attempts",
 			"retry_after": int(auth.LockoutDuration.Seconds()),
 		})
 	}
-	h.Audit.Log("", username, c.IP(), "login_fail", "", method, "fail", 0)
-	return c.Status(401).JSON(fiber.Map{"error": "invalid_credentials"})
+	h.Audit.Log("", username, httpx.ClientIP(r), "login_fail", "", method, "fail", 0)
+	return httpx.JSON(w, 401, map[string]any{"error": "invalid_credentials"})
 }
 
 func (h *Handler) createChallengeForUser(user *model.User, methods []string, emailCode string) (string, error) {
@@ -104,40 +105,40 @@ func (h *Handler) createChallengeForUser(user *model.User, methods []string, ema
 
 // --- POST /auth/verify ---
 
-func (h *Handler) handleVerify(c *fiber.Ctx) error {
+func (h *Handler) handleVerify(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 		OTP      string `json:"otp"`
 		Method   string `json:"method"`
 	}
-	if err := c.BodyParser(&body); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_request"})
 	}
 	if body.Username == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "username_required"})
+		return httpx.JSON(w, 400, map[string]any{"error": "username_required"})
 	}
 
 	switch {
 	case body.Password != "":
-		return h.verifyPassword(c, body.Username, body.Password)
+		return h.verifyPassword(w, r, body.Username, body.Password)
 	case body.OTP != "":
-		return h.verifyOTP(c, body.Username, body.OTP)
+		return h.verifyOTP(w, r, body.Username, body.OTP)
 	case body.Method == "email":
-		return h.verifyEmailRequest(c, body.Username)
+		return h.verifyEmailRequest(w, r, body.Username)
 	default:
-		return c.Status(400).JSON(fiber.Map{"error": "credentials_required"})
+		return httpx.JSON(w, 400, map[string]any{"error": "credentials_required"})
 	}
 }
 
-func (h *Handler) verifyPassword(c *fiber.Ctx, username, password string) error {
-	if err := h.checkLocked(c, "password", username); err != nil {
-		return err
+func (h *Handler) verifyPassword(w http.ResponseWriter, r *http.Request, username, password string) error {
+	if h.checkLocked(w, r, "password", username) {
+		return nil
 	}
 
 	user, err := h.Repos.Users.GetByUsername(username)
 	if err != nil || !model.CheckPassword(user.PasswordHash, password) {
-		return h.loginFail(c, "password", username)
+		return h.loginFail(w, r, "password", username)
 	}
 
 	hasEmail := user.Email != ""
@@ -147,9 +148,9 @@ func (h *Handler) verifyPassword(c *fiber.Ctx, username, password string) error 
 		// No 2FA — direct token
 		token, err := h.createChallengeForUser(user, nil, "")
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+			return httpx.JSON(w, 500, map[string]any{"error": "internal_error"})
 		}
-		return c.JSON(fiber.Map{"token": token, "methods": []string{}})
+		return httpx.JSON(w, http.StatusOK, map[string]any{"token": token, "methods": []string{}})
 	}
 
 	// 2FA required
@@ -171,55 +172,55 @@ func (h *Handler) verifyPassword(c *fiber.Ctx, username, password string) error 
 
 	token, err := h.createChallengeForUser(user, methods, emailCode)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+		return httpx.JSON(w, 500, map[string]any{"error": "internal_error"})
 	}
-	return c.JSON(fiber.Map{"token": token, "methods": methods})
+	return httpx.JSON(w, http.StatusOK, map[string]any{"token": token, "methods": methods})
 }
 
-func (h *Handler) verifyOTP(c *fiber.Ctx, username, code string) error {
-	if err := h.checkLocked(c, "otp", username); err != nil {
-		return err
+func (h *Handler) verifyOTP(w http.ResponseWriter, r *http.Request, username, code string) error {
+	if h.checkLocked(w, r, "otp", username) {
+		return nil
 	}
 
 	user, err := h.Repos.Users.GetByUsername(username)
 	if err != nil || !user.TOTPEnabled {
-		return h.loginFail(c, "otp", username)
+		return h.loginFail(w, r, "otp", username)
 	}
 
 	if h.Challenges.IsOTPUsed(user.ID, code) {
-		return c.Status(401).JSON(fiber.Map{"error": "otp_already_used"})
+		return httpx.JSON(w, 401, map[string]any{"error": "otp_already_used"})
 	}
 
 	if !auth.ValidateTOTP(user.TOTPSecret, code) {
-		return h.loginFail(c, "otp", username)
+		return h.loginFail(w, r, "otp", username)
 	}
 
 	h.Challenges.MarkOTPUsed(user.ID, code)
 
 	token, err := h.createChallengeForUser(user, nil, "")
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+		return httpx.JSON(w, 500, map[string]any{"error": "internal_error"})
 	}
-	return c.JSON(fiber.Map{"token": token, "methods": []string{}})
+	return httpx.JSON(w, http.StatusOK, map[string]any{"token": token, "methods": []string{}})
 }
 
-func (h *Handler) verifyEmailRequest(c *fiber.Ctx, username string) error {
+func (h *Handler) verifyEmailRequest(w http.ResponseWriter, r *http.Request, username string) error {
 	// Anti-enumeration: always return same shape
-	dummyResponse := fiber.Map{"token": "dummy", "methods": []string{"email"}}
+	dummyResponse := map[string]any{"token": "dummy", "methods": []string{"email"}}
 
-	if h.Challenges.CheckLoginLocked(c.IP(), "email", username) {
-		return c.JSON(dummyResponse)
+	if h.Challenges.CheckLoginLocked(httpx.ClientIP(r), "email", username) {
+		return httpx.JSON(w, http.StatusOK, dummyResponse)
 	}
 
 	user, err := h.Repos.Users.GetByUsername(username)
 	if err != nil || user.Email == "" {
-		return c.JSON(dummyResponse)
+		return httpx.JSON(w, http.StatusOK, dummyResponse)
 	}
 
 	emailCode := service.GenerateEmailCode()
 	token, err := h.createChallengeForUser(user, []string{"email"}, emailCode)
 	if err != nil {
-		return c.JSON(dummyResponse)
+		return httpx.JSON(w, http.StatusOK, dummyResponse)
 	}
 
 	go func() {
@@ -228,24 +229,24 @@ func (h *Handler) verifyEmailRequest(c *fiber.Ctx, username string) error {
 		}
 	}()
 
-	return c.JSON(fiber.Map{"token": token, "methods": []string{"email"}})
+	return httpx.JSON(w, http.StatusOK, map[string]any{"token": token, "methods": []string{"email"}})
 }
 
 // --- POST /auth/login ---
 
-func (h *Handler) handleLogin(c *fiber.Ctx) error {
+func (h *Handler) handleLogin(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
 		Token  string `json:"token"`
 		Code   string `json:"code"`
 		Method string `json:"method"`
 	}
-	if err := c.BodyParser(&body); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_request"})
 	}
 
 	challenge := h.Challenges.GetLoginChallenge(body.Token)
 	if challenge == nil {
-		return c.Status(401).JSON(fiber.Map{"error": "token_expired"})
+		return httpx.JSON(w, 401, map[string]any{"error": "token_expired"})
 	}
 
 	hasMethods := len(challenge.Methods) > 0
@@ -253,24 +254,24 @@ func (h *Handler) handleLogin(c *fiber.Ctx) error {
 	if !hasMethods {
 		// Direct login — no code needed
 		if body.Code != "" {
-			return c.Status(400).JSON(fiber.Map{"error": "code_not_expected"})
+			return httpx.JSON(w, 400, map[string]any{"error": "code_not_expected"})
 		}
 		h.Challenges.DeleteLoginChallenge(body.Token)
 		user, err := h.Repos.Users.GetByID(challenge.UserID)
 		if err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+			return httpx.JSON(w, 500, map[string]any{"error": "internal_error"})
 		}
-		return h.issueSession(c, user, "password")
+		return h.issueSession(w, r, user, "password")
 	}
 
 	// 2FA — code required
 	if body.Code == "" || body.Method == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "code_required"})
+		return httpx.JSON(w, 400, map[string]any{"error": "code_required"})
 	}
 
 	// Check lockout
-	if err := h.checkLocked(c, body.Method, challenge.Username); err != nil {
-		return err
+	if h.checkLocked(w, r, body.Method, challenge.Username) {
+		return nil
 	}
 
 	// Verify method is allowed
@@ -282,95 +283,95 @@ func (h *Handler) handleLogin(c *fiber.Ctx) error {
 		}
 	}
 	if !methodAllowed {
-		return c.Status(400).JSON(fiber.Map{"error": "method_not_available"})
+		return httpx.JSON(w, 400, map[string]any{"error": "method_not_available"})
 	}
 
 	user, err := h.Repos.Users.GetByID(challenge.UserID)
 	if err != nil {
 		h.Challenges.DeleteLoginChallenge(body.Token)
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+		return httpx.JSON(w, 500, map[string]any{"error": "internal_error"})
 	}
 
 	switch body.Method {
 	case "email":
 		if !hmac.Equal([]byte(challenge.EmailCode), []byte(body.Code)) {
-			if h.Challenges.RecordLoginFailure(c.IP(), "email", challenge.Username) {
-				return c.Status(429).JSON(fiber.Map{"error": "too_many_attempts", "retry_after": int(auth.LockoutDuration.Seconds())})
+			if h.Challenges.RecordLoginFailure(httpx.ClientIP(r), "email", challenge.Username) {
+				return httpx.JSON(w, 429, map[string]any{"error": "too_many_attempts", "retry_after": int(auth.LockoutDuration.Seconds())})
 			}
-			return c.Status(401).JSON(fiber.Map{"error": "invalid_code"})
+			return httpx.JSON(w, 401, map[string]any{"error": "invalid_code"})
 		}
 	case "otp":
 		if h.Challenges.IsOTPUsed(user.ID, body.Code) {
-			return c.Status(401).JSON(fiber.Map{"error": "otp_already_used"})
+			return httpx.JSON(w, 401, map[string]any{"error": "otp_already_used"})
 		}
 		if !auth.ValidateTOTP(user.TOTPSecret, body.Code) {
-			if h.Challenges.RecordLoginFailure(c.IP(), "otp", challenge.Username) {
-				return c.Status(429).JSON(fiber.Map{"error": "too_many_attempts", "retry_after": int(auth.LockoutDuration.Seconds())})
+			if h.Challenges.RecordLoginFailure(httpx.ClientIP(r), "otp", challenge.Username) {
+				return httpx.JSON(w, 429, map[string]any{"error": "too_many_attempts", "retry_after": int(auth.LockoutDuration.Seconds())})
 			}
-			return c.Status(401).JSON(fiber.Map{"error": "invalid_code"})
+			return httpx.JSON(w, 401, map[string]any{"error": "invalid_code"})
 		}
 		h.Challenges.MarkOTPUsed(user.ID, body.Code)
 	default:
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_method"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_method"})
 	}
 
 	h.Challenges.DeleteLoginChallenge(body.Token)
-	return h.issueSession(c, user, body.Method)
+	return h.issueSession(w, r, user, body.Method)
 }
 
 // --- GET /auth/config ---
 
-func (h *Handler) handleAuthConfig(c *fiber.Ctx) error {
-	return c.JSON(fiber.Map{
+func (h *Handler) handleAuthConfig(w http.ResponseWriter, r *http.Request) error {
+	return httpx.JSON(w, http.StatusOK, map[string]any{
 		"smtp_enabled": h.Email.Configured(),
 	})
 }
 
 // --- POST /auth/logout ---
 
-func (h *Handler) handleLogout(c *fiber.Ctx) error {
-	session := c.Locals("session").(*model.Session)
-	h.Audit.Log(session.UserID, session.Username, c.IP(), "logout", "", "", "success", 0)
+func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) error {
+	session := middleware.Session(r)
+	h.Audit.Log(session.UserID, session.Username, httpx.ClientIP(r), "logout", "", "", "success", 0)
 
-	sessionID := c.Locals("sessionID").(string)
+	sessionID := middleware.SessionID(r)
 	h.Repos.Sessions.Delete(sessionID)
 
-	secure := strings.EqualFold(c.Protocol(), "https")
-	c.Cookie(&fiber.Cookie{
+	secure := httpx.Secure(r)
+	http.SetCookie(w, &http.Cookie{
 		Name:     middleware.SessionCookieName,
 		Value:    "",
-		HTTPOnly: true,
+		HttpOnly: true,
 		Secure:   secure,
-		SameSite: "Lax",
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 		Path:     "/",
 	})
-	c.Cookie(&fiber.Cookie{
+	http.SetCookie(w, &http.Cookie{
 		Name:     middleware.LegacySessionCookieName,
 		Value:    "",
-		HTTPOnly: true,
+		HttpOnly: true,
 		Secure:   secure,
-		SameSite: "Lax",
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   -1,
 		Path:     "/",
 	})
 
-	return c.JSON(fiber.Map{"ok": true})
+	return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // --- GET /auth/me ---
 
-func (h *Handler) handleMe(c *fiber.Ctx) error {
-	session := c.Locals("session").(*model.Session)
+func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) error {
+	session := middleware.Session(r)
 	user, err := h.Repos.Users.GetByID(session.UserID)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "user_not_found"})
+		return httpx.JSON(w, 500, map[string]any{"error": "user_not_found"})
 	}
 
 	avatarEndpoint := h.publicAvatarEndpoint(user)
-	historyLimit := h.historyLimit(c, user.ID)
+	historyLimit := h.historyLimit(r, user.ID)
 
-	return c.JSON(fiber.Map{
+	return httpx.JSON(w, http.StatusOK, map[string]any{
 		"id":              user.ID,
 		"username":        user.Username,
 		"display_name":    user.DisplayName,
@@ -396,46 +397,46 @@ func (h *Handler) publicAvatarEndpoint(user *model.User) string {
 // fetch the encrypted avatar directly from OSS and decrypt it locally. Avatars
 // are intentionally public, so this endpoint exposes their per-file DEK, but
 // the Domus HTTP process never reads or proxies the object body.
-func (h *Handler) handlePublicAvatar(c *fiber.Ctx) error {
-	username := c.Params("username")
+func (h *Handler) handlePublicAvatar(w http.ResponseWriter, r *http.Request) error {
+	username := r.PathValue("username")
 	if username == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "missing_username"})
+		return httpx.JSON(w, 400, map[string]any{"error": "missing_username"})
 	}
 
 	// Look up avatar file record
 	user, err := h.Repos.Users.GetByUsername(username)
 	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "no_avatar"})
+		return httpx.JSON(w, 404, map[string]any{"error": "no_avatar"})
 	}
 	fileRecord, err := h.Repos.Files.Get(user.ID, "/.domus/user/avatar.webp")
 	if err != nil || fileRecord.Status != "ready" || fileRecord.WrappedDEK == "" ||
 		fileRecord.Size <= 0 || fileRecord.Size > maxPublicAvatarBytes {
-		return c.Status(404).JSON(fiber.Map{"error": "no_avatar"})
+		return httpx.JSON(w, 404, map[string]any{"error": "no_avatar"})
 	}
 
 	// Unwrap only the public avatar DEK. The ciphertext body remains on the
 	// browser-to-object-store connection.
 	kek, err := h.loadUserKEK(user.ID)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+		return httpx.JSON(w, 500, map[string]any{"error": "internal_error"})
 	}
 	defer dofs.Clear(kek)
 	wrappedBytes, err := hex.DecodeString(fileRecord.WrappedDEK)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+		return httpx.JSON(w, 500, map[string]any{"error": "internal_error"})
 	}
 	dek, err := auth.UnwrapDEK(kek, wrappedBytes)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "internal_error"})
+		return httpx.JSON(w, 500, map[string]any{"error": "internal_error"})
 	}
 	defer dofs.Clear(dek)
 	presignedURL, err := h.Store.GeneratePresignedURL(fileRecord.StorageKey(), 4*time.Hour)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "presign_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "presign_failed"})
 	}
 
-	c.Set(fiber.HeaderCacheControl, "no-store")
-	return c.JSON(fiber.Map{
+	w.Header().Set("Cache-Control", "no-store")
+	return httpx.JSON(w, http.StatusOK, map[string]any{
 		"url":          presignedURL,
 		"dek":          hex.EncodeToString(dek),
 		"size":         fileRecord.Size,

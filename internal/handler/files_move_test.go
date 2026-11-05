@@ -28,7 +28,7 @@ func TestMoveReportsDOFSRenameFailure(t *testing.T) {
 	))
 	request.Header.Set("Content-Type", "application/json")
 	request.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
-	response, err := app.Test(request)
+	response, err := testRequest(app, request)
 	if err != nil {
 		t.Fatal(err)
 	}

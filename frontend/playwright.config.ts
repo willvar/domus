@@ -12,7 +12,7 @@ const enableZeroCopy = process.env.DOMUS_E2E_ENABLE_ZERO_COPY === '1'
 if (!frontendURL.port) throw new Error('DOMUS_E2E_BASE_URL must include an explicit port')
 if (!apiBaseURL.port) throw new Error('DOMUS_E2E_API_BASE must include an explicit port')
 
-export default defineConfig({
+const config = defineConfig({
   testDir: './e2e',
   timeout: 180_000,
   expect: { timeout: 20_000 },
@@ -64,3 +64,10 @@ export default defineConfig({
     },
   ],
 })
+
+// Mock-only UI checks do not need to start a backend or access a bucket.
+if (process.env.DOMUS_E2E_FRONTEND_ONLY === '1' && Array.isArray(config.webServer)) {
+  config.webServer = config.webServer.slice(1)
+}
+
+export default config

@@ -8,6 +8,8 @@
 - HTTP Upgrade 时要求有效 `domus_session` Cookie；升级期间兼容旧
   `zephyr_session` 并自动迁移。
 - 普通 HTTP 请求和未登录升级会被拒绝。
+- 浏览器 Origin 必须同主机或精确匹配 `server.cors_origins`；无 Origin 的非浏览器客户端
+  仍须提供会话 Cookie。
 
 客户端请求、响应和服务端事件分别使用：
 

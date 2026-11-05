@@ -5,17 +5,18 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net/http"
 	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
 	"github.com/willvar/dofs"
 	"gorm.io/gorm"
 
+	"domus/internal/httpx"
 	"domus/internal/middleware"
 	"domus/internal/model"
 	"domus/internal/store"
@@ -227,49 +228,49 @@ func (h *Handler) moveVisibleRecordToTrash(userID string, record *model.FileReco
 	return nil
 }
 
-func (h *Handler) handleCreateTrashEntry(c *fiber.Ctx) error {
+func (h *Handler) handleCreateTrashEntry(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
 		Path          string `json:"path"`
 		ExpectedInode int64  `json:"expected_inode"`
 	}
-	if err := c.BodyParser(&body); err != nil || body.Path == "" || body.ExpectedInode <= 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_request"})
+	if err := httpx.DecodeJSON(r, &body); err != nil || body.Path == "" || body.ExpectedInode <= 0 {
+		return httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_request"})
 	}
 	if normalizeAppPath(body.Path) == "/" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_path"})
+		return httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_path"})
 	}
-	resolvedPath, err := middleware.ResolvePath(c, body.Path)
+	resolvedPath, err := middleware.ResolvePath(r, body.Path)
 	if err != nil {
 		return err
 	}
 	if resolvedPath == "/" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_path"})
+		return httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_path"})
 	}
-	session := c.Locals("session").(*model.Session)
+	session := middleware.Session(r)
 	record, err := h.Repos.Files.Get(session.UserID, resolvedPath)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not_found"})
+		return httpx.JSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})
 	}
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "trash_failed"})
+		return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "trash_failed"})
 	}
 	if record.ID != body.ExpectedInode {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "stale_file"})
+		return httpx.JSON(w, http.StatusConflict, map[string]any{"error": "stale_file"})
 	}
 	if record.Status != "ready" {
 		if record.OSSUploadID != "" {
 			_ = h.Store.AbortMultipartUpload(record.StorageKey(), record.OSSUploadID)
 		}
 		if h.FileSystem != nil {
-			_ = h.FileSystem.AbortDirectUpload(c.UserContext(), session.UserID, record.UploadID)
+			_ = h.FileSystem.AbortDirectUpload(r.Context(), session.UserID, record.UploadID)
 		} else {
 			_ = h.Repos.Files.Delete(session.UserID, resolvedPath)
 		}
-		h.Audit.LogFromCtx(c, "file_delete", body.Path, "upload_aborted", "success", 0)
-		return c.JSON(fiber.Map{"ok": true, "trashed": false})
+		h.audit(r, "file_delete", body.Path, "upload_aborted", "success", 0)
+		return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "trashed": false})
 	}
 	if err := h.ensureTrashStorage(session.UserID); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "trash_failed"})
+		return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "trash_failed"})
 	}
 	entry := &model.TrashEntry{
 		ID: uuid.NewString(), UserID: session.UserID, RootInode: record.ID,
@@ -277,33 +278,33 @@ func (h *Handler) handleCreateTrashEntry(c *fiber.Ctx) error {
 		Size: record.Size, State: model.TrashStatePending, DeletedAt: time.Now().UTC(),
 	}
 	if err := h.Repos.Trash.Create(entry); err != nil {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "trash_conflict"})
+		return httpx.JSON(w, http.StatusConflict, map[string]any{"error": "trash_conflict"})
 	}
 	destination := trashEntryStoragePath(entry)
 	if err := h.moveVisibleRecordToTrash(session.UserID, record, destination); err != nil {
 		_ = h.Repos.Trash.Delete(session.UserID, entry.ID)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "trash_failed"})
+		return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "trash_failed"})
 	}
-	status := fiber.StatusCreated
+	status := http.StatusCreated
 	state := model.TrashStateReady
 	if err := h.Repos.Trash.MarkReady(session.UserID, entry.ID, model.TrashStatePending); err != nil {
 		// The durable pending row and UUID payload path contain enough
 		// information for startup recovery. Do not report the completed move as
 		// a failed delete and tempt the client to repeat it.
-		status = fiber.StatusAccepted
+		status = http.StatusAccepted
 		state = model.TrashStatePending
 	}
 	h.notifyVisibleParent(session.UserID, session.Username, resolvedPath)
 	h.notifyTrashChanged(session.UserID)
-	h.Audit.LogFromCtx(c, "file_trash", body.Path, entry.ID, "success", 0)
-	return c.Status(status).JSON(fiber.Map{"ok": true, "id": entry.ID, "state": state})
+	h.audit(r, "file_trash", body.Path, entry.ID, "success", 0)
+	return httpx.JSON(w, status, map[string]any{"ok": true, "id": entry.ID, "state": state})
 }
 
-func (h *Handler) handleListTrash(c *fiber.Ctx) error {
-	session := c.Locals("session").(*model.Session)
-	entries, err := h.Repos.Trash.List(session.UserID, c.QueryInt("limit", 100), c.QueryInt("offset", 0))
+func (h *Handler) handleListTrash(w http.ResponseWriter, r *http.Request) error {
+	session := middleware.Session(r)
+	entries, err := h.Repos.Trash.List(session.UserID, httpx.QueryInt(r, "limit", 100), httpx.QueryInt(r, "offset", 0))
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "trash_list_failed"})
+		return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "trash_list_failed"})
 	}
 	kek, _ := h.getFileEncryptionKey(session)
 	items := make([]trashFileInfo, 0, len(entries))
@@ -317,46 +318,46 @@ func (h *Handler) handleListTrash(c *fiber.Ctx) error {
 		}
 		items = append(items, h.trashFileProjection(&entries[index], record, relativePath, kek))
 	}
-	return c.JSON(fiber.Map{"files": items})
+	return httpx.JSON(w, http.StatusOK, map[string]any{"files": items})
 }
 
-func (h *Handler) readyTrashEntry(c *fiber.Ctx) (*model.TrashEntry, *model.Session, error) {
-	session := c.Locals("session").(*model.Session)
-	entry, err := h.Repos.Trash.Get(session.UserID, c.Params("id"))
+func (h *Handler) readyTrashEntry(w http.ResponseWriter, r *http.Request) (*model.TrashEntry, *model.Session, error) {
+	session := middleware.Session(r)
+	entry, err := h.Repos.Trash.Get(session.UserID, r.PathValue("id"))
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, session, fiber.NewError(fiber.StatusNotFound, "trash_not_found")
+		return nil, session, httpx.NewError(http.StatusNotFound, "trash_not_found")
 	}
 	if err != nil {
-		return nil, session, fiber.NewError(fiber.StatusInternalServerError, "trash_failed")
+		return nil, session, httpx.NewError(http.StatusInternalServerError, "trash_failed")
 	}
 	if entry.State != model.TrashStateReady {
-		return nil, session, fiber.NewError(fiber.StatusConflict, "trash_busy")
+		return nil, session, httpx.NewError(http.StatusConflict, "trash_busy")
 	}
 	return entry, session, nil
 }
 
-func sendTrashHandlerError(c *fiber.Ctx, err error) error {
-	if fiberError, ok := err.(*fiber.Error); ok {
-		return c.Status(fiberError.Code).JSON(fiber.Map{"error": fiberError.Message})
+func sendTrashHandlerError(w http.ResponseWriter, r *http.Request, err error) error {
+	if responseError, ok := err.(*httpx.Error); ok {
+		return httpx.JSON(w, responseError.Code, map[string]any{"error": responseError.Message})
 	}
 	return err
 }
 
-func (h *Handler) handleListTrashDirectory(c *fiber.Ctx) error {
-	entry, session, err := h.readyTrashEntry(c)
+func (h *Handler) handleListTrashDirectory(w http.ResponseWriter, r *http.Request) error {
+	entry, session, err := h.readyTrashEntry(w, r)
 	if err != nil {
-		return sendTrashHandlerError(c, err)
+		return sendTrashHandlerError(w, r, err)
 	}
-	record, _, err := h.trashRecord(session.UserID, entry, c.Query("path", "/"))
+	record, _, err := h.trashRecord(session.UserID, entry, httpx.Query(r, "path", "/"))
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not_found"})
+		return httpx.JSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})
 	}
 	if err != nil || !record.IsDir {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "not_directory"})
+		return httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "not_directory"})
 	}
 	records, err := h.Repos.Files.ListDirectChildren(session.UserID, record.Path)
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "trash_list_failed"})
+		return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "trash_list_failed"})
 	}
 	kek, _ := h.getFileEncryptionKey(session)
 	items := make([]trashFileInfo, 0, len(records))
@@ -367,59 +368,59 @@ func (h *Handler) handleListTrashDirectory(c *fiber.Ctx) error {
 		}
 		items = append(items, h.trashFileProjection(entry, &records[index], relativePath, kek))
 	}
-	return c.JSON(fiber.Map{"files": items, "trash": entry})
+	return httpx.JSON(w, http.StatusOK, map[string]any{"files": items, "trash": entry})
 }
 
-func (h *Handler) handleTrashAccess(c *fiber.Ctx) error {
-	entry, session, err := h.readyTrashEntry(c)
+func (h *Handler) handleTrashAccess(w http.ResponseWriter, r *http.Request) error {
+	entry, session, err := h.readyTrashEntry(w, r)
 	if err != nil {
-		return sendTrashHandlerError(c, err)
+		return sendTrashHandlerError(w, r, err)
 	}
-	record, relativePath, err := h.trashRecord(session.UserID, entry, c.Query("path", "/"))
+	record, relativePath, err := h.trashRecord(session.UserID, entry, httpx.Query(r, "path", "/"))
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not_found"})
+		return httpx.JSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})
 	}
 	if err != nil || record.IsDir {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_path"})
+		return httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_path"})
 	}
 	name := record.Name
 	if relativePath == "/" {
 		name = entry.OriginalName
 	}
-	return h.sendFileAccessResponse(c, session, record, name, "trash:"+entry.ID+relativePath)
+	return h.sendFileAccessResponse(w, r, session, record, name, "trash:"+entry.ID+relativePath)
 }
 
-func (h *Handler) handleTrashHistory(c *fiber.Ctx) error {
+func (h *Handler) handleTrashHistory(w http.ResponseWriter, r *http.Request) error {
 	if h.FileSystem == nil {
-		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+		return httpx.JSON(w, 503, map[string]any{"error": "dofs_unavailable"})
 	}
-	entry, session, err := h.readyTrashEntry(c)
+	entry, session, err := h.readyTrashEntry(w, r)
 	if err != nil {
-		return sendTrashHandlerError(c, err)
+		return sendTrashHandlerError(w, r, err)
 	}
-	record, relativePath, err := h.trashRecord(session.UserID, entry, c.Query("path", "/"))
+	record, relativePath, err := h.trashRecord(session.UserID, entry, httpx.Query(r, "path", "/"))
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "not_found"})
 	}
 	if err != nil || record.IsDir {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_path"})
 	}
-	_, versions, err := h.FileSystem.ListHistory(c.UserContext(), session.UserID, record.Path)
+	_, versions, err := h.FileSystem.ListHistory(r.Context(), session.UserID, record.Path)
 	if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, dofs.ErrNotFound) {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "not_found"})
 	}
 	if errors.Is(err, dofs.ErrTypeMismatch) {
-		return c.Status(400).JSON(fiber.Map{"error": "not_file"})
+		return httpx.JSON(w, 400, map[string]any{"error": "not_file"})
 	}
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "history_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "history_failed"})
 	}
 	name := record.Name
 	if relativePath == "/" {
 		name = entry.OriginalName
 	}
-	return c.JSON(fiber.Map{
-		"file": fiber.Map{
+	return httpx.JSON(w, http.StatusOK, map[string]any{
+		"file": map[string]any{
 			"inode":      record.ID,
 			"name":       name,
 			"path":       relativePath,
@@ -430,77 +431,77 @@ func (h *Handler) handleTrashHistory(c *fiber.Ctx) error {
 	})
 }
 
-func (h *Handler) handleTrashHistoryAccess(c *fiber.Ctx) error {
+func (h *Handler) handleTrashHistoryAccess(w http.ResponseWriter, r *http.Request) error {
 	if h.FileSystem == nil {
-		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+		return httpx.JSON(w, 503, map[string]any{"error": "dofs_unavailable"})
 	}
-	generation, err := historyGeneration(c)
+	generation, err := historyGeneration(r)
 	if err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": err.Error()})
+		return httpx.JSON(w, 400, map[string]any{"error": err.Error()})
 	}
-	entry, session, err := h.readyTrashEntry(c)
+	entry, session, err := h.readyTrashEntry(w, r)
 	if err != nil {
-		return sendTrashHandlerError(c, err)
+		return sendTrashHandlerError(w, r, err)
 	}
-	record, relativePath, err := h.trashRecord(session.UserID, entry, c.Query("path", "/"))
+	record, relativePath, err := h.trashRecord(session.UserID, entry, httpx.Query(r, "path", "/"))
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "not_found"})
 	}
 	if err != nil || record.IsDir {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_path"})
 	}
-	historical, err := h.FileSystem.GenerationAccess(c.UserContext(), session.UserID, record.Path, generation)
+	historical, err := h.FileSystem.GenerationAccess(r.Context(), session.UserID, record.Path, generation)
 	if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, dofs.ErrNotFound) {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "not_found"})
 	}
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "history_access_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "history_access_failed"})
 	}
 	name := record.Name
 	if relativePath == "/" {
 		name = entry.OriginalName
 	}
-	return h.sendFileAccessResponse(c, session, &historical, name, "trash:"+entry.ID+relativePath+"#"+strconv.FormatInt(generation, 10))
+	return h.sendFileAccessResponse(w, r, session, &historical, name, "trash:"+entry.ID+relativePath+"#"+strconv.FormatInt(generation, 10))
 }
 
-func (h *Handler) handleTrashHistoryRestore(c *fiber.Ctx) error {
+func (h *Handler) handleTrashHistoryRestore(w http.ResponseWriter, r *http.Request) error {
 	if h.FileSystem == nil {
-		return c.Status(503).JSON(fiber.Map{"error": "dofs_unavailable"})
+		return httpx.JSON(w, 503, map[string]any{"error": "dofs_unavailable"})
 	}
 	var body struct {
 		Path               string `json:"path"`
 		Generation         int64  `json:"generation"`
 		ExpectedGeneration int64  `json:"expected_generation"`
 	}
-	if err := c.BodyParser(&body); err != nil || body.Path == "" || body.Generation <= 0 || body.ExpectedGeneration <= 0 {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	if err := httpx.DecodeJSON(r, &body); err != nil || body.Path == "" || body.Generation <= 0 || body.ExpectedGeneration <= 0 {
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_request"})
 	}
-	entry, session, err := h.readyTrashEntry(c)
+	entry, session, err := h.readyTrashEntry(w, r)
 	if err != nil {
-		return sendTrashHandlerError(c, err)
+		return sendTrashHandlerError(w, r, err)
 	}
 	record, _, err := h.trashRecord(session.UserID, entry, body.Path)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "not_found"})
 	}
 	if err != nil || record.IsDir {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_path"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_path"})
 	}
-	restored, err := h.FileSystem.RestoreGeneration(c.UserContext(), session.UserID, record.Path, body.Generation, body.ExpectedGeneration)
+	restored, err := h.FileSystem.RestoreGeneration(r.Context(), session.UserID, record.Path, body.Generation, body.ExpectedGeneration)
 	if errors.Is(err, dofs.ErrConflict) {
-		return c.Status(409).JSON(fiber.Map{"error": "generation_conflict"})
+		return httpx.JSON(w, 409, map[string]any{"error": "generation_conflict"})
 	}
 	if errors.Is(err, dofs.ErrQuotaExceeded) {
-		return c.Status(507).JSON(fiber.Map{"error": "quota_exceeded"})
+		return httpx.JSON(w, 507, map[string]any{"error": "quota_exceeded"})
 	}
 	if errors.Is(err, gorm.ErrRecordNotFound) || errors.Is(err, dofs.ErrNotFound) {
-		return c.Status(404).JSON(fiber.Map{"error": "not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "not_found"})
 	}
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "history_restore_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "history_restore_failed"})
 	}
-	h.Audit.LogFromCtx(c, "file_history_restore", "trash:"+entry.ID+body.Path, strconv.FormatInt(body.Generation, 10), "success", 0)
-	return c.JSON(fiber.Map{"ok": true, "generation": restored.Generation, "size": restored.Size})
+	h.audit(r, "file_history_restore", "trash:"+entry.ID+body.Path, strconv.FormatInt(body.Generation, 10), "success", 0)
+	return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "generation": restored.Generation, "size": restored.Size})
 }
 
 func (h *Handler) nextAvailableRestorePath(userID, targetPath string, isDir bool) (string, error) {
@@ -665,94 +666,94 @@ func (h *Handler) finishTrashMutation(userID string, entry *model.TrashEntry, fr
 	return h.Repos.Trash.MarkReady(userID, entry.ID, fromState)
 }
 
-func (h *Handler) restoreConflictResponse(c *fiber.Ctx, targetPath string, source, existing *model.FileRecord, merge bool, conflicts []trashConflict) error {
-	return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+func (h *Handler) restoreConflictResponse(w http.ResponseWriter, r *http.Request, targetPath string, source, existing *model.FileRecord, merge bool, conflicts []trashConflict) error {
+	return httpx.JSON(w, http.StatusConflict, map[string]any{
 		"error": "restore_conflict", "target_path": targetPath, "merge_available": merge,
-		"incoming":  fiber.Map{"name": source.Name, "size": source.Size, "is_dir": source.IsDir},
-		"existing":  fiber.Map{"name": existing.Name, "size": existing.Size, "is_dir": existing.IsDir},
+		"incoming":  map[string]any{"name": source.Name, "size": source.Size, "is_dir": source.IsDir},
+		"existing":  map[string]any{"name": existing.Name, "size": existing.Size, "is_dir": existing.IsDir},
 		"conflicts": conflicts,
 	})
 }
 
-func (h *Handler) handleRestoreTrash(c *fiber.Ctx) error {
-	entry, session, err := h.readyTrashEntry(c)
+func (h *Handler) handleRestoreTrash(w http.ResponseWriter, r *http.Request) error {
+	entry, session, err := h.readyTrashEntry(w, r)
 	if err != nil {
-		return sendTrashHandlerError(c, err)
+		return sendTrashHandlerError(w, r, err)
 	}
 	var body trashRestoreRequest
-	if err := c.BodyParser(&body); err != nil || body.ExpectedInode <= 0 || !validateTrashConflict(body.Conflict, true) || !validateTrashConflict(body.NestedConflict, false) {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_request"})
+	if err := httpx.DecodeJSON(r, &body); err != nil || body.ExpectedInode <= 0 || !validateTrashConflict(body.Conflict, true) || !validateTrashConflict(body.NestedConflict, false) {
+		return httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_request"})
 	}
 	record, relativePath, err := h.trashRecord(session.UserID, entry, body.Path)
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not_found"})
+		return httpx.JSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})
 	}
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_path"})
+		return httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_path"})
 	}
 	if body.ExpectedInode != record.ID {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "stale_file"})
+		return httpx.JSON(w, http.StatusConflict, map[string]any{"error": "stale_file"})
 	}
 	targetPath, err := trashOriginalPath(entry, relativePath, record.IsDir)
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_path"})
+		return httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_path"})
 	}
 	existing, lookupErr := h.Repos.Files.Get(session.UserID, targetPath)
 	hasExisting := lookupErr == nil
 	if lookupErr != nil && !errors.Is(lookupErr, gorm.ErrRecordNotFound) {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "restore_failed"})
+		return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "restore_failed"})
 	}
 	if hasExisting && body.Conflict == "" {
-		return h.restoreConflictResponse(c, targetPath, record, existing, record.IsDir && existing.IsDir, nil)
+		return h.restoreConflictResponse(w, r, targetPath, record, existing, record.IsDir && existing.IsDir, nil)
 	}
 	if hasExisting && body.Conflict == "skip" {
-		return c.JSON(fiber.Map{"ok": true, "skipped": true})
+		return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "skipped": true})
 	}
 	if hasExisting && body.Conflict == "rename" {
 		targetPath, err = h.nextAvailableRestorePath(session.UserID, targetPath, record.IsDir)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "restore_failed"})
+			return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "restore_failed"})
 		}
 		hasExisting = false
 	}
 	if hasExisting && body.Conflict == "merge" {
 		if !record.IsDir || !existing.IsDir {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "merge_not_available"})
+			return httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "merge_not_available"})
 		}
 		conflicts := make([]trashConflict, 0)
 		if err := h.collectMergeConflicts(session.UserID, entry, record, existing, &conflicts); err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "restore_failed"})
+			return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "restore_failed"})
 		}
 		if len(conflicts) > 0 && body.NestedConflict == "" {
-			return h.restoreConflictResponse(c, targetPath, record, existing, true, conflicts)
+			return h.restoreConflictResponse(w, r, targetPath, record, existing, true, conflicts)
 		}
 		if err := h.Repos.Trash.Transition(session.UserID, entry.ID, model.TrashStateReady, model.TrashStateRestoring, record.ID, relativePath, targetPath); err != nil {
-			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "trash_busy"})
+			return httpx.JSON(w, http.StatusConflict, map[string]any{"error": "trash_busy"})
 		}
 		entry.State = model.TrashStateRestoring
 		entry.OperationInode = record.ID
 		entry.OperationPath = relativePath
 		entry.TargetPath = targetPath
 		if err := h.mergeTrashDirectory(session.UserID, record, existing, body.NestedConflict); err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "restore_failed"})
+			return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "restore_failed"})
 		}
 		remaining, listErr := h.Repos.Files.ListDirectChildren(session.UserID, record.Path)
 		if listErr == nil && len(remaining) == 0 {
 			_ = h.Repos.Files.Delete(session.UserID, record.Path)
 		}
 		if err := h.finishTrashMutation(session.UserID, entry, model.TrashStateRestoring); err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "restore_pending"})
+			return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "restore_pending"})
 		}
 		h.notifyVisibleParent(session.UserID, session.Username, targetPath)
 		h.notifyTrashChanged(session.UserID)
-		h.Audit.LogFromCtx(c, "trash_restore", entry.ID, targetPath, "success", 0)
-		return c.JSON(fiber.Map{"ok": true, "path": targetPath})
+		h.audit(r, "trash_restore", entry.ID, targetPath, "success", 0)
+		return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "path": targetPath})
 	}
 	if hasExisting && body.Conflict != "replace" {
-		return h.restoreConflictResponse(c, targetPath, record, existing, record.IsDir && existing.IsDir, nil)
+		return h.restoreConflictResponse(w, r, targetPath, record, existing, record.IsDir && existing.IsDir, nil)
 	}
 	if err := h.Repos.Trash.Transition(session.UserID, entry.ID, model.TrashStateReady, model.TrashStateRestoring, record.ID, relativePath, targetPath); err != nil {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "trash_busy"})
+		return httpx.JSON(w, http.StatusConflict, map[string]any{"error": "trash_busy"})
 	}
 	entry.State = model.TrashStateRestoring
 	entry.OperationInode = record.ID
@@ -760,66 +761,66 @@ func (h *Handler) handleRestoreTrash(c *fiber.Ctx) error {
 	entry.TargetPath = targetPath
 	if err := h.ensureParentDirRecords(session.UserID, targetPath, record.IsDir); err != nil {
 		_ = h.Repos.Trash.MarkReady(session.UserID, entry.ID, model.TrashStateRestoring)
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "restore_parent_conflict"})
+		return httpx.JSON(w, http.StatusConflict, map[string]any{"error": "restore_parent_conflict"})
 	}
 	if hasExisting {
 		if err := h.permanentlyDeletePath(session.UserID, existing.Path, existing.IsDir); err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "restore_failed"})
+			return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "restore_failed"})
 		}
 	}
 	if err := h.moveRecord(session.UserID, record, targetPath); err != nil {
 		_ = h.Repos.Trash.MarkReady(session.UserID, entry.ID, model.TrashStateRestoring)
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "restore_failed"})
+		return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "restore_failed"})
 	}
 	if err := h.finishTrashMutation(session.UserID, entry, model.TrashStateRestoring); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "restore_pending"})
+		return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "restore_pending"})
 	}
 	h.notifyVisibleParent(session.UserID, session.Username, targetPath)
 	h.notifyTrashChanged(session.UserID)
-	h.Audit.LogFromCtx(c, "trash_restore", entry.ID, targetPath, "success", 0)
-	return c.JSON(fiber.Map{"ok": true, "path": targetPath})
+	h.audit(r, "trash_restore", entry.ID, targetPath, "success", 0)
+	return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "path": targetPath})
 }
 
-func (h *Handler) handleDeleteTrashItem(c *fiber.Ctx) error {
-	entry, session, err := h.readyTrashEntry(c)
+func (h *Handler) handleDeleteTrashItem(w http.ResponseWriter, r *http.Request) error {
+	entry, session, err := h.readyTrashEntry(w, r)
 	if err != nil {
-		return sendTrashHandlerError(c, err)
+		return sendTrashHandlerError(w, r, err)
 	}
-	record, relativePath, err := h.trashRecord(session.UserID, entry, c.Query("path", "/"))
+	record, relativePath, err := h.trashRecord(session.UserID, entry, httpx.Query(r, "path", "/"))
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "not_found"})
+		return httpx.JSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})
 	}
 	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid_path"})
+		return httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "invalid_path"})
 	}
-	expectedInode, parseErr := strconv.ParseInt(c.Query("expected_inode"), 10, 64)
+	expectedInode, parseErr := strconv.ParseInt(httpx.Query(r, "expected_inode"), 10, 64)
 	if parseErr != nil || expectedInode <= 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "expected_inode_required"})
+		return httpx.JSON(w, http.StatusBadRequest, map[string]any{"error": "expected_inode_required"})
 	}
 	if expectedInode != record.ID {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "stale_file"})
+		return httpx.JSON(w, http.StatusConflict, map[string]any{"error": "stale_file"})
 	}
 	if err := h.Repos.Trash.Transition(session.UserID, entry.ID, model.TrashStateReady, model.TrashStateDeleting, record.ID, relativePath, ""); err != nil {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "trash_busy"})
+		return httpx.JSON(w, http.StatusConflict, map[string]any{"error": "trash_busy"})
 	}
 	entry.State = model.TrashStateDeleting
 	entry.OperationInode = record.ID
 	entry.OperationPath = relativePath
 	if err := h.permanentlyDeletePath(session.UserID, record.Path, record.IsDir); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "delete_failed"})
+		return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "delete_failed"})
 	}
 	if err := h.finishTrashMutation(session.UserID, entry, model.TrashStateDeleting); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "delete_pending"})
+		return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "delete_pending"})
 	}
 	_, remainingErr := h.Repos.Trash.Get(session.UserID, entry.ID)
 	entryRemoved := errors.Is(remainingErr, gorm.ErrRecordNotFound)
 	h.notifyTrashChanged(session.UserID)
-	h.Audit.LogFromCtx(c, "trash_delete", entry.ID, relativePath, "success", 0)
-	return c.JSON(fiber.Map{"ok": true, "entry_removed": entryRemoved})
+	h.audit(r, "trash_delete", entry.ID, relativePath, "success", 0)
+	return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true, "entry_removed": entryRemoved})
 }
 
-func (h *Handler) handleEmptyTrash(c *fiber.Ctx) error {
-	session := c.Locals("session").(*model.Session)
+func (h *Handler) handleEmptyTrash(w http.ResponseWriter, r *http.Request) error {
+	session := middleware.Session(r)
 	failed := make([]string, 0)
 	failedSet := make(map[string]struct{})
 	appendFailed := func(id string) {
@@ -833,7 +834,7 @@ func (h *Handler) handleEmptyTrash(c *fiber.Ctx) error {
 	for {
 		entries, err := h.Repos.Trash.List(session.UserID, 500, offset)
 		if err != nil {
-			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "trash_list_failed"})
+			return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "trash_list_failed"})
 		}
 		if len(entries) == 0 {
 			break
@@ -878,10 +879,10 @@ func (h *Handler) handleEmptyTrash(c *fiber.Ctx) error {
 	}
 	h.notifyTrashChanged(session.UserID)
 	if len(failed) > 0 {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "empty_trash_partial", "failed": failed})
+		return httpx.JSON(w, http.StatusInternalServerError, map[string]any{"error": "empty_trash_partial", "failed": failed})
 	}
-	h.Audit.LogFromCtx(c, "trash_empty", "", "", "success", 0)
-	return c.JSON(fiber.Map{"ok": true})
+	h.audit(r, "trash_empty", "", "", "success", 0)
+	return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 func (h *Handler) listAllReadyTrashEntries(userID string) ([]model.TrashEntry, error) {

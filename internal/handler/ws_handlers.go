@@ -21,7 +21,7 @@ func (h *Handler) registerWSActions() {
 	r.Handle("unsubscribe.directory", h.wsUnsubscribeDirectory)
 }
 
-// --- Shared path resolution (no *fiber.Ctx dependency) ---
+// --- Shared path resolution ---
 
 func resolvePath(p string) (string, error) {
 	resolved, err := middleware.ResolveApplicationPath(p)

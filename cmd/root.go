@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -15,10 +16,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/fiber/v2/middleware/compress"
-	"github.com/gofiber/fiber/v2/middleware/cors"
-	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/willvar/dofs"
 
 	"domus/config"
@@ -26,6 +23,7 @@ import (
 	"domus/internal/dofsbridge"
 	"domus/internal/fileview"
 	"domus/internal/handler"
+	"domus/internal/httpx"
 	"domus/internal/middleware"
 	"domus/internal/model"
 	"domus/internal/service"
@@ -42,9 +40,6 @@ const (
 	legacyDaemonEnvKey          = "ZEPHYR_DAEMON"
 	rootBootstrapPasswordEnvKey = "DOMUS_ROOT_BOOTSTRAP_PASSWORD"
 	legacyRootPasswordEnvKey    = "ZEPHYR_ROOT_BOOTSTRAP_PASSWORD"
-	// Browser file bytes bypass Domus and go directly to object storage. Keep
-	// the HTTP process sized for JSON control messages, not payload proxying.
-	maxControlPlaneBodyBytes = 1 * 1024 * 1024
 )
 
 // Execute 执行 CLI
@@ -689,29 +684,19 @@ func runServer(cfg *config.Config, configPath string) {
 	}
 	h.StartDOFSReclaimer(dofsEventContext)
 
-	app := fiber.New(fiber.Config{
-		BodyLimit:             maxControlPlaneBodyBytes,
-		DisableStartupMessage: true,
-	})
-
-	app.Use(recover.New())
-	if cfg.Server.CORSOrigins != "" {
-		app.Use(cors.New(cors.Config{
-			AllowOrigins:     cfg.Server.CORSOrigins,
-			AllowCredentials: true,
-		}))
+	mux := http.NewServeMux()
+	h.RegisterRoutes(mux)
+	app := &http.Server{
+		Addr: fmt.Sprintf(":%d", cfg.Server.Port),
+		Handler: httpx.ServerMiddleware(mux, cfg.Server.CORSOrigins, func(method, path string, status int, duration time.Duration) {
+			logger.Info("%s %s %d %v", method, path, status, duration)
+			serverStats.BaseStats.RecordRequest()
+		}),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second, // Incoming bodies are bounded control messages, never file uploads.
+		IdleTimeout:       90 * time.Second,
+		MaxHeaderBytes:    64 << 10,
 	}
-	app.Use(func(c *fiber.Ctx) error {
-		start := time.Now()
-		err := c.Next()
-		logger.Info("%s %s %d %v", c.Method(), c.Path(), c.Response().StatusCode(), time.Since(start))
-		serverStats.BaseStats.RecordRequest()
-		return err
-	})
-	app.Use(compress.New())
-
-	// Register all API routes
-	h.RegisterRoutes(app)
 
 	// Start background stale upload sweeper
 	h.StartUploadSweeper()
@@ -729,8 +714,11 @@ func runServer(cfg *config.Config, configPath string) {
 		defer close(shutdownComplete)
 		logger.Info("Shutting down service...")
 
-		if err := app.ShutdownWithTimeout(10 * time.Second); err != nil {
+		shutdownContext, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancelShutdown()
+		if err := app.Shutdown(shutdownContext); err != nil {
 			logger.Info("Failed to stop HTTP service cleanly: %v", err)
+			_ = app.Close() // Cancel active streams when the grace period expires.
 		}
 		cancelDOFSEvents()
 		hub.CloseAll()
@@ -738,7 +726,7 @@ func runServer(cfg *config.Config, configPath string) {
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	logger.Info("Domus v%s started on %s", version.Version, addr)
-	listenErr := app.Listen(addr)
+	listenErr := app.ListenAndServe()
 	select {
 	case <-shutdownStarted:
 		<-shutdownComplete

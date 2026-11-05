@@ -97,11 +97,13 @@ test('同名文件、密钥与控制面命名空间在租户间隔离，退役�
       await pageA.request.get(`${apiBaseURL}/file/shared`),
       await pageA.request.get(`${apiBaseURL}/file/shares`, { params: { path: filePath } }),
       await pageA.request.post(`${apiBaseURL}/file/share`, { data: { path: filePath, target_username: userB.username } }),
-      await pageA.request.post(`${apiBaseURL}/file/transcode`, { data: { path: filePath, profile: 'audio-mp3' } }),
       await pageA.request.get(`${apiBaseURL}/workspace/`),
     ]) {
       expect(retired.status()).toBe(404)
     }
+    const legacyAudio = await pageA.request.post(`${apiBaseURL}/file/transcode`, { data: { path: filePath, profile: 'audio-mp3' } })
+    expect(legacyAudio.status()).toBe(400)
+    expect(await legacyAudio.json()).toEqual({ error: 'invalid_profile' })
     await expect(pageA.locator('.file-shell')).not.toContainText(/共享|Share|终端|Terminal/)
   } finally {
     for (const context of contexts.reverse()) await context.close().catch(() => {})

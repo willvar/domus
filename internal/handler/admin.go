@@ -1,11 +1,12 @@
 package handler
 
 import (
+	"net/http"
 	"strings"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
-
+	"domus/internal/httpx"
+	"domus/internal/middleware"
 	"domus/internal/model"
 )
 
@@ -23,104 +24,104 @@ func validUsername(value string) bool {
 	return true
 }
 
-func (h *Handler) handleListUsers(c *fiber.Ctx) error {
+func (h *Handler) handleListUsers(w http.ResponseWriter, r *http.Request) error {
 	users, err := h.Repos.Users.List()
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "list_users_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "list_users_failed"})
 	}
 	if users == nil {
 		users = []model.User{}
 	}
-	return c.JSON(users)
+	return httpx.JSON(w, http.StatusOK, users)
 }
 
-func (h *Handler) handleCreateUser(c *fiber.Ctx) error {
+func (h *Handler) handleCreateUser(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
 		Role     string `json:"role"`
 	}
-	if err := c.BodyParser(&body); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_request"})
 	}
 
 	if body.Username == "" || body.Password == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "username_password_required"})
+		return httpx.JSON(w, 400, map[string]any{"error": "username_password_required"})
 	}
 	if !validUsername(body.Username) {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_username"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_username"})
 	}
 	if body.Role == "" {
 		body.Role = "user"
 	}
 	if !isValidUserRole(body.Role) {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_role"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_role"})
 	}
 
 	wrappedKEKHex, err := h.generateWrappedKEK()
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "key_generation_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "key_generation_failed"})
 	}
 
 	user, err := h.Repos.Users.Create(body.Username, body.Password, body.Role, wrappedKEKHex)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
-			return c.Status(409).JSON(fiber.Map{"error": "username_exists"})
+			return httpx.JSON(w, 409, map[string]any{"error": "username_exists"})
 		}
-		return c.Status(500).JSON(fiber.Map{"error": "create_user_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "create_user_failed"})
 	}
 
 	if h.DOFS == nil {
-		return c.Status(500).JSON(fiber.Map{"error": "dofs_unavailable"})
+		return httpx.JSON(w, 500, map[string]any{"error": "dofs_unavailable"})
 	}
-	if err := h.DOFS.EnsureUser(c.UserContext(), user); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "dofs_namespace_failed"})
+	if err := h.DOFS.EnsureUser(r.Context(), user); err != nil {
+		return httpx.JSON(w, 500, map[string]any{"error": "dofs_namespace_failed"})
 	}
 
-	h.Audit.LogFromCtx(c, "user_create", user.Username, body.Role, "success", 0)
-	return c.Status(201).JSON(user)
+	h.audit(r, "user_create", user.Username, body.Role, "success", 0)
+	return httpx.JSON(w, 201, user)
 }
 
-func (h *Handler) handleUpdateUser(c *fiber.Ctx) error {
-	id := c.Params("id")
+func (h *Handler) handleUpdateUser(w http.ResponseWriter, r *http.Request) error {
+	id := r.PathValue("id")
 	if id == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_user_id"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_user_id"})
 	}
 
 	var body struct {
 		Role     string `json:"role"`
 		Password string `json:"password"`
 	}
-	if err := c.BodyParser(&body); err != nil {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_request"})
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_request"})
 	}
 
 	user, err := h.Repos.Users.GetByID(id)
 	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "user_not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "user_not_found"})
 	}
 
 	if body.Password != "" {
 		if err := h.Repos.Users.UpdatePassword(user.ID, body.Password); err != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "update_password_failed"})
+			return httpx.JSON(w, 500, map[string]any{"error": "update_password_failed"})
 		}
 	}
 
 	role := user.Role
 	if body.Role != "" {
 		if !isValidUserRole(body.Role) {
-			return c.Status(400).JSON(fiber.Map{"error": "invalid_role"})
+			return httpx.JSON(w, 400, map[string]any{"error": "invalid_role"})
 		}
 		if code, guardErr := ensureNotDemotingLastRoot(h.Repos.Users, user, body.Role); guardErr != nil {
-			return c.Status(500).JSON(fiber.Map{"error": "update_user_failed"})
+			return httpx.JSON(w, 500, map[string]any{"error": "update_user_failed"})
 		} else if code != "" {
-			return c.Status(400).JSON(fiber.Map{"error": code})
+			return httpx.JSON(w, 400, map[string]any{"error": code})
 		}
 		role = body.Role
 	}
 
 	if err := h.Repos.Users.UpdateRole(user.ID, role); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "update_user_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "update_user_failed"})
 	}
 
 	// If role changed, invalidate sessions
@@ -128,70 +129,70 @@ func (h *Handler) handleUpdateUser(c *fiber.Ctx) error {
 		h.revokeUserSessions(user.ID)
 	}
 
-	h.Audit.LogFromCtx(c, "user_update", user.Username, "", "success", 0)
-	return c.JSON(fiber.Map{"ok": true})
+	h.audit(r, "user_update", user.Username, "", "success", 0)
+	return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (h *Handler) handleDeleteUser(c *fiber.Ctx) error {
-	id := c.Params("id")
+func (h *Handler) handleDeleteUser(w http.ResponseWriter, r *http.Request) error {
+	id := r.PathValue("id")
 	if id == "" {
-		return c.Status(400).JSON(fiber.Map{"error": "invalid_user_id"})
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_user_id"})
 	}
 
-	session := c.Locals("session").(*model.Session)
+	session := middleware.Session(r)
 	if id == session.UserID {
-		return c.Status(400).JSON(fiber.Map{"error": "cannot_delete_self"})
+		return httpx.JSON(w, 400, map[string]any{"error": "cannot_delete_self"})
 	}
 
 	user, err := h.Repos.Users.GetByID(id)
 	if err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "user_not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "user_not_found"})
 	}
 	if code, guardErr := ensureNotDeletingLastRoot(h.Repos.Users, user); guardErr != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "delete_user_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "delete_user_failed"})
 	} else if code != "" {
-		return c.Status(400).JSON(fiber.Map{"error": code})
+		return httpx.JSON(w, 400, map[string]any{"error": code})
 	}
 
 	if err := h.deleteUserCompletely(user); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "delete_user_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "delete_user_failed"})
 	}
 
-	h.Audit.LogFromCtx(c, "user_delete", user.Username, "", "success", 0)
-	return c.JSON(fiber.Map{"ok": true})
+	h.audit(r, "user_delete", user.Username, "", "success", 0)
+	return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (h *Handler) handleResetUserOTP(c *fiber.Ctx) error {
-	id := c.Params("id")
+func (h *Handler) handleResetUserOTP(w http.ResponseWriter, r *http.Request) error {
+	id := r.PathValue("id")
 	if _, err := h.Repos.Users.GetByID(id); err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "user_not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "user_not_found"})
 	}
 	if err := h.Repos.Users.UpdateTOTP(id, "", false); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "update_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "update_failed"})
 	}
 	h.revokeUserSessions(id)
-	h.Audit.LogFromCtx(c, "user_reset_otp", id, "", "success", 0)
-	return c.JSON(fiber.Map{"ok": true})
+	h.audit(r, "user_reset_otp", id, "", "success", 0)
+	return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-func (h *Handler) handleResetUserEmail(c *fiber.Ctx) error {
-	id := c.Params("id")
+func (h *Handler) handleResetUserEmail(w http.ResponseWriter, r *http.Request) error {
+	id := r.PathValue("id")
 	if _, err := h.Repos.Users.GetByID(id); err != nil {
-		return c.Status(404).JSON(fiber.Map{"error": "user_not_found"})
+		return httpx.JSON(w, 404, map[string]any{"error": "user_not_found"})
 	}
 	if err := h.Repos.Users.UpdateEmail(id, ""); err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "update_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "update_failed"})
 	}
 	h.revokeUserSessions(id)
-	h.Audit.LogFromCtx(c, "user_reset_email", id, "", "success", 0)
-	return c.JSON(fiber.Map{"ok": true})
+	h.audit(r, "user_reset_email", id, "", "success", 0)
+	return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
 // --- Admin audit log query ---
 
-func (h *Handler) handleListAuditLogs(c *fiber.Ctx) error {
-	page := c.QueryInt("page", 1)
-	size := c.QueryInt("size", 50)
+func (h *Handler) handleListAuditLogs(w http.ResponseWriter, r *http.Request) error {
+	page := httpx.QueryInt(r, "page", 1)
+	size := httpx.QueryInt(r, "size", 50)
 	if page < 1 {
 		page = 1
 	}
@@ -200,17 +201,17 @@ func (h *Handler) handleListAuditLogs(c *fiber.Ctx) error {
 	}
 
 	filter := model.AuditFilter{
-		User:   c.Query("user"),
-		Action: c.Query("action"),
+		User:   httpx.Query(r, "user"),
+		Action: httpx.Query(r, "action"),
 		Page:   page,
 		Size:   size,
 	}
-	if from := c.Query("from"); from != "" {
+	if from := httpx.Query(r, "from"); from != "" {
 		if t, err := time.Parse(time.RFC3339, from); err == nil {
 			filter.From = &t
 		}
 	}
-	if to := c.Query("to"); to != "" {
+	if to := httpx.Query(r, "to"); to != "" {
 		if t, err := time.Parse(time.RFC3339, to); err == nil {
 			filter.To = &t
 		}
@@ -218,10 +219,10 @@ func (h *Handler) handleListAuditLogs(c *fiber.Ctx) error {
 
 	logs, total, err := h.Repos.Audit.ListLogs(filter)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "list_audit_logs_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "list_audit_logs_failed"})
 	}
 
-	return c.JSON(fiber.Map{
+	return httpx.JSON(w, http.StatusOK, map[string]any{
 		"total": total,
 		"page":  page,
 		"size":  size,
@@ -231,33 +232,33 @@ func (h *Handler) handleListAuditLogs(c *fiber.Ctx) error {
 
 // --- Preview duration (from sendBeacon) ---
 
-func (h *Handler) handleAuditPreview(c *fiber.Ctx) error {
+func (h *Handler) handleAuditPreview(w http.ResponseWriter, r *http.Request) error {
 	var body struct {
 		Path       string `json:"path"`
 		DurationMs int64  `json:"duration_ms"`
 		Type       string `json:"type"`
 	}
-	if err := c.BodyParser(&body); err != nil || body.Path == "" {
-		return c.SendStatus(204)
+	if err := httpx.DecodeJSON(r, &body); err != nil || body.Path == "" {
+		return httpx.Status(w, 204)
 	}
-	h.Audit.LogFromCtx(c, "file_preview", body.Path, body.Type, "success", body.DurationMs)
-	return c.SendStatus(204)
+	h.audit(r, "file_preview", body.Path, body.Type, "success", body.DurationMs)
+	return httpx.Status(w, 204)
 }
 
 // handleCORSCheck returns presigned PUT and DELETE URLs for a temporary probe object.
 // The frontend uses these to verify that the OSS bucket's CORS is correctly configured
 // for browser-direct uploads.
-func (h *Handler) handleCORSCheck(c *fiber.Ctx) error {
+func (h *Handler) handleCORSCheck(w http.ResponseWriter, r *http.Request) error {
 	probeKey := ".cors-probe"
 	putURL, err := h.Store.PresignedPutObject(probeKey, 5*time.Minute)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "presign_put_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "presign_put_failed"})
 	}
 	deleteURL, err := h.Store.PresignedDeleteObject(probeKey, 5*time.Minute)
 	if err != nil {
-		return c.Status(500).JSON(fiber.Map{"error": "presign_delete_failed"})
+		return httpx.JSON(w, 500, map[string]any{"error": "presign_delete_failed"})
 	}
-	return c.JSON(fiber.Map{
+	return httpx.JSON(w, http.StatusOK, map[string]any{
 		"put_url":    putURL,
 		"delete_url": deleteURL,
 	})

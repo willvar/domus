@@ -3,15 +3,19 @@ package handler
 import (
 	"encoding/hex"
 	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
 
-	"github.com/gofiber/fiber/v2"
-	"github.com/gofiber/websocket/v2"
+	"github.com/gorilla/websocket"
 	"github.com/willvar/dofs"
 
 	"domus/config"
 	"domus/internal/auth"
 	"domus/internal/dofsbridge"
 	"domus/internal/fileview"
+	"domus/internal/httpx"
 	"domus/internal/middleware"
 	"domus/internal/model"
 	"domus/internal/service"
@@ -33,110 +37,131 @@ type Handler struct {
 	FileSystem *fileview.Repo
 }
 
-// RegisterRoutes registers all API routes on the Fiber app.
-func (h *Handler) RegisterRoutes(app *fiber.App) {
+// RegisterRoutes registers the API on the standard HTTP mux.
+func (h *Handler) RegisterRoutes(app *http.ServeMux) {
 	if h.Hub == nil {
 		h.Hub = ws.NewHub()
 	}
 
-	// /auth (public)
-	app.Get("/auth", h.handleAuthConfig)
-	app.Post("/auth", h.handleLogin)
-	app.Post("/auth/verify", h.handleVerify)
-	app.Get("/user/avatar/:username", h.handlePublicAvatar)
-
-	authed := app.Group("", h.Mid.AuthRequired())
-	authed.Delete("/auth", h.handleLogout)
-
-	// /user
-	user := authed.Group("/user")
-	user.Get("/", h.handleMe)
-	user.Get("/storage", h.handleStorageUsage)
-	user.Get("/security", h.handleSecurityStatus)
-	user.Put("/history-limit", h.handleUpdateHistoryLimit)
-	user.Put("/display-name", h.handleUpdateDisplayName)
-	user.Put("/security/password", h.handleChangePassword)
-	user.Post("/security/email/bind", h.handleBindEmail)
-	user.Post("/security/email/verify", h.handleVerifyBindEmail)
-	user.Delete("/security/email", h.handleUnbindEmail)
-	user.Post("/security/otp/setup", h.handleOTPSetup)
-	user.Post("/security/otp/enable", h.handleOTPEnable)
-	user.Delete("/security/otp", h.handleOTPDisable)
-
-	// /audit
-	audit := authed.Group("/audit")
-	audit.Get("/", middleware.RootRequired(), h.handleListAuditLogs)
-	audit.Post("/", h.handleAuditPreview)
-	auditUser := audit.Group("/user", middleware.RootRequired())
-	auditUser.Get("/", h.handleListUsers)
-	auditUser.Post("/", h.handleCreateUser)
-	auditUser.Put("/:id", h.handleUpdateUser)
-	auditUser.Delete("/:id", h.handleDeleteUser)
-	auditUser.Delete("/:id/otp", h.handleResetUserOTP)
-	auditUser.Delete("/:id/email", h.handleResetUserEmail)
-
-	// /admin (root only)
-	admin := authed.Group("/admin", middleware.RootRequired())
-	admin.Get("/oss/cors-check", h.handleCORSCheck)
-
-	// /file
-	file := authed.Group("/file")
-	file.Use(rejectFileContentPayload)
-	file.Get("/", h.handleList)
-	file.Get("/search", h.handleSearch)
-	file.Get("/access", h.handleFileAccess)
-	file.Get("/history", h.handleFileHistory)
-	file.Get("/history/access", h.handleFileHistoryAccess)
-	file.Post("/history/restore", h.handleFileHistoryRestore)
-	file.Post("/mkdir", h.handleMkdir)
-	file.Post("/rename", h.handleRename)
-	file.Post("/copy", h.handleCopy)
-	file.Post("/move", h.handleMove)
-	file.Delete("/delete", h.handleDelete)
-
-	fileUpload := file.Group("/upload")
-	fileUpload.Get("/", h.handleUploadStatus)
-	fileUpload.Post("/", h.handleUploadDispatch)
-	fileUpload.Get("/presign", h.handleUploadPresign)
-	fileUpload.Post("/heartbeat", h.handleUploadHeartbeat)
-	fileUpload.Post("/cancel", h.handleUploadCancel)
-	fileUpload.Post("/cleanup", h.handleUploadCleanup)
-
-	// Server-side transcode (playback renditions).
-	file.Post("/transcode", h.handleTranscodeRequest)
-	file.Get("/renditions", h.handleListRenditions)
-
-	// /trash — deletion events are addressed by opaque IDs, never by a
-	// reserved path in the user's visible namespace.
-	trash := authed.Group("/trash")
-	trash.Use(rejectFileContentPayload)
-	trash.Post("/", h.handleCreateTrashEntry)
-	trash.Get("/", h.handleListTrash)
-	trash.Delete("/", h.handleEmptyTrash)
-	trash.Get("/:id/list", h.handleListTrashDirectory)
-	trash.Get("/:id/access", h.handleTrashAccess)
-	trash.Get("/:id/history", h.handleTrashHistory)
-	trash.Get("/:id/history/access", h.handleTrashHistoryAccess)
-	trash.Post("/:id/history/restore", h.handleTrashHistoryRestore)
-	trash.Post("/:id/restore", h.handleRestoreTrash)
-	trash.Delete("/:id", h.handleDeleteTrashItem)
-
-	// /task
-	task := authed.Group("/task")
-	task.Get("/", h.handleListTasks)
-	task.Delete("/done", h.handleClearDoneTasks)
-	task.Delete("/:id", h.handleCancelTask)
-
-	// WebSocket — auth via cookie on HTTP upgrade
-	app.Use("/ws", h.Mid.WebSocketUpgrade())
-	app.Get("/ws", websocket.New(func(c *websocket.Conn) {
-		session := c.Locals("session").(*model.Session)
-		sessionID := c.Locals("sessionID").(string)
-		h.Hub.HandleConnection(c.Conn, session, sessionID)
-	}))
+	register := func(method, route string, fn httpx.Handler, authenticated, rootOnly bool) {
+		var endpoint http.Handler = fn
+		if strings.HasPrefix(route, "/file") || strings.HasPrefix(route, "/trash") {
+			endpoint = rejectFileContentPayload(endpoint)
+		}
+		if rootOnly {
+			endpoint = middleware.RootRequired(endpoint)
+		}
+		if authenticated {
+			endpoint = h.Mid.AuthRequired(endpoint)
+		}
+		if strings.HasSuffix(route, "/") {
+			app.Handle(method+" "+route+"{$}", endpoint)
+			app.Handle(method+" "+strings.TrimSuffix(route, "/"), endpoint)
+		} else {
+			app.Handle(method+" "+route, endpoint)
+		}
+	}
+	register("GET", "/auth", h.handleAuthConfig, false, false)
+	register("POST", "/auth", h.handleLogin, false, false)
+	register("POST", "/auth/verify", h.handleVerify, false, false)
+	register("GET", "/user/avatar/{username}", h.handlePublicAvatar, false, false)
+	register("DELETE", "/auth", h.handleLogout, true, false)
+	register("GET", "/user/", h.handleMe, true, false)
+	register("GET", "/user/storage", h.handleStorageUsage, true, false)
+	register("GET", "/user/security", h.handleSecurityStatus, true, false)
+	register("PUT", "/user/history-limit", h.handleUpdateHistoryLimit, true, false)
+	register("PUT", "/user/display-name", h.handleUpdateDisplayName, true, false)
+	register("PUT", "/user/security/password", h.handleChangePassword, true, false)
+	register("POST", "/user/security/email/bind", h.handleBindEmail, true, false)
+	register("POST", "/user/security/email/verify", h.handleVerifyBindEmail, true, false)
+	register("DELETE", "/user/security/email", h.handleUnbindEmail, true, false)
+	register("POST", "/user/security/otp/setup", h.handleOTPSetup, true, false)
+	register("POST", "/user/security/otp/enable", h.handleOTPEnable, true, false)
+	register("DELETE", "/user/security/otp", h.handleOTPDisable, true, false)
+	register("GET", "/audit/", h.handleListAuditLogs, true, true)
+	register("POST", "/audit/", h.handleAuditPreview, true, false)
+	register("GET", "/audit/user/", h.handleListUsers, true, true)
+	register("POST", "/audit/user/", h.handleCreateUser, true, true)
+	register("PUT", "/audit/user/{id}", h.handleUpdateUser, true, true)
+	register("DELETE", "/audit/user/{id}", h.handleDeleteUser, true, true)
+	register("DELETE", "/audit/user/{id}/otp", h.handleResetUserOTP, true, true)
+	register("DELETE", "/audit/user/{id}/email", h.handleResetUserEmail, true, true)
+	register("GET", "/admin/oss/cors-check", h.handleCORSCheck, true, true)
+	register("GET", "/file/", h.handleList, true, false)
+	register("GET", "/file/search", h.handleSearch, true, false)
+	register("GET", "/file/access", h.handleFileAccess, true, false)
+	register("GET", "/file/history", h.handleFileHistory, true, false)
+	register("GET", "/file/history/access", h.handleFileHistoryAccess, true, false)
+	register("POST", "/file/history/restore", h.handleFileHistoryRestore, true, false)
+	register("POST", "/file/mkdir", h.handleMkdir, true, false)
+	register("POST", "/file/rename", h.handleRename, true, false)
+	register("POST", "/file/copy", h.handleCopy, true, false)
+	register("POST", "/file/move", h.handleMove, true, false)
+	register("DELETE", "/file/delete", h.handleDelete, true, false)
+	register("GET", "/file/upload/", h.handleUploadStatus, true, false)
+	register("POST", "/file/upload/", h.handleUploadDispatch, true, false)
+	register("GET", "/file/upload/presign", h.handleUploadPresign, true, false)
+	register("POST", "/file/upload/heartbeat", h.handleUploadHeartbeat, true, false)
+	register("POST", "/file/upload/cancel", h.handleUploadCancel, true, false)
+	register("POST", "/file/upload/cleanup", h.handleUploadCleanup, true, false)
+	register("POST", "/file/transcode", h.handleTranscodeRequest, true, false)
+	register("GET", "/file/renditions", h.handleListRenditions, true, false)
+	register("POST", "/trash/", h.handleCreateTrashEntry, true, false)
+	register("GET", "/trash/", h.handleListTrash, true, false)
+	register("DELETE", "/trash/", h.handleEmptyTrash, true, false)
+	register("GET", "/trash/{id}/list", h.handleListTrashDirectory, true, false)
+	register("GET", "/trash/{id}/access", h.handleTrashAccess, true, false)
+	register("GET", "/trash/{id}/history", h.handleTrashHistory, true, false)
+	register("GET", "/trash/{id}/history/access", h.handleTrashHistoryAccess, true, false)
+	register("POST", "/trash/{id}/history/restore", h.handleTrashHistoryRestore, true, false)
+	register("POST", "/trash/{id}/restore", h.handleRestoreTrash, true, false)
+	register("DELETE", "/trash/{id}", h.handleDeleteTrashItem, true, false)
+	register("GET", "/task/", h.handleListTasks, true, false)
+	register("DELETE", "/task/done", h.handleClearDoneTasks, true, false)
+	register("DELETE", "/task/{id}", h.handleCancelTask, true, false)
+	register("GET", "/ws", h.handleWebSocket, true, false)
+	for _, prefix := range []string{"/file/", "/trash/"} {
+		app.Handle(prefix, h.Mid.AuthRequired(rejectFileContentPayload(httpx.Handler(func(w http.ResponseWriter, r *http.Request) error {
+			return httpx.JSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})
+		}))))
+	}
 
 	// Register realtime/session WS actions only.
 	h.registerWSActions()
+}
+
+func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) error {
+	if !websocket.IsWebSocketUpgrade(r) {
+		return httpx.NewError(http.StatusUpgradeRequired, "upgrade_required")
+	}
+	upgrader := websocket.Upgrader{HandshakeTimeout: 10 * time.Second, CheckOrigin: h.webSocketOriginAllowed}
+	connection, err := upgrader.Upgrade(w, r, w.Header())
+	if err != nil {
+		return nil
+	} // Upgrader has already written the HTTP error.
+	h.Hub.HandleConnection(connection, middleware.Session(r), middleware.SessionID(r))
+	return nil
+}
+
+func (h *Handler) webSocketOriginAllowed(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	} // Non-browser clients still need the session cookie.
+	if h.Config != nil && httpx.AllowedOrigin(origin, h.Config.Server.CORSOrigins) {
+		return true
+	}
+	uri, err := url.Parse(origin)
+	return err == nil && uri.User == nil && uri.Path == "" && uri.RawQuery == "" && uri.Fragment == "" &&
+		(uri.Scheme == "http" || uri.Scheme == "https") && strings.EqualFold(uri.Host, r.Host)
+}
+
+func (h *Handler) audit(r *http.Request, action, resource, detail, status string, duration int64) {
+	session := middleware.Session(r)
+	if session == nil {
+		return
+	}
+	h.Audit.Log(session.UserID, session.Username, httpx.ClientIP(r), action, resource, detail, status, duration)
 }
 
 // getFileEncryptionKey returns the cached KEK for the current user's files.

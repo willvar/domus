@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/gofiber/fiber/v2"
-
 	"encoding/hex"
 
 	"domus/config"
@@ -28,7 +26,7 @@ func TestLogin_Success(t *testing.T) {
 	req := httptest.NewRequest("POST", "/auth/verify", strings.NewReader(verifyBody))
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +45,7 @@ func TestLogin_Success(t *testing.T) {
 	req2 := httptest.NewRequest("POST", "/auth", bytes.NewReader(loginBody))
 	req2.Header.Set("Content-Type", "application/json")
 
-	resp2, err := app.Test(req2)
+	resp2, err := testRequest(app, req2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,7 +74,7 @@ func TestLogin_BadPassword(t *testing.T) {
 	req := httptest.NewRequest("POST", "/auth/verify", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, _ := app.Test(req)
+	resp, _ := testRequest(app, req)
 	if resp.StatusCode != 401 {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
 	}
@@ -89,7 +87,7 @@ func TestLogin_NonexistentUser(t *testing.T) {
 	req := httptest.NewRequest("POST", "/auth/verify", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, _ := app.Test(req)
+	resp, _ := testRequest(app, req)
 	if resp.StatusCode != 401 {
 		t.Fatalf("expected 401, got %d", resp.StatusCode)
 	}
@@ -102,7 +100,7 @@ func TestMe(t *testing.T) {
 	req := httptest.NewRequest("GET", "/user/", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
 
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,7 +125,7 @@ func TestLogout(t *testing.T) {
 	req := httptest.NewRequest("DELETE", "/auth", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
 
-	resp, _ := app.Test(req)
+	resp, _ := testRequest(app, req)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -143,7 +141,7 @@ func TestLogout(t *testing.T) {
 
 	req2 := httptest.NewRequest("GET", "/user/", nil)
 	req2.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
-	resp2, _ := app.Test(req2)
+	resp2, _ := testRequest(app, req2)
 	if resp2.StatusCode != 401 {
 		t.Fatalf("expected 401 after logout, got %d", resp2.StatusCode)
 	}
@@ -156,7 +154,7 @@ func TestListUsers_AsAdmin(t *testing.T) {
 	req := httptest.NewRequest("GET", "/audit/user/", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
 
-	resp, _ := app.Test(req)
+	resp, _ := testRequest(app, req)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -174,7 +172,7 @@ func TestHandleList(t *testing.T) {
 	req := httptest.NewRequest("GET", "/file/?path=", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
 
-	resp, _ := app.Test(req)
+	resp, _ := testRequest(app, req)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -191,7 +189,7 @@ func TestHandleList(t *testing.T) {
 
 	reserved := httptest.NewRequest("GET", "/file/?path=/.domus/", nil)
 	reserved.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
-	reservedResponse, err := app.Test(reserved)
+	reservedResponse, err := testRequest(app, reserved)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +216,7 @@ func TestHandleDownload(t *testing.T) {
 	req := httptest.NewRequest("GET", "/file/access?path=/test.txt", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
 
-	resp, _ := app.Test(req)
+	resp, _ := testRequest(app, req)
 	if resp.StatusCode != 200 {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
@@ -271,7 +269,7 @@ func TestPublicAvatarReturnsDirectEncryptedAccessDescriptor(t *testing.T) {
 	}
 
 	request := httptest.NewRequest(http.MethodGet, "/user/avatar/root", nil)
-	response, err := app.Test(request)
+	response, err := testRequest(app, request)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,10 +278,10 @@ func TestPublicAvatarReturnsDirectEncryptedAccessDescriptor(t *testing.T) {
 		body, _ := io.ReadAll(response.Body)
 		t.Fatalf("avatar descriptor status = %d: %s", response.StatusCode, body)
 	}
-	if contentType := response.Header.Get(fiber.HeaderContentType); !strings.HasPrefix(contentType, fiber.MIMEApplicationJSON) {
+	if contentType := response.Header.Get("Content-Type"); !strings.HasPrefix(contentType, "application/json") {
 		t.Fatalf("avatar descriptor content type = %q", contentType)
 	}
-	if cacheControl := response.Header.Get(fiber.HeaderCacheControl); cacheControl != "no-store" {
+	if cacheControl := response.Header.Get("Cache-Control"); cacheControl != "no-store" {
 		t.Fatalf("avatar descriptor cache control = %q", cacheControl)
 	}
 	var descriptor struct {
@@ -323,11 +321,11 @@ func TestRegisterRoutes_WithNilHub(t *testing.T) {
 		Audit: auditWorker, Challenges: challenges, Mid: mid,
 	}
 
-	app := fiber.New()
+	app := http.NewServeMux()
 	h.RegisterRoutes(app)
 
 	req := httptest.NewRequest("GET", "/auth", nil)
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +344,7 @@ func TestHandleMeExcludesEncryptionKey(t *testing.T) {
 	req := httptest.NewRequest("GET", "/user/", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
 
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +381,7 @@ func TestHandleFileAccessReturnsDEK(t *testing.T) {
 	req := httptest.NewRequest("GET", "/file/access?path=/test.txt", nil)
 	req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
 
-	resp, err := app.Test(req)
+	resp, err := testRequest(app, req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +425,7 @@ func TestUnauthenticatedAccess(t *testing.T) {
 
 	for _, ep := range endpoints {
 		req := httptest.NewRequest(ep.method, ep.path, nil)
-		resp, _ := app.Test(req)
+		resp, _ := testRequest(app, req)
 		if resp.StatusCode != 401 {
 			t.Errorf("%s %s: expected 401, got %d", ep.method, ep.path, resp.StatusCode)
 		}

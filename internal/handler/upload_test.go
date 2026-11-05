@@ -6,13 +6,85 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"domus/config"
 	"domus/internal/auth"
+	"domus/internal/httpx"
 	"domus/internal/middleware"
 	"domus/internal/store"
 )
+
+func TestUploadDispatchPreservesControlBody(t *testing.T) {
+	app, repos, loginAs := setupTestApp(t)
+	cookie := loginAs("root", "pass")
+	user, err := repos.Users.GetByUsername("root")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := repos.Files.Upsert(user.ID, "/note.txt", "note.txt", false, 4, "text/plain", ""); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(httpx.ServerMiddleware(app, "", nil))
+	t.Cleanup(server.Close)
+
+	for _, path := range []string{"/file/upload", "/file/upload/"} {
+		for _, test := range []struct {
+			name, body, errorCode string
+			status                int
+		}{
+			{
+				name: "conflict check", body: `{"path":"/","names":["note.txt","new.txt"]}`,
+				status: http.StatusOK,
+			},
+			{
+				name: "init reaches storage boundary",
+				body: `{"path":"/","file_name":"new.txt","file_size":4,"content_type":"text/plain","client_instance_id":"browser-fixture","dek":"` + strings.Repeat("0", 64) + `"}`,
+				// This fixture deliberately has no DOFS runtime. A valid request
+				// must reach that dependency check, not fail a second body read.
+				status: http.StatusServiceUnavailable, errorCode: "dofs_unavailable",
+			},
+			{
+				name: "complete reaches upload lookup", body: `{"upload_id":"d8f05517-f097-44e9-b196-f6a6af4dbf37","encrypted_size":37}`,
+				status: http.StatusNotFound, errorCode: "upload_not_found",
+			},
+			{
+				name: "complete validates upload ID", body: `{"upload_id":"invalid","encrypted_size":37}`,
+				status: http.StatusBadRequest, errorCode: "invalid_upload_id",
+			},
+		} {
+			t.Run(path+"/"+test.name, func(t *testing.T) {
+				request, err := http.NewRequest(http.MethodPost, server.URL+path, strings.NewReader(test.body))
+				if err != nil {
+					t.Fatal(err)
+				}
+				request.Header.Set("Content-Type", "application/json")
+				request.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
+				response, err := server.Client().Do(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer response.Body.Close()
+				var result struct {
+					Error     string `json:"error"`
+					Conflicts []struct {
+						Name string `json:"name"`
+					} `json:"conflicts"`
+				}
+				if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+					t.Fatal(err)
+				}
+				if response.StatusCode != test.status || result.Error != test.errorCode {
+					t.Fatalf("status/error = %d/%q, want %d/%q", response.StatusCode, result.Error, test.status, test.errorCode)
+				}
+				if test.errorCode == "" && (len(result.Conflicts) != 1 || result.Conflicts[0].Name != "note.txt") {
+					t.Fatalf("conflicts = %+v, want only note.txt", result.Conflicts)
+				}
+			})
+		}
+	}
+}
 
 func TestUploadControlPlaneRejectsPayloadFieldsAndNonJSONBodies(t *testing.T) {
 	app, _, loginAs := setupTestApp(t)
@@ -47,7 +119,7 @@ func TestUploadControlPlaneRejectsPayloadFieldsAndNonJSONBodies(t *testing.T) {
 			req := httptest.NewRequest(http.MethodPost, "/file/upload", bytes.NewReader(payload))
 			req.Header.Set("Content-Type", test.contentType)
 			req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
-			response, err := app.Test(req)
+			response, err := testRequest(app, req)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -65,7 +137,7 @@ func TestPlaintextDiffUploadRoutesAreGone(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPut, route, bytes.NewReader([]byte(`{"edits":[]}`)))
 		req.Header.Set("Content-Type", "application/json")
 		req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
-		response, err := app.Test(req)
+		response, err := testRequest(app, req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -95,7 +167,7 @@ func TestRetiredProductCapabilitiesAreNotRouted(t *testing.T) {
 			req.Header.Set("Content-Type", "application/json")
 		}
 		req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
-		response, err := app.Test(req)
+		response, err := testRequest(app, req)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -120,7 +192,7 @@ func TestFileMutationBoundaryRejectsBodyFieldsOutsideUploadRoute(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, test.route, bytes.NewBufferString(test.body))
 		req.Header.Set("Content-Type", "application/json")
 		req.AddCookie(&http.Cookie{Name: middleware.SessionCookieName, Value: cookie})
-		response, err := app.Test(req)
+		response, err := testRequest(app, req)
 		if err != nil {
 			t.Fatal(err)
 		}
