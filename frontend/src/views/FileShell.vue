@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, h, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 import type { Component } from 'vue'
 import {
   NBadge,
@@ -24,7 +24,7 @@ import {
   NTag,
 } from 'naive-ui'
 import type { DropdownOption, InputInst, MenuOption } from 'naive-ui'
-import { useRoute, useRouter } from 'vue-router'
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router'
 import dayjs from 'dayjs'
 import {
   IconAccountCircle,
@@ -94,6 +94,48 @@ const message = useAppMessage()
 const uploadInput = ref<HTMLInputElement | null>(null)
 const searchInput = ref<InputInst | null>(null)
 const fileSurface = ref<HTMLDivElement | null>(null)
+type FileMotionBox = { left: number; top: number; width: number; height: number }
+const leaveBoxes = new WeakMap<HTMLElement, Map<Element, FileMotionBox>>()
+const leaveParents = new WeakMap<Element, HTMLElement>()
+
+function prepareFileLeave(element: Element): void {
+  const item = element as HTMLElement
+  item.inert = true
+  item.setAttribute('aria-hidden', 'true')
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+  const group = item.parentElement
+  if (!group) return
+  let boxes = leaveBoxes.get(group)
+  if (!boxes) {
+    boxes = new Map([...group.children].filter(child => child instanceof HTMLElement).map(child => {
+      const node = child as HTMLElement
+      const bounds = node.getBoundingClientRect()
+      return [node, { left: node.offsetLeft, top: node.offsetTop, width: bounds.width, height: bounds.height }]
+    }))
+    leaveBoxes.set(group, boxes)
+    group.style.minHeight = `${group.getBoundingClientRect().height}px`
+    // Capture the whole batch before the first departing item leaves layout.
+    queueMicrotask(() => leaveBoxes.delete(group))
+  }
+  const box = boxes.get(item)
+  if (!box) return
+  leaveParents.set(item, group)
+  Object.assign(item.style, {
+    left: `${box.left}px`, top: `${box.top}px`, width: `${box.width}px`, height: `${box.height}px`, boxSizing: 'border-box',
+  })
+}
+
+function finishFileLeave(element: Element): void {
+  const group = leaveParents.get(element)
+  leaveParents.delete(element)
+  const item = element as HTMLElement
+  item.inert = false
+  item.removeAttribute('aria-hidden')
+  if (!group) return
+  for (const property of ['left', 'top', 'width', 'height', 'box-sizing']) item.style.removeProperty(property)
+  if (!group.querySelector('.file-motion-leave-active')) group.style.removeProperty('min-height')
+}
+
 const breadcrumbViewport = ref<HTMLDivElement | null>(null)
 const breadcrumbOverflowLeft = ref(false)
 const breadcrumbOverflowRight = ref(false)
@@ -125,6 +167,7 @@ let suppressSurfaceClickTimer: number | null = null
 let rubberBandInitialSelection: string[] = []
 let bodyUserSelectBeforeRubberBand: string | null = null
 let breadcrumbResizeObserver: ResizeObserver | null = null
+let savedScroll: { tabId: string; path: string; top: number } | null = null
 
 const rubberBand = reactive({
   tracking: false,
@@ -240,7 +283,7 @@ watch(() => auth.user?.history_limit, (value) => {
   if (typeof value === 'number' && value >= 1) historyLimit.value = value
 }, { immediate: true })
 
-onMounted(async () => {
+onMounted(() => {
   if (fs.tabs.length === 0) {
     fs.init()
     const trashLocation = trashLocationFromRouteQuery(
@@ -255,16 +298,21 @@ onMounted(async () => {
     )
     fs.createTab(requested)
   }
-  // The Store survives route changes, but a stopped SW loses its registry.
-  // Returning from preview does not reload the directory, so recover mappings
-  // on remount as well as on directory fetches.
-  await fs.ensureThumbnails(fs.sortedFiles)
-  await Promise.allSettled([
+  void Promise.allSettled([
     pendingOps.init(auth.username),
     tasks.fetchTasks(),
   ])
+})
+
+onActivated(() => {
+  // Keep the same list/image nodes. A stopped SW still needs fresh mappings.
+  void fs.ensureThumbnails(fs.sortedFiles)
+  if (fileSurface.value) {
+    fileSurface.value.scrollTop = savedScroll?.tabId === fs.activeTabId && savedScroll.path === fs.currentPath
+      ? savedScroll.top
+      : 0
+  }
   window.addEventListener('keydown', handleKeyboard)
-  await nextTick()
   if (breadcrumbViewport.value) {
     breadcrumbResizeObserver = new ResizeObserver(updateBreadcrumbOverflow)
     breadcrumbResizeObserver.observe(breadcrumbViewport.value)
@@ -272,19 +320,45 @@ onMounted(async () => {
   revealCurrentBreadcrumb()
 })
 
-onBeforeUnmount(() => {
+onBeforeRouteLeave(() => {
+  // Capture while attached: moving a cached view out of the document can
+  // reset the browser's scroll offset even though its DOM nodes survive.
+  savedScroll = { tabId: fs.activeTabId, path: fs.currentPath, top: fileSurface.value?.scrollTop || 0 }
+  closeFloatingPanels()
+  showInspector.value = false
+  showAdmin.value = false
+  showApplications.value = false
+})
+
+function suspendShell(): void {
   window.removeEventListener('keydown', handleKeyboard)
   if (searchTimer !== null) window.clearTimeout(searchTimer)
-  if (longPressTimer !== null) window.clearTimeout(longPressTimer)
+  searchTimer = null
+  endLongPress()
   if (suppressSurfaceClickTimer !== null) window.clearTimeout(suppressSurfaceClickTimer)
+  suppressSurfaceClickTimer = null
+  suppressSurfaceClick = false
+  suppressClickPath = ''
   breadcrumbResizeObserver?.disconnect()
+  breadcrumbResizeObserver = null
+  if (fileSurface.value?.hasPointerCapture(rubberBand.pointerId)) {
+    fileSurface.value.releasePointerCapture(rubberBand.pointerId)
+  }
+  rubberBand.tracking = false
+  rubberBand.active = false
+  rubberBand.pointerId = -1
+  draggingFiles.value = false
   if (bodyUserSelectBeforeRubberBand !== null) {
     document.body.style.userSelect = bodyUserSelectBeforeRubberBand
     bodyUserSelectBeforeRubberBand = null
   }
-})
+}
+
+onDeactivated(suspendShell)
+onBeforeUnmount(suspendShell)
 
 watch(() => fs.currentPath, (path) => {
+  if (route.path !== '/files') return
   revealCurrentBreadcrumb()
   if (!path || fs.searchMode) return
   if (fs.isTrash) {
@@ -324,6 +398,7 @@ function updateBreadcrumbOverflow(): void {
 
 function revealCurrentBreadcrumb(): void {
   void nextTick(() => {
+    if (route.path !== '/files') return
     const viewport = breadcrumbViewport.value
     if (!viewport) return
     viewport.scrollLeft = viewport.scrollWidth
@@ -587,7 +662,7 @@ function openActionMenu(file: FileListItem, event?: MouseEvent, select = true): 
   // A prior teleported menu may emit clickoutside during this same pointer event.
   // Reopen after Vue has retired that overlay so repeated actions use this file.
   void nextTick(() => {
-    showActionMenu.value = true
+    if (route.path === '/files') showActionMenu.value = true
   })
 }
 
@@ -780,7 +855,6 @@ async function renameItem(file: FileListItem): Promise<void> {
   const name = await showPrompt(t('menu.rename'), file.name)
   if (!name || name === file.name) return
   await fs.rename(file.path, name, file.is_dir)
-  if (fs.searchMode && searchText.value.trim().length >= 2) await fs.performSearch(searchText.value.trim())
 }
 
 async function deleteItem(file: FileListItem): Promise<void> {
@@ -797,7 +871,7 @@ async function deleteItem(file: FileListItem): Promise<void> {
     return
   }
   await api.post('/trash/', { path: file.path, expected_inode: file.inode })
-  await fs.performSearch(searchText.value.trim())
+  await fs.refresh()
 }
 
 async function restoreItem(file: FileListItem): Promise<void> {
@@ -1273,112 +1347,133 @@ function phaseLabel(phase?: string): string {
               <template #footer><NButton @click="fs.refresh()">{{ t('toolbar.refresh') }}</NButton></template>
             </NResult>
           </div>
-          <div v-else-if="directoryFiles.length === 0" class="surface-state" data-state="empty">
-            <NEmpty :description="fs.searchMode ? t('files.no_search_results') : fs.isTrash ? t('files.trash_empty') : t('fileview.empty')">
-              <template #extra>
-                <div class="empty-state-extra">
-                  <span>{{ fs.searchMode ? t('files.search_hint') : fs.isTrash ? t('files.trash_empty_hint') : t('files.empty_hint') }}</span>
-                  <NButton v-if="!fs.searchMode && !fs.isTrash" type="primary" secondary @click="triggerUpload">
-                    <template #icon><IconUpload /></template>{{ t('toolbar.upload') }}
+          <template v-else>
+            <div v-if="directoryFiles.length === 0" class="surface-state" data-state="empty">
+              <NEmpty :description="fs.searchMode ? t('files.no_search_results') : fs.isTrash ? t('files.trash_empty') : t('fileview.empty')">
+                <template #extra>
+                  <div class="empty-state-extra">
+                    <span>{{ fs.searchMode ? t('files.search_hint') : fs.isTrash ? t('files.trash_empty_hint') : t('files.empty_hint') }}</span>
+                    <NButton v-if="!fs.searchMode && !fs.isTrash" type="primary" secondary @click="triggerUpload">
+                      <template #icon><IconUpload /></template>{{ t('toolbar.upload') }}
+                    </NButton>
+                  </div>
+                </template>
+              </NEmpty>
+            </div>
+
+            <TransitionGroup
+              v-if="fs.viewMode === 'icons'"
+              tag="div"
+              name="file-motion"
+              class="file-grid"
+              role="list"
+              @before-leave="prepareFileLeave"
+              @after-leave="finishFileLeave"
+              @leave-cancelled="finishFileLeave"
+            >
+              <article
+                v-for="file in directoryFiles"
+                :key="file.path"
+                class="file-card file-item"
+                :class="{ selected: fs.selectedFiles.includes(file.path), cut: fs.clipboard.mode === 'cut' && fs.clipboard.items.some(item => item.path === file.path) }"
+                :data-path="file.path"
+                role="listitem"
+                tabindex="0"
+                @click.stop="handleItemClick(file, $event)"
+                @dblclick.stop="openItem(file)"
+                @contextmenu.prevent.stop="handleContextMenu(file, $event)"
+                @pointerdown="beginLongPress(file, $event)"
+                @pointerup="endLongPress"
+                @pointercancel="endLongPress"
+                @pointermove="endLongPress"
+                @keydown.enter="openItem(file)"
+              >
+                <div class="file-card__preview">
+                  <img v-if="showThumbnails && file.thumbnail_url" :src="file.thumbnail_url" class="file-thumbnail" alt="" draggable="false" @error="fs.ensureThumbnails([file])" />
+                  <component :is="getFileIcon(file.name, file.is_dir)" v-else width="56" height="56" />
+                  <span
+                    v-if="fs.selectMode || fs.selectedFiles.includes(file.path)"
+                    class="selection-check"
+                    :class="{ 'is-empty': !fs.selectedFiles.includes(file.path) }"
+                  >
+                    <IconCheck v-if="fs.selectedFiles.includes(file.path)" />
+                  </span>
+                  <NTag v-if="file.status && file.status !== 'ready'" class="file-status" size="tiny" round type="info">
+                    {{ phaseLabel(file.task_phase || file.status) }}
+                  </NTag>
+                </div>
+                <div class="file-card__copy">
+                  <strong class="file-name" :title="file.name">{{ file.name }}</strong>
+                  <span>{{ file.is_dir ? t('info.directory') : formatSize(file.size) }}</span>
+                  <span v-if="fs.isTrashRoot && !fs.searchMode">{{ t('info.deleted') }} {{ displayDate(file.last_modified) }}</span>
+                </div>
+                <NButton quaternary circle size="tiny" class="more-button" :aria-label="t('common.more')" @click.stop="openActionMenu(file, $event)">
+                  <template #icon><IconDotsHorizontal /></template>
+                </NButton>
+              </article>
+            </TransitionGroup>
+
+            <div v-else class="file-list" role="table">
+              <div class="file-list__head" role="row">
+                <span>{{ t('fileview.col_name') }}</span>
+                <span>{{ t('info.type') }}</span>
+                <span>{{ t('fileview.col_size') }}</span>
+                <span>{{ t('fileview.col_modified') }}</span>
+                <span />
+              </div>
+              <TransitionGroup
+                tag="div"
+                name="file-motion"
+                class="file-list__body"
+                role="rowgroup"
+                @before-leave="prepareFileLeave"
+                @after-leave="finishFileLeave"
+                @leave-cancelled="finishFileLeave"
+              >
+                <div
+                  v-for="file in directoryFiles"
+                  :key="file.path"
+                  class="file-row file-item"
+                  :class="{ selected: fs.selectedFiles.includes(file.path), cut: fs.clipboard.mode === 'cut' && fs.clipboard.items.some(item => item.path === file.path) }"
+                  :data-path="file.path"
+                  role="row"
+                  tabindex="0"
+                  @click.stop="handleItemClick(file, $event)"
+                  @dblclick.stop="openItem(file)"
+                  @contextmenu.prevent.stop="handleContextMenu(file, $event)"
+                  @pointerdown="beginLongPress(file, $event)"
+                  @pointerup="endLongPress"
+                  @pointercancel="endLongPress"
+                  @pointermove="endLongPress"
+                  @keydown.enter="openItem(file)"
+                >
+                  <div class="file-row__name" role="cell">
+                    <span class="file-row__icon">
+                      <img v-if="showThumbnails && file.thumbnail_url" :src="file.thumbnail_url" class="file-thumbnail" alt="" draggable="false" @error="fs.ensureThumbnails([file])" />
+                      <component :is="getFileIcon(file.name, file.is_dir)" v-else />
+                    </span>
+                    <span>
+                      <strong class="file-name">{{ file.name }}</strong>
+                      <small class="mobile-meta">{{ displayDate(file.last_modified) }}</small>
+                    </span>
+                    <span
+                      v-if="fs.selectMode || fs.selectedFiles.includes(file.path)"
+                      class="selection-check"
+                      :class="{ 'is-empty': !fs.selectedFiles.includes(file.path) }"
+                    >
+                      <IconCheck v-if="fs.selectedFiles.includes(file.path)" />
+                    </span>
+                  </div>
+                  <span role="cell">{{ file.is_dir ? t('info.directory') : (file.content_type || t('info.file')) }}</span>
+                  <span role="cell">{{ file.is_dir ? '—' : formatSize(file.size) }}</span>
+                  <span role="cell">{{ displayDate(file.last_modified) }}</span>
+                  <NButton quaternary circle size="tiny" class="more-button" :aria-label="t('common.more')" @click.stop="openActionMenu(file, $event)">
+                    <template #icon><IconDotsHorizontal /></template>
                   </NButton>
                 </div>
-              </template>
-            </NEmpty>
-          </div>
-
-          <div v-else-if="fs.viewMode === 'icons'" class="file-grid" role="list">
-            <article
-              v-for="file in directoryFiles"
-              :key="file.path"
-              class="file-card file-item"
-              :class="{ selected: fs.selectedFiles.includes(file.path), cut: fs.clipboard.mode === 'cut' && fs.clipboard.items.some(item => item.path === file.path) }"
-              :data-path="file.path"
-              role="listitem"
-              tabindex="0"
-              @click.stop="handleItemClick(file, $event)"
-              @dblclick.stop="openItem(file)"
-              @contextmenu.prevent.stop="handleContextMenu(file, $event)"
-              @pointerdown="beginLongPress(file, $event)"
-              @pointerup="endLongPress"
-              @pointercancel="endLongPress"
-              @pointermove="endLongPress"
-              @keydown.enter="openItem(file)"
-            >
-              <div class="file-card__preview">
-                <img v-if="showThumbnails && file.thumbnail_url" :src="file.thumbnail_url" class="file-thumbnail" alt="" draggable="false" @error="fs.ensureThumbnails([file])" />
-                <component :is="getFileIcon(file.name, file.is_dir)" v-else width="56" height="56" />
-                <span
-                  v-if="fs.selectMode || fs.selectedFiles.includes(file.path)"
-                  class="selection-check"
-                  :class="{ 'is-empty': !fs.selectedFiles.includes(file.path) }"
-                >
-                  <IconCheck v-if="fs.selectedFiles.includes(file.path)" />
-                </span>
-                <NTag v-if="file.status && file.status !== 'ready'" class="file-status" size="tiny" round type="info">
-                  {{ phaseLabel(file.task_phase || file.status) }}
-                </NTag>
-              </div>
-              <div class="file-card__copy">
-                <strong class="file-name" :title="file.name">{{ file.name }}</strong>
-                <span>{{ file.is_dir ? t('info.directory') : formatSize(file.size) }}</span>
-                <span v-if="fs.isTrashRoot && !fs.searchMode">{{ t('info.deleted') }} {{ displayDate(file.last_modified) }}</span>
-              </div>
-              <NButton quaternary circle size="tiny" class="more-button" :aria-label="t('common.more')" @click.stop="openActionMenu(file, $event)">
-                <template #icon><IconDotsHorizontal /></template>
-              </NButton>
-            </article>
-          </div>
-
-          <div v-else class="file-list" role="table">
-            <div class="file-list__head" role="row">
-              <span>{{ t('fileview.col_name') }}</span>
-              <span>{{ t('info.type') }}</span>
-              <span>{{ t('fileview.col_size') }}</span>
-              <span>{{ t('fileview.col_modified') }}</span>
-              <span />
+              </TransitionGroup>
             </div>
-            <div
-              v-for="file in directoryFiles"
-              :key="file.path"
-              class="file-row file-item"
-              :class="{ selected: fs.selectedFiles.includes(file.path), cut: fs.clipboard.mode === 'cut' && fs.clipboard.items.some(item => item.path === file.path) }"
-              :data-path="file.path"
-              role="row"
-              tabindex="0"
-              @click.stop="handleItemClick(file, $event)"
-              @dblclick.stop="openItem(file)"
-              @contextmenu.prevent.stop="handleContextMenu(file, $event)"
-              @pointerdown="beginLongPress(file, $event)"
-              @pointerup="endLongPress"
-              @pointercancel="endLongPress"
-              @pointermove="endLongPress"
-              @keydown.enter="openItem(file)"
-            >
-              <div class="file-row__name" role="cell">
-                <span class="file-row__icon">
-                  <img v-if="showThumbnails && file.thumbnail_url" :src="file.thumbnail_url" class="file-thumbnail" alt="" draggable="false" @error="fs.ensureThumbnails([file])" />
-                  <component :is="getFileIcon(file.name, file.is_dir)" v-else />
-                </span>
-                <span>
-                  <strong class="file-name">{{ file.name }}</strong>
-                  <small class="mobile-meta">{{ displayDate(file.last_modified) }}</small>
-                </span>
-                <span
-                  v-if="fs.selectMode || fs.selectedFiles.includes(file.path)"
-                  class="selection-check"
-                  :class="{ 'is-empty': !fs.selectedFiles.includes(file.path) }"
-                >
-                  <IconCheck v-if="fs.selectedFiles.includes(file.path)" />
-                </span>
-              </div>
-              <span role="cell">{{ file.is_dir ? t('info.directory') : (file.content_type || t('info.file')) }}</span>
-              <span role="cell">{{ file.is_dir ? '—' : formatSize(file.size) }}</span>
-              <span role="cell">{{ displayDate(file.last_modified) }}</span>
-              <NButton quaternary circle size="tiny" class="more-button" :aria-label="t('common.more')" @click.stop="openActionMenu(file, $event)">
-                <template #icon><IconDotsHorizontal /></template>
-              </NButton>
-            </div>
-          </div>
+          </template>
 
           <div v-if="rubberBand.active" class="rubber-band" :style="rubberBandStyle" aria-hidden="true" />
         </div>
@@ -1748,7 +1843,7 @@ button, input, select { font: inherit; }
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 38%);
   pointer-events: none;
 }
-.file-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(172px, 192px)); align-content: start; gap: 16px; }
+.file-grid { position: relative; display: grid; grid-template-columns: repeat(auto-fill, minmax(172px, 192px)); align-content: start; gap: 16px; }
 .file-card {
   position: relative;
   min-width: 0;
@@ -1796,6 +1891,9 @@ button, input, select { font: inherit; }
 .file-status { position: absolute; right: 7px; bottom: 7px; }
 
 .file-list { overflow: hidden; border: 1px solid var(--line); border-radius: 14px; background: var(--surface); }
+.file-list__body { position: relative; }
+.file-list:not(:has(.file-item)) { border: 0; background: transparent; }
+.file-list:not(:has(.file-item)) > .file-list__head { display: none; }
 .file-list__head, .file-row { display: grid; grid-template-columns: minmax(240px, 2fr) minmax(120px, 1fr) 100px 145px 38px; align-items: center; gap: 12px; }
 .file-list__head { min-height: 44px; padding: 0 16px; border-bottom: 1px solid var(--line); color: var(--ink-2); background: var(--surface-2); font-size: 11px; font-weight: 720; letter-spacing: .04em; text-transform: uppercase; }
 .file-row { min-height: 64px; padding: 0 16px; border-bottom: 1px solid var(--line-2); color: var(--ink-2); outline: 0; font-size: 12px; }
@@ -1812,6 +1910,7 @@ button, input, select { font: inherit; }
 .mobile-meta { display: none; }
 
 .surface-state { display: flex; min-height: 100%; align-items: center; justify-content: center; flex-direction: column; gap: 10px; color: var(--muted); text-align: center; }
+.file-surface:has(.file-item) > .surface-state[data-state="empty"] { display: none; }
 .surface-state strong { color: var(--ink); font-size: 16px; }
 .surface-state > span { max-width: 360px; font-size: 13px; line-height: 1.55; }
 .empty-state-extra { display: flex; align-items: center; flex-direction: column; gap: 16px; color: var(--muted); font-size: 13px; }
@@ -1965,7 +2064,16 @@ button, input, select { font: inherit; }
   overflow: hidden;
 }
 
+@media (prefers-reduced-motion: no-preference) {
+  .file-item.file-motion-move { transition: transform .2s cubic-bezier(.2,.8,.3,1); }
+  .file-item.file-motion-enter-active { transition: opacity .18s ease, transform .18s cubic-bezier(.2,.8,.3,1); }
+  .file-item.file-motion-enter-from { opacity: 0; transform: translateY(6px); }
+  .file-item.file-motion-leave-active { position: absolute; pointer-events: none; transition: opacity .14s ease; }
+  .file-item.file-motion-leave-to { opacity: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .file-item { transition-property: none !important; }
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
 </style>

@@ -100,6 +100,12 @@ for (const width of [1280, 390]) {
       sessionStorage.setItem('cache-fixture', 'session kept')
       await new Promise<void>((resolve, reject) => {
         const request = indexedDB.open('domus', 1)
+        // On a cold build this fixture may open before the lazy file shell.
+        // Create the real schema rather than leave an empty version-1 database.
+        request.onupgradeneeded = () => {
+          const store = request.result.createObjectStore('pending_ops', { keyPath: 'id' })
+          store.createIndex('createdAt', 'createdAt', { unique: false })
+        }
         request.onsuccess = () => {
           const db = request.result
           const transaction = db.transaction('pending_ops', 'readwrite')

@@ -174,6 +174,91 @@ func TestPartialRestoreThenWholeDirectoryRestoreMergesRemainder(t *testing.T) {
 	}
 }
 
+func TestRestoreConflictUsesVisibleNamesWithoutMutatingRecords(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		isDir        bool
+		relativePath string
+	}{
+		{"file", false, "/"},
+		{"directory", true, "/"},
+		{"child-file", false, "/report.txt"},
+		{"child-directory", true, "/reports/"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			app, repositories, loginAs := setupTestApp(t)
+			cookie := loginAs("root", "password")
+			user, _ := repositories.Users.GetByUsername("root")
+			rootPath := "/report.png"
+			rootIsDir := test.isDir || test.relativePath != "/"
+			if rootIsDir {
+				rootPath = "/reports/"
+			}
+			if err := repositories.Files.Upsert(user.ID, rootPath, path.Base(rootPath), rootIsDir, 7, "", ""); err != nil {
+				t.Fatal(err)
+			}
+			targetPath := rootPath
+			if test.relativePath != "/" {
+				targetPath += strings.TrimPrefix(test.relativePath, "/")
+				if err := repositories.Files.Upsert(user.ID, targetPath, path.Base(targetPath), test.isDir, 7, "", ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			root, _ := repositories.Files.Get(user.ID, rootPath)
+			entryID := trashVisiblePath(t, app, cookie, rootPath, root.ID)
+			entry, _ := repositories.Trash.Get(user.ID, entryID)
+			storedRoot, _ := repositories.Files.GetByID(user.ID, root.ID)
+			if storedRoot.Path != trashEntryStoragePath(entry) || (!rootIsDir && storedRoot.Name != entryID) {
+				t.Fatalf("fixture root should be stored in the internal trash namespace: %#v", storedRoot)
+			}
+			storagePath, err := trashStoragePath(entry, test.relativePath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			source, _ := repositories.Files.Get(user.ID, storagePath)
+			if test.relativePath != "/" {
+				if err := repositories.Files.Upsert(user.ID, rootPath, path.Base(rootPath), true, 0, "", ""); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := repositories.Files.Upsert(user.ID, targetPath, path.Base(targetPath), test.isDir, 12, "", ""); err != nil {
+				t.Fatal(err)
+			}
+			existing, _ := repositories.Files.Get(user.ID, targetPath)
+			response := trashRequest(t, app, cookie, http.MethodPost, "/trash/"+entryID+"/restore", map[string]any{
+				"path": test.relativePath, "expected_inode": source.ID,
+			})
+			defer response.Body.Close()
+			if response.StatusCode != http.StatusConflict {
+				t.Fatalf("restore conflict status=%d", response.StatusCode)
+			}
+			var result struct {
+				Error          string        `json:"error"`
+				TargetPath     string        `json:"target_path"`
+				MergeAvailable bool          `json:"merge_available"`
+				Incoming       trashConflict `json:"incoming"`
+				Existing       trashConflict `json:"existing"`
+			}
+			if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+				t.Fatal(err)
+			}
+			name := path.Base(targetPath)
+			if result.Error != "restore_conflict" || result.TargetPath != targetPath || result.Incoming.Name != name || result.Existing.Name != name {
+				t.Fatalf("conflict must use visible target name %q: %#v", name, result)
+			}
+			if result.Incoming.Size != 7 || result.Existing.Size != 12 || result.Incoming.IsDir != test.isDir || result.Existing.IsDir != test.isDir || result.MergeAvailable != test.isDir {
+				t.Fatalf("conflict metadata changed: %#v", result)
+			}
+			sourceAfter, sourceErr := repositories.Files.Get(user.ID, storagePath)
+			existingAfter, existingErr := repositories.Files.Get(user.ID, targetPath)
+			entryAfter, entryErr := repositories.Trash.Get(user.ID, entryID)
+			if sourceErr != nil || existingErr != nil || entryErr != nil || sourceAfter.ID != source.ID || sourceAfter.Name != source.Name || existingAfter.ID != existing.ID || entryAfter.State != model.TrashStateReady {
+				t.Fatal("reporting a conflict must not rename, replace or restore either record")
+			}
+		})
+	}
+}
+
 func TestPendingTrashRenameRecoversToReady(t *testing.T) {
 	repositories := model.NewMemRepos(nil)
 	user, _ := repositories.Users.Create("owner", "password", "user", "")
@@ -266,6 +351,7 @@ func TestMergeRestoreReportsNestedConflictsAndCanRenameThem(t *testing.T) {
 	}
 	var conflictBody struct {
 		Error     string          `json:"error"`
+		Incoming  trashConflict   `json:"incoming"`
 		Conflicts []trashConflict `json:"conflicts"`
 	}
 	if err := json.NewDecoder(conflict.Body).Decode(&conflictBody); err != nil {
@@ -273,6 +359,9 @@ func TestMergeRestoreReportsNestedConflictsAndCanRenameThem(t *testing.T) {
 	}
 	if conflictBody.Error != "restore_conflict" || len(conflictBody.Conflicts) != 1 || conflictBody.Conflicts[0].RelativePath != "/same.txt" {
 		t.Fatalf("unexpected conflict response: %#v", conflictBody)
+	}
+	if conflictBody.Incoming.Name != "project" || conflictBody.Conflicts[0].Name != "same.txt" || conflictBody.Conflicts[0].ExistingName != "same.txt" || conflictBody.Conflicts[0].Size != 1 || conflictBody.Conflicts[0].ExistingSize != 2 {
+		t.Fatalf("merge conflict must preserve visible parent and child metadata: %#v", conflictBody)
 	}
 
 	merged := trashRequest(t, app, cookie, http.MethodPost, "/trash/"+entryID+"/restore", map[string]any{

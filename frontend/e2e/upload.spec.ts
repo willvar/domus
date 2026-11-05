@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import {
+  apiBaseURL,
   e2eCredentials,
   login,
   openFilesRoot,
@@ -40,8 +41,14 @@ test('上传文件后可从列表打开并解密读回原文', async ({ page }) 
 
     await page.locator('.back-button').click()
     await expect(page.locator('.file-shell')).toBeVisible()
+    const searchResponsePromise = page.waitForResponse(response => {
+      const url = new URL(response.url())
+      return url.origin === apiBaseURL && url.pathname === '/file/search' && url.searchParams.get('query') === `upload-${suffix}`
+    })
     await page.locator('.global-search input').fill(`upload-${suffix}`)
-    await expect(page.locator('.content-heading')).toContainText(/搜索结果|Search Results/)
+    const searchResponse = await searchResponsePromise
+    expect(searchResponse.ok()).toBeTruthy()
+    expect((await searchResponse.json()).results.some((item: { path: string }) => item.path === filePath)).toBeTruthy()
     await expect(page.locator('.file-item').filter({ has: page.locator('.file-name').getByText(fileName, { exact: true }) })).toBeVisible()
   } finally {
     if (authenticated) await permanentlyDelete(page, filePath)

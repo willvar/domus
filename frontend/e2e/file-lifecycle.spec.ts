@@ -36,6 +36,7 @@ async function navigateToTrash(page: Page): Promise<void> {
 async function chooseAction(page: Page, item: Locator, label: RegExp): Promise<void> {
   await item.click({ button: 'right' })
   const menu = page.locator('.action-menu')
+  await expect(menu).toHaveCount(1)
   await expect(menu).toBeVisible()
   await menu.getByRole('menuitem', { name: label }).click()
 }
@@ -130,11 +131,11 @@ test('统一文件界面完成新建、上传、重命名、移动、回收与�
     const secondItemBox = await page.locator('.file-item').nth(1).boundingBox()
     expect(firstItemBox).not.toBeNull()
     expect(secondItemBox).not.toBeNull()
-    await page.mouse.move(firstItemBox!.x - 5, firstItemBox!.y - 5)
+    await page.mouse.move(secondItemBox!.x + secondItemBox!.width + 5, secondItemBox!.y + secondItemBox!.height + 5)
     await page.mouse.down()
     await page.mouse.move(
-      secondItemBox!.x + secondItemBox!.width + 5,
-      secondItemBox!.y + secondItemBox!.height + 5,
+      firstItemBox!.x + 5,
+      firstItemBox!.y + 5,
       { steps: 8 },
     )
     await expect(page.locator('.rubber-band')).toBeVisible()
@@ -149,10 +150,9 @@ test('统一文件界面完成新建、上传、重命名、移动、回收与�
     await expect(selectionControls).toBeHidden()
 
     await page.setViewportSize({ width: 390, height: 844 })
-    const mobileSelectEntry = page.locator('.mobile-select-entry')
-    await expect(mobileSelectEntry).toBeVisible()
-    await mobileSelectEntry.click()
-    const mobileSelectionNav = page.locator('.mobile-bottom-nav.is-selection')
+    await expect(selectModeToggle).toBeVisible()
+    await selectModeToggle.click()
+    const mobileSelectionNav = page.locator('.mobile-select-bar')
     await expect(mobileSelectionNav).toBeVisible()
     await expect(mobileSelectionNav.getByRole('button')).toHaveCount(5)
     await expect(page.locator('.selection-check')).toHaveCount(await page.locator('.file-item').count())

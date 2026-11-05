@@ -129,7 +129,7 @@ export function showConfirm(
   })
 }
 
-/** Show the upload conflict choices with Naive UI controls. */
+/** Show duplicate item conflict choices with Naive UI controls. */
 export function showDuplicateDialog(
   options: DuplicateDialogOptions,
 ): Promise<DuplicateDialogResult | null> {
@@ -170,7 +170,8 @@ export function showDuplicateDialog(
           h('div', { class: 'duplicate-dialog__item' }, [
             h('span', { class: 'duplicate-dialog__label' }, t('upload.duplicate_incoming')),
             h('strong', { class: 'duplicate-dialog__name' }, options.incomingName),
-            h('span', { class: 'duplicate-dialog__meta' }, formatSize(options.incomingSize)),
+            h('span', { class: 'duplicate-dialog__meta' },
+              options.incomingIsDir ? t('upload.duplicate_folder') : formatSize(options.incomingSize)),
           ]),
         ]),
         h(NCheckbox, {

@@ -669,7 +669,7 @@ func (h *Handler) finishTrashMutation(userID string, entry *model.TrashEntry, fr
 func (h *Handler) restoreConflictResponse(w http.ResponseWriter, r *http.Request, targetPath string, source, existing *model.FileRecord, merge bool, conflicts []trashConflict) error {
 	return httpx.JSON(w, http.StatusConflict, map[string]any{
 		"error": "restore_conflict", "target_path": targetPath, "merge_available": merge,
-		"incoming":  map[string]any{"name": source.Name, "size": source.Size, "is_dir": source.IsDir},
+		"incoming":  map[string]any{"name": path.Base(targetPath), "size": source.Size, "is_dir": source.IsDir},
 		"existing":  map[string]any{"name": existing.Name, "size": existing.Size, "is_dir": existing.IsDir},
 		"conflicts": conflicts,
 	})

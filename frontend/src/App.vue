@@ -11,7 +11,9 @@ import NaiveProvider from './components/NaiveProvider.vue'
 const auth = useAuthStore()
 const route = useRoute()
 const { t } = useI18n()
-const routeViewKey = computed(() => `${route.fullPath}:${previewReloadKey.value}`)
+const routeViewKey = computed(() => route.path === '/preview' ? `${route.fullPath}:${previewReloadKey.value}` : route.fullPath)
+// Retain only the list, and only while moving between files and preview.
+const cachedViews = computed(() => ['/files', '/preview'].includes(route.path) ? ['FileShell'] : [])
 
 watchEffect(() => {
   document.title = t('app.title')
@@ -39,7 +41,11 @@ onUnmounted(() => {
 
     <LoginPage v-else-if="!auth.isLoggedIn" />
 
-    <router-view v-else :key="routeViewKey" />
+    <router-view v-else v-slot="{ Component }">
+      <KeepAlive :include="cachedViews" :max="1">
+        <component :is="Component" :key="routeViewKey" />
+      </KeepAlive>
+    </router-view>
   </NaiveProvider>
 </template>
 

@@ -179,8 +179,7 @@ export const usePendingOpsStore = defineStore('pendingOps', () => {
       // Refresh directory
       try {
         const fs = useFileSystemStore()
-        fs.invalidateCache()
-        fs.refresh()
+        await fs.refresh()
       } catch { /* ignored */ }
     } catch (e: unknown) {
       const err = e as AxiosLikeError

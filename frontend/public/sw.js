@@ -36,8 +36,15 @@ self.addEventListener('message', async event => {
       cleanupTimers.clear()
       await caches.delete(CACHE_NAME)
       break
+    case 'refresh-source':
     case 'register': {
-      abortEntry(registry.get(id))
+      const previous = registry.get(id)
+      if (type === 'refresh-source' && previous && previous.dekHex === metadata.dek) {
+        // Refresh signing without aborting a reader of the unchanged object.
+        previous.url = metadata.url
+        break
+      }
+      abortEntry(previous)
       const entry = { ...metadata, dekHex: metadata.dek || null, dek: null, requests: new Set(), closed: false }
       registry.set(id, entry)
       if (entry.contentHash && cleanupTimers.has(entry.contentHash)) {

@@ -461,6 +461,7 @@ test(`file-list thumbnails survive playback, return and reload (${scenario})`, a
     expect(Buffer.from(bytes)).toEqual(await readFile(join(directory, 'thumbnail.webp')))
   }
   await assertThumbnail()
+  const initialThumbnailURL = (await thumbnail.getAttribute('src'))!
   await item.dblclick()
   await expect(page).toHaveURL(/\/preview\?/)
   const video = page.locator('video.preview-media')
@@ -521,6 +522,11 @@ test(`file-list thumbnails survive playback, return and reload (${scenario})`, a
   }
   await page.locator('.back-button').click()
   await expect(page).toHaveURL(/\/files/)
+  if (scenario !== 'normal') {
+    // A retained image can stay decoded while its stopped worker's registry
+    // is recovered. Wait for the new mapping before fetching its bytes.
+    await expect(thumbnail).not.toHaveAttribute('src', initialThumbnailURL)
+  }
   await assertThumbnail()
   await page.reload()
   await assertThumbnail()

@@ -186,27 +186,37 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const cache: Map<string, { data: FileListItem[]; timestamp: number }> = new Map()
   const trashEntryNames: Map<string, string> = new Map()
   const CACHE_TTL: number = 30000
+  const refreshingDirectories = reactive(new Set<string>())
+  const failedDirectoryRefreshes = reactive(new Set<string>())
+  const refreshing = computed(() => refreshingDirectories.has(currentPath.value))
+  let searchEpoch = 0
 
   async function performSearch(query: string): Promise<void> {
     if (!query || query.length < 2) return
-    clearSelection()
+    const sameQuery = searchMode.value && searchQuery.value === query
+    const epoch = ++searchEpoch
+    const tabId = activeTabId.value
+    if (!sameQuery) clearSelection()
     searchMode.value = true
-    searchLoading.value = true
+    searchQuery.value = query
+    searchLoading.value = !sameQuery
     try {
       const res = await api.get<{ results?: SearchResult[] }>('/file/search', {
         params: { query, limit: 100 },
       })
       const results = res.data.results || []
-      await ensureThumbnails(results)
-      searchResults.value = results
+      await ensureThumbnails(results, sameQuery ? searchResults.value : [])
+      if (epoch === searchEpoch && activeTabId.value === tabId && searchMode.value) searchResults.value = results
     } catch {
-      searchResults.value = []
+      if (epoch === searchEpoch && !sameQuery) searchResults.value = []
     } finally {
-      searchLoading.value = false
+      if (epoch === searchEpoch) searchLoading.value = false
     }
   }
 
   function exitSearch(): void {
+    searchEpoch++
+    searchLoading.value = false
     clearSelection()
     searchMode.value = false
     searchResults.value = []
@@ -252,7 +262,8 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   const isTrashRoot: ComputedRef<boolean> = computed(() => currentPath.value === TRASH_ROOT_LOCATION)
   const isShared: ComputedRef<boolean> = computed(() => currentPath.value === '__shared__/')
   const canEmptyTrash: ComputedRef<boolean> = computed(() =>
-    isTrashRoot.value && !searchMode.value && !loading.value && !error.value && files.value.some(file => !!file.trash_id),
+    isTrashRoot.value && !searchMode.value && !loading.value && !refreshing.value &&
+    !error.value && !failedDirectoryRefreshes.has(currentPath.value) && files.value.some(file => !!file.trash_id),
   )
 
   const canGoBack: ComputedRef<boolean> = computed(() => historyIndex.value > 0)
@@ -378,11 +389,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     path = path === '__shared__/' ? path : normalizeDirPath(path)
 
     // Exit search mode when navigating
-    if (searchMode.value) {
-      searchMode.value = false
-      searchResults.value = []
-      searchQuery.value = ''
-    }
+    if (searchMode.value) exitSearch()
 
     // Unsubscribe old directory for this tab
     const tabId: string = activeTabId.value
@@ -411,41 +418,19 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     await loadFiles(path)
   }
 
-  async function loadFiles(path: string): Promise<void> {
-    const cached = cache.get(path)
-    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-      await ensureThumbnails(cached.data)
-      if (currentPath.value !== path) return
-      files.value = cached.data
-      fetchFiles(path).then(data => {
-        if (data && currentPath.value === path) {
-          files.value = data
-          cache.set(path, { data, timestamp: Date.now() })
-        }
-      }).catch(() => {})
-      return
-    }
-
-    loading.value = true
-    error.value = null
-    try {
-      const data = await fetchFiles(path)
-      if (data && currentPath.value === path) {
-        files.value = data
-        cache.set(path, { data, timestamp: Date.now() })
-      }
-    } catch (e: any) {
-      if (currentPath.value === path && parseTrashLocation(path)?.id && e?.response?.status === 404) {
-        await navigate(TRASH_ROOT_LOCATION)
-        return
-      }
-      error.value = te(e)
-    } finally {
-      loading.value = false
-    }
+  function loadFiles(path: string): Promise<void> {
+    const tab = activeTab.value
+    return tab ? loadFilesForTab(tab, path) : Promise.resolve()
   }
 
   async function fetchFiles(path: string): Promise<FileListItem[]> {
+    const list = await fetchFileEntries(path)
+    const previous = tabs.value.find(tab => tab.path === path)?.files || cache.get(path)?.data || []
+    await ensureThumbnails(list, previous)
+    return list
+  }
+
+  async function fetchFileEntries(path: string): Promise<FileListItem[]> {
     if (isTrashLocation(path)) {
       const location = parseTrashLocation(path)
       if (!location?.id) {
@@ -467,7 +452,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
             last_modified: file.deleted_at || file.last_modified,
           }
         })
-        await ensureThumbnails(list)
         return list
       }
       const res = await api.get<{ files?: FileListItem[]; trash?: { id: string; name: string } }>(
@@ -480,7 +464,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         ...file,
         path: trashItemLocation(trashID, file.relative_path),
       }))
-      await ensureThumbnails(list)
       return list
     }
     if (path === '__shared__/') {
@@ -514,7 +497,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     }
     const res = await api.get<{ files?: FileListItem[] }>('/file/', { params: { path } })
     const list = res.data.files || []
-    await ensureThumbnails(list)
     return list
   }
 
@@ -527,17 +509,28 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
    *  Track the boot per record: refreshing one directory must not make another
    *  directory's cached mappings appear current. Also handles search results. */
   let thumbnailSync: Promise<void> = Promise.resolve()
-  function ensureThumbnails(list: FileListItem[]): Promise<void> {
-    const next = thumbnailSync.then(() => registerCurrentThumbnails(list))
+  function ensureThumbnails(list: FileListItem[], previous: FileListItem[] = []): Promise<void> {
+    const next = thumbnailSync.then(() => registerCurrentThumbnails(list, previous))
     thumbnailSync = next.catch(() => {})
     return next
   }
 
-  async function registerCurrentThumbnails(list: FileListItem[]): Promise<void> {
+  function thumbnailObjectURL(source: string): string {
+    const url = new URL(source, window.location.href)
+    // Signing can change without changing the object. Keep version selectors
+    // and every other non-authentication parameter part of its identity.
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(x-amz-|x-oss-|awsaccesskeyid$|ossaccesskeyid$|signature$|expires$|security-token$)/i.test(key)) url.searchParams.delete(key)
+    }
+    return url.href
+  }
+
+  async function registerCurrentThumbnails(list: FileListItem[], previous: FileListItem[]): Promise<void> {
     const sw = useServiceWorker()
     const bootId = await sw.getBootId()
     if (bootId === null) return
     const updates: Array<{ file: FileListItem; source: string; url: string; previous?: string }> = []
+    const previousByPath = new Map(previous.map(file => [file.path, file]))
     for (const record of list) {
       const file = reactive(record)
       if (!file.thumbnail_url || !file.thumbnail_dek) continue
@@ -545,6 +538,11 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       if (registered && file._thumbBootId === bootId) continue
       const source = registered ? file._thumbSource : file.thumbnail_url
       if (!source) continue
+      const candidate = previousByPath.get(file.path)
+      const reuse = candidate?.thumbnail_url?.startsWith('/__decrypt__/') &&
+        candidate._thumbBootId === bootId && candidate.inode === file.inode && candidate.generation === file.generation &&
+        candidate.thumbnail_dek === file.thumbnail_dek && candidate._thumbSource &&
+        thumbnailObjectURL(candidate._thumbSource) === thumbnailObjectURL(source)
       const decryptUrl = sw.registerDecrypt({
         url: source,
         size: null,
@@ -552,7 +550,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         contentType: 'image/webp',
         filename: '',
         dek: file.thumbnail_dek,
-      })
+      }, reuse ? candidate?.thumbnail_url : undefined)
       if (decryptUrl) {
         updates.push({ file, source, url: decryptUrl, previous: registered ? file.thumbnail_url : undefined })
       }
@@ -592,18 +590,71 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     navigate(parent === '/' ? '/' : parent)
   }
 
-  function refresh(): Promise<void> {
-    cache.delete(currentPath.value)
-    return loadFiles(currentPath.value)
+  async function refresh(): Promise<void> {
+    // All mutation callers share this policy, including history and offline
+    // replay. Invalidate closed views too, but keep every visible list mounted.
+    cache.clear()
+    await Promise.all([...new Set(tabs.value.map(tab => tab.path))].map(refreshDirectory))
+    await refreshSearch()
+  }
+
+  async function refreshSearch(): Promise<void> {
+    if (searchMode.value && searchQuery.value.length >= 2) await performSearch(searchQuery.value)
+  }
+
+  function commitDirectory(tab: FileTab, path: string, data: FileListItem[]): boolean {
+    if (!tabs.value.includes(tab) || tab.path !== path) return false
+    tab.files = data
+    tab.error = null
+    failedDirectoryRefreshes.delete(path)
+    cache.set(path, { data, timestamp: Date.now() })
+    return true
+  }
+
+  const directoryRefreshes = new Map<string, { dirty: boolean; promise: Promise<void> }>()
+  function refreshDirectory(path: string): Promise<void> {
+    path = path === '__shared__/' ? path : normalizeDirPath(path)
+    cache.delete(path)
+    const pending = directoryRefreshes.get(path)
+    if (pending) {
+      pending.dirty = true
+      return pending.promise
+    }
+    const state = { dirty: true, promise: Promise.resolve() }
+    refreshingDirectories.add(path)
+    state.promise = Promise.resolve().then(async () => {
+      // A local completion and its WS notification share a request. If another
+      // change arrives during that request, fetch one trailing snapshot.
+      while (state.dirty) {
+        state.dirty = false
+        const targets = tabs.value.filter(tab => tab.path === path)
+        if (!targets.length) break
+        try {
+          const data = await fetchFiles(path)
+          for (const tab of targets) commitDirectory(tab, path, data)
+        } catch (e: any) {
+          failedDirectoryRefreshes.add(path)
+          if (parseTrashLocation(path)?.id && e?.response?.status === 404) {
+            await Promise.all(targets.map(tab => recoverTrashTab(tab, path)))
+          } else {
+            for (const tab of targets) {
+              if (tabs.value.includes(tab) && tab.path === path && tab.loading) tab.error = te(e)
+            }
+          }
+          // Keep the last snapshot visible. Destructive bulk actions remain
+          // disabled until a later successful refresh confirms the contents.
+        }
+      }
+    }).finally(() => {
+      directoryRefreshes.delete(path)
+      refreshingDirectories.delete(path)
+    })
+    directoryRefreshes.set(path, state)
+    return state.promise
   }
 
   function invalidateCache(): void {
     cache.delete(currentPath.value)
-  }
-
-  async function reloadCurrentDir(): Promise<void> {
-    invalidateCache()
-    await refresh()
   }
 
   function getFileByPath(path: string): FileListItem | undefined {
@@ -733,7 +784,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       clipboard.value = { items: [], mode: null }
     }
 
-    await reloadCurrentDir()
+    await refresh()
   }
 
   // File operations
@@ -744,7 +795,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
     try {
       await api.post('/file/mkdir', { path: currentPath.value + name })
-      await reloadCurrentDir()
+      await refresh()
     } catch (e: any) {
       const queued = await maybeQueuePendingOp(e, {
         apiUrl: '/file/mkdir',
@@ -779,7 +830,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         is_dir: isDir,
       })
       renamingFile.value = null
-      await reloadCurrentDir()
+      await refresh()
     } catch (e: any) {
       const queued = await maybeQueuePendingOp(e, {
         apiUrl: '/file/rename',
@@ -876,7 +927,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       }))
     }
 
-    await reloadCurrentDir()
+    await refresh()
     if (isTrash.value && error.value && parseTrashLocation(currentPath.value)?.id) {
       await navigate(TRASH_ROOT_LOCATION)
     }
@@ -936,10 +987,11 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
             } : detail.existing
             const decision = await showDuplicateDialog({
               title: t('upload.duplicate_title'),
-              incomingName: incoming?.name || file.name,
-              incomingSize: incoming?.size || file.size,
+              incomingName: nested ? incoming?.name || file.name : file.name,
+              incomingSize: incoming?.size ?? file.size,
+              incomingIsDir: incoming?.is_dir ?? file.is_dir,
               existingName: existing?.name || file.name,
-              existingSize: existing?.size || 0,
+              existingSize: existing?.size ?? 0,
               existingIsDir: !!existing?.is_dir,
               allowMerge: !nested && !!detail.merge_available,
             })
@@ -960,7 +1012,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       }
     }
     clearSelection()
-    await reloadCurrentDir()
+    await refresh()
     if (error.value && parseTrashLocation(currentPath.value)?.id) {
       await navigate(TRASH_ROOT_LOCATION)
     }
@@ -979,7 +1031,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       console.error('Empty trash failed:', e)
       message.error(te(e))
     }
-    await reloadCurrentDir()
+    await refresh()
   }
 
   function openSelected(): void {
@@ -1316,6 +1368,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
       ;(state as any).baseSize = newBytes.length
       state.editing = false
       state.dirty = false
+      void refresh()
     } catch (e: any) {
       console.error('Save failed:', e)
     } finally {
@@ -1412,56 +1465,48 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   // Listen for directory change push events
   ws.on('dir.changed', ({ path }: { path: string }) => {
-    const changedPath = path === '__shared__/' ? path : normalizeDirPath(path)
-    // Invalidate cache for this directory
-    cache.delete(changedPath)
-    // Refresh all tabs viewing this directory
-    for (const tab of tabs.value) {
-      const tabPath = tab.path === '__shared__/' ? tab.path : normalizeDirPath(tab.path)
-      if (tabPath === changedPath) {
-        loadFilesForTab(tab, changedPath)
-      }
-    }
+    void refreshDirectory(path).then(refreshSearch)
   })
 
   ws.on('trash.changed', () => {
     for (const key of cache.keys()) {
       if (isTrashLocation(key)) cache.delete(key)
     }
-    for (const tab of tabs.value) {
-      if (isTrashLocation(tab.path)) loadFilesForTab(tab, tab.path)
-    }
+    const paths = [...new Set(tabs.value.filter(tab => isTrashLocation(tab.path)).map(tab => tab.path))]
+    void Promise.all(paths.map(refreshDirectory)).then(refreshSearch)
   })
 
   // Load files directly into a specific tab (works for any tab, not just active)
   async function loadFilesForTab(tab: FileTab, path: string): Promise<void> {
-    try {
-      const data = await fetchFiles(path)
-      if (data) {
-        tab.files = data
-        cache.set(path, { data, timestamp: Date.now() })
-      }
-    } catch (e: any) {
-      if (!isTrashLocation(path) || !parseTrashLocation(path)?.id || e?.response?.status !== 404) return
-      // Another device may have restored or emptied the entry currently open
-      // in this tab. Move that tab back to the still-valid Trash root instead
-      // of leaving stale children on screen.
-      tab.path = TRASH_ROOT_LOCATION
-      tab.selectedFiles = []
-      tab.lastSelectedIndex = -1
-      tab.history = tab.history.slice(0, tab.historyIndex + 1)
-      tab.history.push(TRASH_ROOT_LOCATION)
-      tab.historyIndex = tab.history.length - 1
-      try {
-        const rootData = await fetchFiles(TRASH_ROOT_LOCATION)
-        tab.files = rootData
-        tab.error = null
-        cache.set(TRASH_ROOT_LOCATION, { data: rootData, timestamp: Date.now() })
-      } catch (rootError: any) {
-        tab.files = []
-        tab.error = te(rootError)
-      }
+    if (!tabs.value.includes(tab) || tab.path !== path) return
+    const cached = cache.get(path)
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      await ensureThumbnails(cached.data)
+      if (!commitDirectory(tab, path, cached.data)) return
+      tab.loading = false
+      void refreshDirectory(path)
+      return
     }
+    tab.loading = true
+    tab.error = null
+    try {
+      // Initial navigation shares the same ordered snapshots as background
+      // updates, so its late response cannot overwrite a newer mutation.
+      await refreshDirectory(path)
+    } finally {
+      if (tabs.value.includes(tab) && tab.path === path) tab.loading = false
+    }
+  }
+
+  async function recoverTrashTab(tab: FileTab, path: string): Promise<void> {
+    if (!tabs.value.includes(tab) || tab.path !== path) return
+    tab.path = TRASH_ROOT_LOCATION
+    tab.selectedFiles = []
+    tab.lastSelectedIndex = -1
+    tab.history = tab.history.slice(0, tab.historyIndex + 1)
+    tab.history.push(TRASH_ROOT_LOCATION)
+    tab.historyIndex = tab.history.length - 1
+    await loadFilesForTab(tab, TRASH_ROOT_LOCATION)
   }
 
   // Re-subscribe directories and reload files after WS (re)connection
@@ -1591,6 +1636,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     currentPath,
     files,
     loading,
+    refreshing,
     error,
     selectedFiles,
     selectedFile,
@@ -1625,6 +1671,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     goForward,
     goUp,
     refresh,
+    refreshDirectory,
     invalidateCache,
     ensureThumbnails,
     selectFile,

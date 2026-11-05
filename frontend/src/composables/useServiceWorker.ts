@@ -15,7 +15,7 @@ export function useServiceWorker(): {
   sendKey: (hex: string) => void
   clearKey: () => void
   canDecrypt: () => boolean
-  registerDecrypt: (metadata: DecryptMetadata) => string | null
+  registerDecrypt: (metadata: DecryptMetadata, existingURL?: string) => string | null
   unregisterDecrypt: (url: string) => void
   flush: () => Promise<void>
   getBootId: () => Promise<string | null>
@@ -71,12 +71,14 @@ export function useServiceWorker(): {
    * Register a file for decryption through the SW.
    * @param metadata - { url, size, chunkSize, contentType, filename, wrappedDek, download? }
    * @returns The decrypt URL: /__decrypt__/{id}, or null if SW decryption is unavailable.
+   * An existingURL only refreshes signing for the same object and key.
    */
-  function registerDecrypt(metadata: DecryptMetadata): string | null {
+  function registerDecrypt(metadata: DecryptMetadata, existingURL?: string): string | null {
     if (!canDecrypt()) return null
-    const id: string = crypto.randomUUID()
+    const existingId = existingURL?.startsWith('/__decrypt__/') ? existingURL.slice('/__decrypt__/'.length) : ''
+    const id = existingId || crypto.randomUUID()
     navigator.serviceWorker.controller!.postMessage({
-      type: 'register', id, metadata,
+      type: existingId ? 'refresh-source' : 'register', id, metadata,
     })
     return '/__decrypt__/' + id
   }

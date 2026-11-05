@@ -532,6 +532,7 @@ export interface DuplicateDialogOptions {
   title: string
   incomingName: string
   incomingSize: number
+  incomingIsDir?: boolean
   existingName: string
   existingSize: number
   existingIsDir: boolean

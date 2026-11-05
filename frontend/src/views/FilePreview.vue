@@ -726,7 +726,7 @@ async function saveEdit(): Promise<void> {
     originalContent.value = textContent.value
     dirty.value = false
     editing.value = false
-    fs.invalidateCache()
+    void fs.refresh()
     message.success(t('preview.saved'))
   } catch (reason: any) {
     console.error('Saving file failed:', reason)

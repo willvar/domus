@@ -375,8 +375,7 @@ export const useUploadStore = defineStore('upload', () => {
       }, 2000)
 
       const fs = useFileSystemStore()
-      fs.invalidateCache()
-      fs.refresh()
+      void fs.refreshDirectory(targetPath)
 
     } catch (e: unknown) {
       if (upload.status !== 'cancelled' && !signal.aborted) {
