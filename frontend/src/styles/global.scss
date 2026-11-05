@@ -66,6 +66,24 @@ body {
   border: 1px solid var(--domus-line);
 }
 
+// Let outside clicks reach the native mask beneath the full-screen layout layer.
+.n-modal-body-wrapper {
+  pointer-events: none;
+}
+
+.n-modal-body-wrapper .n-modal {
+  pointer-events: auto;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  // The native mask transition is important, so match its active classes.
+  .n-modal,
+  .n-modal-container .n-modal-mask.fade-in-transition-enter-active,
+  .n-modal-container .n-modal-mask.fade-in-transition-leave-active {
+    transition-duration: .01ms !important;
+  }
+}
+
 html[data-theme='dark'] .preview-shell {
   --ink: var(--domus-ink);
   --muted: var(--domus-muted);

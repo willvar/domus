@@ -20,6 +20,7 @@
 - [文件与上传 `/file`](./file.md)
 - [回收站 `/trash`](./file.md#回收站-trash)
 - [任务 `/task`](./jobs-tasks.md)
+- [OAuth 与只读 WebDAV `/oauth` + `/dav`](./oauth-webdav.md)
 
 ### WebSocket
 - [WebSocket 协议](./websocket.md)
@@ -30,6 +31,7 @@
 - HTTP 基础路径：无统一 `/api` 前缀，以下路径均直接挂在服务根路径下。
 - 鉴权方式：登录成功后服务端设置会话 Cookie `domus_session`；升级期间仍接受旧的 `zephyr_session`，并在成功鉴权后自动迁移。
 - 需要登录的接口：依赖该 Cookie。
+- 例外：第三方只读 `/dav/` 只接受 OAuth Bearer 访问令牌，不能用 Cookie，详见协议文档。
 - Root 管理接口：除登录外，还要求当前用户角色为 `root`。
 
 ### 常见响应

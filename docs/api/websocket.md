@@ -9,7 +9,7 @@
   `zephyr_session` 并自动迁移。
 - 普通 HTTP 请求和未登录升级会被拒绝。
 - 浏览器 Origin 必须同主机或精确匹配 `server.cors_origins`；无 Origin 的非浏览器客户端
-  仍须提供会话 Cookie。
+  仍须提供会话 Cookie。OAuth 文件读取令牌不能连接 WebSocket。
 
 客户端请求、响应和服务端事件分别使用：
 

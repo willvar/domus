@@ -77,6 +77,7 @@ import {
 import AccountMenu from '../components/AccountMenu.vue'
 import ActivityCenter from '../components/ActivityCenter.vue'
 import AdminView from './AdminView.vue'
+import ApplicationsView from './ApplicationsView.vue'
 import FileHistory from '../components/FileHistory.vue'
 
 const route = useRoute()
@@ -101,6 +102,7 @@ const showAccount = ref(false)
 const showActivity = ref(false)
 const showInspector = ref(false)
 const showAdmin = ref(false)
+const showApplications = ref(false)
 const showThumbnails = ref(localStorage.getItem('domus_show_thumbnails') === '1')
 const historyLimit = ref(auth.user?.history_limit || 1)
 const detailsFile = ref<FileListItem | null>(null)
@@ -619,6 +621,11 @@ async function setHistoryLimit(value: number): Promise<void> {
   }
 }
 
+function openApplications(): void {
+  closeFloatingPanels()
+  showApplications.value = true
+}
+
 function openAdmin(): void {
   showAccount.value = false
   closeFloatingPanels()
@@ -881,6 +888,7 @@ async function logout(): Promise<void> {
 
 function handleKeyboard(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null
+  if (showApplications.value || target?.closest('.applications-modal')) return
   const typing = target?.matches('input, textarea, [contenteditable="true"]')
   const selection = window.getSelection()
   const hasSelectedText = Boolean(
@@ -1005,6 +1013,7 @@ function phaseLabel(phase?: string): string {
           @update:show-thumbnails="setThumbnailDisplay"
           @update:history-limit="setHistoryLimit"
           @admin="openAdmin"
+          @applications="openApplications"
           @logout="logout"
         />
       </NPopover>
@@ -1085,6 +1094,7 @@ function phaseLabel(phase?: string): string {
               @update:show-thumbnails="setThumbnailDisplay"
               @update:history-limit="setHistoryLimit"
               @admin="openAdmin"
+              @applications="openApplications"
               @logout="logout"
               @navigate="goToPlace"
             />
@@ -1492,6 +1502,21 @@ function phaseLabel(phase?: string): string {
         </template>
       </NDrawerContent>
     </NDrawer>
+
+    <!-- NModal lazily mounts these views and unmounts them after the leave transition. -->
+    <NModal
+      v-model:show="showApplications"
+      class="applications-modal"
+      content-class="applications-modal-body"
+      :content-style="{ minHeight: '0', overflowY: 'auto' }"
+      preset="card"
+      :title="t('oauth.applications')"
+      :aria-label="t('oauth.applications')"
+      :bordered="false"
+      :closable="true"
+    >
+      <ApplicationsView />
+    </NModal>
 
     <NModal
       v-model:show="showAdmin"
@@ -1920,6 +1945,11 @@ button, input, select { font: inherit; }
 
 @media (max-width: 420px) {
   .file-card__preview { aspect-ratio: 1.08; }
+}
+
+:global(.applications-modal) {
+  width: min(840px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
 }
 
 :global(.admin-modal) {

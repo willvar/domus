@@ -9,6 +9,8 @@ browser <-> Domus HTTP/WS <-> PostgreSQL / DOFS metadata / OSS
 
 不需要 Docker、Workspace Manager、preview worker、FUSE 或 `user_allow_other`。Web
 进程内直接使用 DOFS backend；文件正文由浏览器加密后直传 OSS，缩略图也由浏览器生成。
+第三方集成可启用同一监听器上的 [OAuth 只读 WebDAV](api/oauth-webdav.md)，无需新增服务；
+该入口的流量是服务端授权解密的原文，必须使用 HTTPS、正确的静态同意页和代理边界。
 
 ## 必需依赖
 

@@ -78,6 +78,7 @@ type OSSConfig struct {
 
 type ServerConfig struct {
 	Port                      int    `yaml:"port"`
+	PublicURL                 string `yaml:"public_url"` // Canonical browser/API origin; enables OAuth and read-only DAV.
 	PidFile                   string `yaml:"pid_file"`
 	SessionSecret             string `yaml:"session_secret"`
 	EncryptionSecret          string `yaml:"encryption_secret"`
@@ -160,6 +161,14 @@ func (c *Config) Validate() error {
 	}
 	if c.Server.Port <= 0 {
 		return fmt.Errorf("config: server.port must be greater than 0")
+	}
+	if c.Server.PublicURL != "" {
+		uri, err := url.Parse(c.Server.PublicURL)
+		if err != nil || uri.Host == "" || uri.User != nil || uri.RawPath != "" || (uri.Path != "" && uri.Path != "/") || uri.ForceQuery || uri.RawQuery != "" || strings.Contains(c.Server.PublicURL, "#") ||
+			(uri.Scheme != "https" && (uri.Scheme != "http" || !isLoopbackHost(uri.Hostname()))) {
+			return fmt.Errorf("config: server.public_url must be an HTTPS origin (HTTP is allowed only on loopback)")
+		}
+		c.Server.PublicURL = strings.TrimSuffix(c.Server.PublicURL, "/")
 	}
 	if c.Database.Host == "" {
 		return fmt.Errorf("config: database.host is required")
@@ -365,6 +374,14 @@ func EndpointSecure(endpoint string) bool {
 		return false
 	}
 	return true
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // EndpointURL builds the transport URL for a configured endpoint host.

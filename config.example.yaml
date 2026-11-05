@@ -21,6 +21,8 @@ oss:
 
 server:
   port: 8080
+  # Canonical browser/API origin; enables OAuth + read-only WebDAV. Empty keeps them disabled.
+  public_url: ""  # e.g. https://files.example.com (no path)
   pid_file: "domus.pid"
   cors_origins: ""  # optional, comma-separated origins for CORS when frontend and backend use different origins
   # example: "http://localhost:5173,https://app.example.com"

@@ -26,6 +26,7 @@ import (
 	"domus/internal/httpx"
 	"domus/internal/middleware"
 	"domus/internal/model"
+	"domus/internal/oauth"
 	"domus/internal/service"
 	"domus/internal/store"
 	"domus/internal/ws"
@@ -595,6 +596,13 @@ func runServer(cfg *config.Config, configPath string) {
 	})
 
 	// Clean expired sessions and challenge stores periodically
+	var oauthServer *oauth.Server
+	if cfg.Server.PublicURL != "" {
+		oauthServer, err = oauth.NewServer(db, cfg.Server.PublicURL, cfg.Server.SessionSecret)
+		if err != nil {
+			logger.Fatal("Failed to initialize OAuth: %v", err)
+		}
+	}
 	challenges := auth.NewChallengeManager()
 	go func() {
 		ticker := time.NewTicker(1 * time.Minute)
@@ -602,6 +610,13 @@ func runServer(cfg *config.Config, configPath string) {
 		for range ticker.C {
 			repos.Sessions.CleanExpired()
 			challenges.CleanAllExpiredEntries()
+			if oauthServer != nil {
+				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				if err := oauthServer.Store.CleanExpired(ctx); err != nil {
+					logger.Error("OAuth cleanup failed: %v", err)
+				}
+				cancel()
+			}
 		}
 	}()
 
@@ -632,6 +647,7 @@ func runServer(cfg *config.Config, configPath string) {
 
 	// Initialize handler
 	h := &handler.Handler{
+		OAuth:      oauthServer,
 		Config:     cfg,
 		Repos:      repos,
 		Store:      fileStore,

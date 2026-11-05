@@ -33,6 +33,23 @@ func validConfig() *Config {
 	}
 }
 
+func TestPublicURLIsAnOptionalSecureOrigin(t *testing.T) {
+	for _, value := range []string{"", "https://files.example", "https://files.example/", "http://localhost:8089", "http://127.0.0.1:8089", "http://[::1]:8089"} {
+		cfg := validConfig()
+		cfg.Server.PublicURL = value
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("valid public_url %q: %v", value, err)
+		}
+	}
+	for _, value := range []string{"http://files.example", "http://192.0.2.1", "https://user:pass@files.example", "https://files.example/api", "https://files.example?x=1", "https://files.example?", "https://files.example/#", "https://files.example/%2f", "//files.example", "files.example"} {
+		cfg := validConfig()
+		cfg.Server.PublicURL = value
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("invalid public_url accepted: %q", value)
+		}
+	}
+}
+
 func TestConfigLoadPreservesRootBootstrapPasswordFile(t *testing.T) {
 	cfg := &Config{
 		Server: ServerConfig{RootBootstrapPasswordFile: "/run/secrets/domus-root-password"},

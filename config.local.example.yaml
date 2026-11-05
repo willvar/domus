@@ -31,6 +31,8 @@ oss:
 
 server:
   port: 8088
+  # Optional: enable OAuth/DAV through the frontend's existing Vite proxy.
+  public_url: ""  # set to http://127.0.0.1:8089 when testing OAuth locally
   pid_file: "domus.pid"
   cors_origins: "http://localhost:8089,http://127.0.0.1:8089"  # optional, comma-separated origins for CORS when frontend and backend use different origins
   # example: "http://localhost:5173,https://app.example.com"

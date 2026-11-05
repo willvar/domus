@@ -152,7 +152,7 @@ make test-dofs
 上传资源约束、暂停检查点、大分片磁盘暂存与压力测试见 [浏览器上传流水线](docs/upload-pipeline.md)。
 原画／分段播放的读取和缓冲约束见 [播放资源边界](docs/playback-resources.md)。
 
-文件正文不经过 Domus HTTP：
+浏览器文件正文不经过 Domus HTTP：
 
 ```text
 File/Blob
@@ -165,6 +165,13 @@ File/Blob
 浏览器读取短期 OSS URL 中的密文并在本地解密。Domus 托管包装密钥，因此这是应用层
 加密而非零知识加密；应用服务器具备授权解密能力，但正常上传/下载数据路径不代理
 正文。
+
+第三方只读入口见 [OAuth 与 WebDAV](docs/api/oauth-webdav.md)：Fosite 负责标准授权码与
+刷新/撤销协议，`x/net/webdav` 通过只读 DOFS filesystem 返回原始明文。它与产品 API 共用
+同一个 HTTP 服务器；仅此 Bearer 授权入口代理明文，不能改变浏览器密文直传边界。
+OAuth SQL 测试使用真实 PostgreSQL 的独立随机 schema，覆盖并发消费、轮换和重放撤销。
+Fosite 当前要求 Ristretto 的泛型 `v1.0.0`；该版本因上游改用 `/v2` 路径而被撤回，
+`v0.2.0` 不兼容，因此沿用协议库的要求，不另维护缓存或依赖分叉。
 
 图片、视频和 PDF 的缩略图在上传浏览器中生成。缩略图有独立 DEK、独立 DOFS inode
 和独立密文对象，源文件元数据以 `source inode + generation -> thumbnail inode` 关联：

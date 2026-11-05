@@ -34,6 +34,8 @@ export default defineConfig(({ mode }) => {
         '^/(auth|user|audit|trash|task)(/|$)': apiTarget,
         '^/file($|/)': apiTarget,
         '^/admin/oss': apiTarget,
+        '^/(oauth|dav)(/|$)': apiTarget,
+        '^/\\.well-known/oauth-authorization-server$': apiTarget,
         '^/ws($|/)': { target: apiTarget, ws: true },
       },
     },

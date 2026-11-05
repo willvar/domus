@@ -6,7 +6,9 @@ const routes: RouteRecordRaw[] = [
   { path: '/', redirect: '/files' },
   { path: '/files', component: () => import('./views/FileShell.vue') },
   { path: '/preview', component: () => import('./views/FilePreview.vue') },
+  { path: '/authorize', component: () => import('./views/AuthorizeView.vue') },
   // Old bookmarks remain harmless, but there is only one product shell now.
+  { path: '/applications', redirect: '/files' },
   { path: '/desktop', redirect: '/files' },
   { path: '/m/:pathMatch(.*)*', redirect: '/files' },
   { path: '/admin', component: () => import('./views/AdminView.vue'), meta: { requiresRoot: true } },

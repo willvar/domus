@@ -13,11 +13,13 @@ import (
 
 	"domus/config"
 	"domus/internal/auth"
+	"domus/internal/dav"
 	"domus/internal/dofsbridge"
 	"domus/internal/fileview"
 	"domus/internal/httpx"
 	"domus/internal/middleware"
 	"domus/internal/model"
+	"domus/internal/oauth"
 	"domus/internal/service"
 	"domus/internal/store"
 	"domus/internal/ws"
@@ -25,6 +27,7 @@ import (
 
 // Handler holds all dependencies for HTTP handlers.
 type Handler struct {
+	OAuth      *oauth.Server
 	Config     *config.Config
 	Repos      *model.Repos
 	Store      store.ControlStore
@@ -120,6 +123,15 @@ func (h *Handler) RegisterRoutes(app *http.ServeMux) {
 	register("DELETE", "/task/done", h.handleClearDoneTasks, true, false)
 	register("DELETE", "/task/{id}", h.handleCancelTask, true, false)
 	register("GET", "/ws", h.handleWebSocket, true, false)
+	app.Handle("/dav", httpx.Handler(h.handleDAV))
+	app.Handle("/dav/", httpx.Handler(h.handleDAV))
+	if h.OAuth != nil {
+		h.OAuth.RegisterRoutes(app, h.Mid)
+	} else {
+		app.Handle("/oauth/", httpx.Handler(func(w http.ResponseWriter, r *http.Request) error {
+			return httpx.NewError(http.StatusServiceUnavailable, "oauth_not_configured")
+		}))
+	}
 	for _, prefix := range []string{"/file/", "/trash/"} {
 		app.Handle(prefix, h.Mid.AuthRequired(rejectFileContentPayload(httpx.Handler(func(w http.ResponseWriter, r *http.Request) error {
 			return httpx.JSON(w, http.StatusNotFound, map[string]any{"error": "not_found"})
@@ -128,6 +140,19 @@ func (h *Handler) RegisterRoutes(app *http.ServeMux) {
 
 	// Register realtime/session WS actions only.
 	h.registerWSActions()
+}
+
+func (h *Handler) handleDAV(w http.ResponseWriter, r *http.Request) error {
+	if h.OAuth == nil {
+		return httpx.NewError(http.StatusServiceUnavailable, "oauth_not_configured")
+	}
+	userID, err := h.OAuth.Authenticate(r)
+	if err != nil {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="domus", error="invalid_token"`)
+		return httpx.NewError(http.StatusUnauthorized, "invalid_token")
+	}
+	dav.ServeHTTP(w, r, h.DOFS, userID)
+	return nil
 }
 
 func (h *Handler) handleWebSocket(w http.ResponseWriter, r *http.Request) error {

@@ -7,7 +7,7 @@ import { purgeClientState } from '../utils/cachePurge'
 import { showConfirm } from '../composables/useNativeDialog'
 import { useUploadStore } from '../stores/upload'
 import { useAppMessage } from '../ui/feedback'
-import { IconAccountCircle, IconArrowLeft, IconBroom, IconContrastCircle, IconDeleteOutline, IconFolderHome, IconProgressClock, IconViewGridOutline } from '../barrels/icons'
+import { IconAccountCircle, IconArrowLeft, IconBroom, IconContrastCircle, IconDeleteOutline, IconFolderHome, IconLinkVariant, IconProgressClock, IconViewGridOutline } from '../barrels/icons'
 
 const props = defineProps<{
   avatarUrl?: string
@@ -26,6 +26,7 @@ const emit = defineEmits<{
   'update:showThumbnails': [value: boolean]
   'update:historyLimit': [value: number]
   admin: []
+  applications: []
   logout: []
   navigate: [place: 'files' | 'trash']
 }>()
@@ -149,6 +150,10 @@ async function clearCacheAndReload(): Promise<void> {
     <NDivider />
 
     <div class="account-actions">
+      <NButton quaternary block size="small" @click="emit('applications')">
+        <template #icon><IconLinkVariant class="connected-applications-icon" /></template>
+        {{ t('oauth.applications') }}
+      </NButton>
       <NButton v-if="props.root" quaternary block size="small" @click="emit('admin')">
         <template #icon><IconAccountCircle /></template>
         {{ t('titlebar.admin_panel') }}
