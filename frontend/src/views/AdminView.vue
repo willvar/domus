@@ -4,29 +4,30 @@ import {
   NAlert,
   NAvatar,
   NButton,
-  NCard,
   NDataTable,
+  NDropdown,
   NForm,
   NFormItem,
   NInput,
   NModal,
   NSelect,
-  NStatistic,
   NTag,
 } from 'naive-ui'
+import type { DataTableColumns, DropdownDividerOption, DropdownOption } from 'naive-ui'
 import { useRouter } from 'vue-router'
 import { useI18n } from '../composables/useI18n'
 import { useAppMessage } from '../ui/feedback'
 import { showPrompt, showConfirm } from '../composables/useNativeDialog'
 import api from '../composables/useApi'
 import dayjs from 'dayjs'
-import { IconAccount, IconArrowLeft, IconCheck, IconEmailOutline, IconPlus } from '../barrels/icons'
+import { IconArrowLeft, IconClose, IconDotsHorizontal, IconPlus } from '../barrels/icons'
 
 const router = useRouter()
 const { t, te } = useI18n()
 const message = useAppMessage()
 const props = withDefaults(defineProps<{ embedded?: boolean }>(), { embedded: false })
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; 'menu-toggle': [open: boolean] }>()
+const openUserMenus = new Set<string>()
 
 const users = ref<any[]>([])
 const loading = ref(false)
@@ -52,35 +53,64 @@ function closeAdmin(): void {
   void router.push('/')
 }
 
-const columns = computed(() => [
+function updateUserMenu(show: boolean, id: string): void {
+  if (show) openUserMenus.add(id)
+  else openUserMenus.delete(id)
+  emit('menu-toggle', openUserMenus.size > 0)
+}
+
+function userActions(row: any): Array<DropdownOption | DropdownDividerOption> {
+  const options: Array<DropdownOption | DropdownDividerOption> = [
+    { label: t('admin.reset_pwd'), key: 'password' },
+  ]
+  if (row.totp_enabled) options.push({ label: t('admin.reset_otp'), key: 'otp' })
+  if (row.email) options.push({ label: t('admin.reset_email'), key: 'email' })
+  options.push(
+    { type: 'divider', key: 'danger' },
+    { label: t('admin.delete'), key: 'delete', props: { style: { color: 'var(--domus-danger)' } } },
+  )
+  return options
+}
+
+function handleUserAction(key: string | number, row: any): void {
+  switch (key) {
+    case 'password': void resetPassword(row); break
+    case 'otp': void resetOTP(row); break
+    case 'email': void resetEmail(row); break
+    case 'delete': void deleteUser(row); break
+  }
+}
+
+const columns = computed<DataTableColumns<any>>(() => [
   {
     title: t('admin.username'),
     key: 'username',
-    minWidth: 180,
+    width: 220,
     render: (row: any) => h('div', { class: 'user-cell' }, [
-      h(NAvatar, { round: true, size: 34 }, () => String(row.username || '?').slice(0, 1).toUpperCase()),
+      h(NAvatar, { round: true, size: 30, class: 'user-avatar' }, () => String(row.username || '?').slice(0, 1).toUpperCase()),
       h('div', {}, [
-        h('strong', {}, row.username),
-        h('small', {}, `#${row.id}`),
+        h('strong', { title: row.username }, row.username),
+        h('small', { title: String(row.id) }, `#${row.id}`),
       ]),
     ]),
   },
   {
     title: t('admin.role'),
     key: 'role',
-    width: 100,
+    width: 80,
     render: (row: any) => h(NTag, { size: 'small', round: true, type: row.role === 'root' ? 'info' : 'default' }, () => row.role),
   },
   {
     title: t('admin.email'),
     key: 'email',
-    width: 160,
+    width: 220,
+    ellipsis: { tooltip: true },
     render: (row: any) => row.email || '—',
   },
   {
     title: t('admin.otp'),
     key: 'totp_enabled',
-    width: 80,
+    width: 96,
     render: (row: any) => h(NTag, {
       size: 'small',
       round: true,
@@ -91,26 +121,31 @@ const columns = computed(() => [
   {
     title: t('admin.created'),
     key: 'created_at',
-    width: 150,
+    width: 160,
     render: (row: any) => row.created_at ? dayjs(row.created_at).format('YYYY-MM-DD HH:mm') : '---',
   },
   {
     title: t('admin.actions'),
     key: 'actions',
-    width: 330,
+    width: 140,
+    fixed: 'right',
     render(row: any) {
-      const buttons = [
+      return h('div', { class: 'action-buttons' }, [
         h(NButton, { size: 'small', quaternary: true, onClick: () => openEdit(row) }, () => t('admin.edit')),
-        h(NButton, { size: 'small', quaternary: true, onClick: () => resetPassword(row) }, () => t('admin.reset_pwd')),
-        h(NButton, { size: 'small', quaternary: true, type: 'error', onClick: () => deleteUser(row) }, () => t('admin.delete')),
-      ]
-      if (row.totp_enabled) {
-        buttons.push(h(NButton, { size: 'small', quaternary: true, type: 'warning', onClick: () => resetOTP(row) }, () => t('admin.reset_otp')))
-      }
-      if (row.email) {
-        buttons.push(h(NButton, { size: 'small', quaternary: true, type: 'warning', onClick: () => resetEmail(row) }, () => t('admin.reset_email')))
-      }
-      return h('div', { class: 'action-buttons' }, buttons)
+        h(NDropdown, {
+          trigger: 'click',
+          options: userActions(row),
+          onUpdateShow: (show: boolean) => updateUserMenu(show, row.id),
+          menuProps: () => ({ class: 'user-actions-menu', role: 'menu' }),
+          nodeProps: () => ({ role: 'menuitem' }),
+          onSelect: (key: string | number) => handleUserAction(key, row),
+        }, {
+          default: () => h(NButton, {
+            size: 'small', quaternary: true, circle: true,
+            'aria-label': t('admin.more_actions', { name: row.username }),
+          }, { icon: () => h(IconDotsHorizontal) }),
+        }),
+      ])
     },
   },
 ])
@@ -235,67 +270,47 @@ onMounted(() => {
 <template>
   <div class="admin-view" :class="{ 'admin-view--embedded': props.embedded }">
     <div class="admin-panel">
-      <header class="admin-topbar">
-        <div class="admin-brand"><span>D</span><strong>DOMUS</strong></div>
-        <NButton quaternary @click="closeAdmin">
+      <header class="admin-toolbar">
+        <NButton v-if="!props.embedded" class="admin-back" quaternary circle :aria-label="t('admin.back_to_files')" @click="closeAdmin">
           <template #icon><IconArrowLeft /></template>
-          {{ t('admin.back_to_files') }}
         </NButton>
-      </header>
-
-      <main class="admin-content">
-        <div class="admin-header">
-          <div>
-            <span>{{ t('titlebar.admin_panel') }}</span>
-            <h1>{{ t('admin.title') }}</h1>
-            <p>{{ t('admin.subtitle') }}</p>
-          </div>
+        <div class="admin-heading">
+          <h1>{{ t('admin.title') }}</h1>
+          <p>{{ t('admin.subtitle') }}</p>
+        </div>
+        <div class="admin-toolbar__actions">
           <NButton type="primary" @click="showCreate = true">
             <template #icon><IconPlus /></template>
             {{ t('admin.add_user') }}
           </NButton>
+          <NButton v-if="props.embedded" quaternary circle :aria-label="t('admin.close')" @click="closeAdmin">
+            <template #icon><IconClose /></template>
+          </NButton>
         </div>
+      </header>
 
-        <NAlert v-if="!corsOk" class="cors-warning" type="error" :title="t('admin.cors_warning_title')">
-          {{ t('admin.cors_warning_body') }}
-        </NAlert>
+      <NAlert v-if="!corsOk" class="cors-warning" type="error" :title="t('admin.cors_warning_title')">
+        {{ t('admin.cors_warning_body') }}
+      </NAlert>
 
-        <section class="admin-stats">
-          <NCard :bordered="false">
-            <NStatistic :label="t('admin.total_users')" :value="users.length">
-              <template #prefix><IconAccount /></template>
-            </NStatistic>
-          </NCard>
-          <NCard :bordered="false">
-            <NStatistic :label="t('admin.otp_protected')" :value="otpProtectedCount">
-              <template #prefix><IconCheck /></template>
-            </NStatistic>
-          </NCard>
-          <NCard :bordered="false">
-            <NStatistic :label="t('admin.email_linked')" :value="emailLinkedCount">
-              <template #prefix><IconEmailOutline /></template>
-            </NStatistic>
-          </NCard>
-        </section>
+      <dl class="admin-stats">
+        <div><dt>{{ t('admin.total_users') }}</dt><dd>{{ users.length }}</dd></div>
+        <div><dt>{{ t('admin.otp_protected') }}</dt><dd>{{ otpProtectedCount }}</dd></div>
+        <div><dt>{{ t('admin.email_linked') }}</dt><dd>{{ emailLinkedCount }}</dd></div>
+      </dl>
 
-        <NCard class="users-card" :bordered="false">
-          <template #header>
-            <div class="users-card__header">
-              <div><strong>{{ t('admin.accounts') }}</strong><span>{{ t('admin.accounts_hint') }}</span></div>
-              <span>{{ users.length }}</span>
-            </div>
-          </template>
-          <NDataTable
-            :columns="columns"
-            :data="users"
-            :loading="loading"
-            :row-key="(row) => row.id"
-            size="small"
-            :bordered="false"
-            :scroll-x="1050"
-          />
-        </NCard>
-      </main>
+      <section class="users-table" :aria-label="t('admin.accounts')">
+        <NDataTable
+          :columns="columns"
+          :data="users"
+          :loading="loading"
+          :row-key="(row) => row.id"
+          size="small"
+          :bordered="false"
+          :scroll-x="916"
+          :max-height="props.embedded ? 'min(560px, calc(100dvh - 280px))' : '70dvh'"
+        />
+      </section>
     </div>
 
     <!-- Create User Dialog -->
@@ -304,6 +319,8 @@ onMounted(() => {
       preset="card"
       class="admin-dialog"
       :title="t('admin.create_user')"
+      :aria-label="t('admin.create_user')"
+      :content-style="{ minHeight: '0', overflowY: 'auto' }"
       :bordered="false"
     >
       <NForm @submit.prevent="createUser">
@@ -326,6 +343,8 @@ onMounted(() => {
       preset="card"
       class="admin-dialog"
       :title="t('admin.edit_user')"
+      :aria-label="t('admin.edit_user')"
+      :content-style="{ minHeight: '0', overflowY: 'auto' }"
       :bordered="false"
     >
       <NForm v-if="editingUser" @submit.prevent="saveEdit">
@@ -344,102 +363,73 @@ onMounted(() => {
 <style lang="scss" scoped>
 .admin-view {
   min-height: 100dvh;
-  overflow: auto;
-}
-
-.admin-panel {
-  min-height: 100dvh;
-  overflow: auto;
+  padding: 24px;
   color: var(--domus-ink);
   background: var(--domus-canvas);
 }
 
-.admin-view--embedded,
-.admin-view--embedded .admin-panel {
-  min-height: 0;
-  height: 100%;
-}
-
-.admin-topbar {
-  display: flex;
-  height: 72px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 max(28px, calc((100vw - 1180px) / 2));
-  border-bottom: 1px solid var(--domus-line);
-  background: var(--domus-surface);
-  backdrop-filter: blur(18px);
-}
-
-.admin-brand { display: flex; align-items: center; gap: 11px; font-size: 14px; letter-spacing: .14em; }
-.admin-brand span { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 11px; color: #fff; background: linear-gradient(145deg, #6574f0, #4352d0); box-shadow: 0 8px 18px rgb(79 95 231 / 22%); font-size: 15px; font-weight: 800; letter-spacing: 0; }
-
-.admin-content {
-  width: min(1180px, calc(100% - 48px));
+.admin-panel {
+  max-width: 1180px;
+  min-width: 0;
   margin: 0 auto;
-  padding: 48px 0 72px;
 }
 
-.admin-header {
+.admin-view--embedded {
+  min-height: 0;
+  min-width: 0;
+  padding: 20px;
+  background: var(--domus-surface);
+}
+
+.admin-view--embedded .admin-panel { margin: 0; }
+.admin-view--embedded .admin-toolbar { position: sticky; top: 0; z-index: 5; background: var(--domus-surface); }
+
+.admin-toolbar {
   display: flex;
-  align-items: end;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 28px;
-
-  h1 {
-    margin: 6px 0 0;
-    font-size: 34px;
-    font-weight: 730;
-    letter-spacing: -.04em;
-  }
-
-  > div > span { color: var(--domus-primary); font-size: 11px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
-  p { margin: 9px 0 0; color: var(--domus-muted); font-size: 14px; }
+  align-items: center;
+  flex-shrink: 0;
+  gap: 16px;
+  margin-bottom: 16px;
 }
+
+.admin-heading { min-width: 0; flex: 1; }
+.admin-heading h1 { margin: 0; font-size: 22px; font-weight: 730; }
+.admin-heading p { margin: 6px 0 0; color: var(--domus-muted); font-size: 12px; }
+.admin-toolbar__actions { display: flex; align-items: center; flex-shrink: 0; gap: 8px; }
 
 :deep(.action-buttons) {
   display: flex;
-  gap: 2px;
-  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
 }
 
-:deep(.user-cell) { display: flex; align-items: center; gap: 11px; }
+:deep(.user-cell) { display: flex; min-width: 0; align-items: center; gap: 10px; }
+:deep(.user-avatar) { flex-shrink: 0; }
+:deep(.user-cell > div) { min-width: 0; flex: 1; }
 :deep(.user-cell strong),
-:deep(.user-cell small) { display: block; }
+:deep(.user-cell small) { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 :deep(.user-cell strong) { font-size: 13px; font-weight: 680; }
 :deep(.user-cell small) { margin-top: 2px; color: var(--domus-muted); font-size: 10px; }
 
-.cors-warning {
-  margin-bottom: 22px;
-}
+.cors-warning { flex-shrink: 0; margin-bottom: 16px; }
 
-.admin-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 18px; }
-.admin-stats :deep(.n-card) { border: 1px solid var(--domus-line); box-shadow: 0 8px 26px rgb(26 36 58 / 4%); }
-.admin-stats :deep(.n-statistic-value) { display: flex; align-items: center; gap: 10px; color: var(--domus-ink); font-size: 28px; font-weight: 720; }
-.admin-stats :deep(.n-statistic-value__prefix) { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 11px; color: var(--domus-primary); background: var(--domus-primary-soft); }
-.admin-stats :deep(.n-statistic-value__prefix svg) { width: 19px; height: 19px; }
-
-.users-card { border: 1px solid var(--domus-line); box-shadow: 0 12px 36px rgb(26 36 58 / 5%); }
-.users-card :deep(.n-card__content) { padding: 0; overflow: hidden; border-radius: 0 0 18px 18px; }
-.users-card__header { display: flex; align-items: center; justify-content: space-between; }
-.users-card__header strong,
-.users-card__header div span { display: block; }
-.users-card__header strong { font-size: 17px; }
-.users-card__header div span { margin-top: 4px; color: var(--domus-muted); font-size: 12px; font-weight: 400; }
-.users-card__header > span { display: grid; min-width: 32px; height: 26px; place-items: center; border-radius: 999px; color: var(--domus-primary); background: var(--domus-primary-soft); font-size: 12px; font-weight: 700; }
+.admin-stats { display: flex; flex-shrink: 0; flex-wrap: wrap; gap: 10px 24px; margin: 0 0 16px; padding: 10px 14px; border-radius: 10px; background: var(--domus-surface-2); }
+.admin-stats > div { display: flex; align-items: baseline; gap: 8px; }
+.admin-stats dt { color: var(--domus-muted); font-size: 12px; }
+.admin-stats dd { margin: 0; font-size: 16px; font-weight: 700; }
+.users-table { min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--domus-line); border-radius: 12px; }
 
 .admin-dialog {
   width: min(480px, calc(100vw - 32px));
+  max-height: calc(100dvh - 32px);
 }
 
 @media (max-width: 700px) {
-  .admin-topbar { height: 64px; padding: 0 16px; }
-  .admin-brand strong { display: none; }
-  .admin-content { width: min(100% - 30px, 1180px); padding: 30px 0 50px; }
-  .admin-header { align-items: flex-start; flex-direction: column; gap: 18px; }
-  .admin-header h1 { font-size: 29px; }
-  .admin-stats { grid-template-columns: 1fr; gap: 10px; }
-  .admin-stats :deep(.n-card__content) { padding: 17px 20px; }
+  .admin-view { padding: 16px; }
+  .admin-toolbar { flex-wrap: wrap; gap: 12px; }
+  .admin-heading h1 { font-size: 20px; }
+  .admin-toolbar__actions { margin-left: auto; }
+  .admin-stats { gap: 8px 16px; }
 }
 </style>

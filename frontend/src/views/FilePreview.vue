@@ -1360,6 +1360,8 @@ async function onQualitySelect(key: string | number): Promise<void> {
     padding: 0 3px;
     color: var(--ink-2);
     background: transparent;
+    /* Theme colors follow the bar immediately; preserve the other button transitions. */
+    transition-property: background-color, opacity, border-color;
     font-size: 10px;
     font-weight: 700;
     touch-action: manipulation;

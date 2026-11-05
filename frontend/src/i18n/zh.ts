@@ -362,6 +362,8 @@ const zh: MessageMap = {
   "pending.type_emptyTrash": "清空回收站",
   "pending.confirm_discard_all": "确定放弃所有待处理操作吗？",
   "admin.title": "用户管理",
+  "admin.close": "关闭用户管理",
+  "admin.more_actions": "管理 {name}",
   "admin.subtitle": "管理相互隔离的账户及其认证设置。",
   "admin.accounts": "账户",
   "admin.accounts_hint": "每个账户拥有独立的文件空间。",

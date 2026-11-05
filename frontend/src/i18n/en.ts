@@ -364,6 +364,8 @@ const en: MessageMap = {
   "pending.type_emptyTrash": "Empty Trash",
   "pending.confirm_discard_all": "Discard all pending operations?",
   "admin.title": "User Management",
+  "admin.close": "Close user management",
+  "admin.more_actions": "Actions for {name}",
   "admin.subtitle": "Manage isolated accounts and their authentication settings.",
   "admin.accounts": "Accounts",
   "admin.accounts_hint": "Every account has a separate file space.",

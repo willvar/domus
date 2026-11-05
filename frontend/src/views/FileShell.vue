@@ -144,6 +144,7 @@ const showAccount = ref(false)
 const showActivity = ref(false)
 const showInspector = ref(false)
 const showAdmin = ref(false)
+const adminMenuOpen = ref(false)
 const showApplications = ref(false)
 const showThumbnails = ref(localStorage.getItem('domus_show_thumbnails') === '1')
 const historyLimit = ref(auth.user?.history_limit || 1)
@@ -702,6 +703,7 @@ function openApplications(): void {
 }
 
 function openAdmin(): void {
+  adminMenuOpen.value = false
   showAccount.value = false
   closeFloatingPanels()
   if (isMobile.value) {
@@ -962,7 +964,7 @@ async function logout(): Promise<void> {
 
 function handleKeyboard(event: KeyboardEvent): void {
   const target = event.target as HTMLElement | null
-  if (showApplications.value || target?.closest('.applications-modal')) return
+  if (showApplications.value || showAdmin.value || target?.closest('.applications-modal, .admin-modal, .admin-dialog')) return
   const typing = target?.matches('input, textarea, [contenteditable="true"]')
   const selection = window.getSelection()
   const hasSelectedText = Boolean(
@@ -1616,11 +1618,16 @@ function phaseLabel(phase?: string): string {
     <NModal
       v-model:show="showAdmin"
       class="admin-modal"
+      :close-on-esc="!adminMenuOpen"
+      content-class="admin-modal-body"
+      :content-style="{ padding: '0', minHeight: '0', overflowY: 'auto' }"
       preset="card"
+      :aria-label="t('admin.title')"
       :bordered="false"
+      :closable="false"
       :mask-closable="true"
     >
-      <AdminView v-if="showAdmin" embedded @close="showAdmin = false" />
+      <AdminView embedded @close="showAdmin = false" @menu-toggle="adminMenuOpen = $event" />
     </NModal>
 
     <div v-if="draggingFiles" class="drop-overlay">
@@ -2053,14 +2060,8 @@ button, input, select { font: inherit; }
 
 :global(.admin-modal) {
   width: min(1180px, calc(100vw - 48px));
-  height: min(900px, calc(100dvh - 48px));
+  max-height: calc(100dvh - 48px);
   max-width: calc(100vw - 48px);
-  overflow: hidden;
-}
-
-:global(.admin-modal > .n-card__content) {
-  height: 100%;
-  padding: 0;
   overflow: hidden;
 }
 
