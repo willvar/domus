@@ -3,7 +3,9 @@ package fileview
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 
 	"domus/internal/dofsbridge"
 	"domus/internal/model"
+	"domus/internal/notify"
 )
 
 // renditionTestEnv is a minimal DOFS runtime + projection for rendition tests.
@@ -25,6 +28,79 @@ type renditionTestEnv struct {
 	repository *Repo
 	objects    *objectmemory.Store
 	userID     string
+}
+
+func TestRenditionResetPreservesTaskAndThumbnailStateIsGenerationScoped(t *testing.T) {
+	env := newRenditionTestEnv(t)
+	inode, _ := env.publishTestVideo(t, "source.mp4")
+	record, err := env.repository.GetByID(env.userID, inode)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.repository.CreateRendition(env.userID, record, "480p"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.repository.CreateRendition(env.userID, record, "480p"); !errors.Is(err, dofs.ErrConflict) {
+		t.Fatal("duplicate queued rendition overwrote its reservation")
+	}
+	if err := env.repository.SetRenditionTask(env.userID, uint64(inode), "480p", "stable-task"); err != nil {
+		t.Fatal(err)
+	}
+	hints := listenRenditionHints(t)
+	if err := env.repository.ResetRendition(env.userID, uint64(inode), "480p"); err != nil {
+		t.Fatal(err)
+	}
+	expectRenditionHint(t, hints, env.userID, inode)
+	rendition, err := env.repository.GetRendition(env.userID, uint64(inode), "480p")
+	if err != nil || rendition.TaskID != "stable-task" {
+		t.Fatal("reset discarded the task association")
+	}
+	if err := env.repository.SetThumbnailState(*record, "failed", "thumbnail_generation_failed", 3, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.repository.upsertMetadata(env.userID, uint64(inode), record.Generation+1, map[string]any{"content_type": "video/mp4"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.repository.SetThumbnailState(*record, "running", "", 1, nil); err != nil {
+		t.Fatal(err)
+	}
+	var metadata metadataRecord
+	if err := env.database.Where("user_id = ? AND inode = ?", env.userID, inode).First(&metadata).Error; err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Generation != record.Generation+1 || metadata.ThumbnailStatus != "" || metadata.ThumbnailAttempts != 0 {
+		t.Fatal("old attempt state contaminated the new generation")
+	}
+}
+
+func listenRenditionHints(t *testing.T) <-chan notify.Event {
+	t.Helper()
+	directory, err := os.MkdirTemp(os.TempDir(), "rpc-media-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(directory) })
+	socket := filepath.Join(directory, "events.sock")
+	hints := make(chan notify.Event, 8)
+	listener, err := notify.Listen(t.Context(), socket, func(event notify.Event) { hints <- event })
+	if err != nil {
+		t.Fatal(err)
+	}
+	notify.Configure(socket)
+	t.Cleanup(func() { listener.Close(); notify.Configure("") })
+	return hints
+}
+
+func expectRenditionHint(t *testing.T, hints <-chan notify.Event, userID string, inode int64) {
+	t.Helper()
+	select {
+	case event := <-hints:
+		if event.Kind != "rendition" || event.UserID != userID || event.Inode != inode {
+			t.Fatalf("unexpected rendition identity: %#v", event)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("saved rendition reset emitted no change hint")
+	}
 }
 
 func newRenditionTestEnv(t *testing.T) *renditionTestEnv {
@@ -251,9 +327,11 @@ func TestResetRenditionsForTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	hints := listenRenditionHints(t)
 	if err := env.repository.ResetRenditionsForTasks(env.userID, []string{"stale-task"}); err != nil {
 		t.Fatalf("ResetRenditionsForTasks: %v", err)
 	}
+	expectRenditionHint(t, hints, env.userID, sourceInode)
 	reset, err := env.repository.GetRendition(env.userID, uint64(sourceInode), "480p")
 	if err != nil {
 		t.Fatalf("GetRendition after reset: %v", err)

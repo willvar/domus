@@ -69,6 +69,7 @@ dofs:
 worker:
   ffmpeg_path: "ffmpeg"
   ffprobe_path: "ffprobe"
+  pdftoppm_path: "pdftoppm"  # Poppler: server-side PDF first-page thumbnails
   thumb_max_dimension: 480
   # Plaintext scratch space for derived artifacts before publication. Empty
   # means `<dofs.state_root>/worker`; keep it on a private local volume.

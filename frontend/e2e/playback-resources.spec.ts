@@ -5,7 +5,7 @@ import { createServer, type Server } from 'node:http'
 import { mkdir, mkdtemp, open, readFile, readdir, rm } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { chromium, expect, test, type Page, type Browser } from '@playwright/test'
+import { chromium, expect, test, type Page, type Browser, type WebSocketRoute } from '@playwright/test'
 
 if (process.env.DOMUS_E2E_PLAYBACK_MEMORY === '1') test.use({ trace: 'off', video: 'off' })
 
@@ -452,7 +452,7 @@ test(`file-list thumbnails survive playback, return and reload (${scenario})`, a
   const thumbnail = item.locator('img.file-thumbnail')
   const assertThumbnail = async () => {
     await expect(thumbnail).toBeVisible()
-    await expect(thumbnail).toHaveAttribute('src', /^\/__decrypt__\//)
+    await expect(thumbnail).toHaveAttribute('src', /^blob:/)
     await expect.poll(() => thumbnail.evaluate((image: HTMLImageElement) => [image.naturalWidth, image.naturalHeight])).toEqual([320, 180])
     const bytes = await thumbnail.evaluate(async (image: HTMLImageElement) => {
       const response = await fetch(image.src)
@@ -522,16 +522,91 @@ test(`file-list thumbnails survive playback, return and reload (${scenario})`, a
   }
   await page.locator('.back-button').click()
   await expect(page).toHaveURL(/\/files/)
-  if (scenario !== 'normal') {
-    // A retained image can stay decoded while its stopped worker's registry
-    // is recovered. Wait for the new mapping before fetching its bytes.
-    await expect(thumbnail).not.toHaveAttribute('src', initialThumbnailURL)
+  if (scenario !== 'worker-stop-other-directory') {
+    // Completed blobs do not depend on a worker registry and survive cached
+    // preview navigation. A changed directory may mount a fresh image instead.
+    await expect(thumbnail).toHaveAttribute('src', initialThumbnailURL)
   }
   await assertThumbnail()
   await page.reload()
   await assertThumbnail()
 })
 }
+
+test('player exposes queued, probing, real progress, persistent failure, retry and cancellation', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('domus_locale', 'en'))
+  let socket: WebSocketRoute | undefined
+  await page.routeWebSocket('**/ws', connection => {
+    socket = connection
+    connection.onMessage(message => {
+      const request = JSON.parse(String(message))
+      if (request.id) connection.send(JSON.stringify({ id: request.id, ok: true, data: {} }))
+    })
+  })
+  const changed = () => socket!.send(JSON.stringify({ event: 'rendition.changed', data: { path: '/fixture.mp4', inode: 1, generation: 1 } }))
+  await page.route('**/user', route => route.fulfill({ json: { username: 'quality-status-fixture', role: 'user' } }))
+  await page.route('**/task/', route => route.fulfill({ json: [] }))
+  await page.route('**/audit/', route => route.fulfill({ json: {} }))
+  await page.route('**/file/upload/cleanup', route => route.fulfill({ json: {} }))
+  await page.route('**/file/?*', route => route.fulfill({ json: { files: [] } }))
+  await page.route('**/file/access?*', route => route.fulfill({ json: {
+    path: '/fixture.mp4', name: 'fixture.mp4', inode: 1, generation: 1, size: sourceSize,
+    content_type: 'video/mp4', url: `http://127.0.0.1:${port}/large`, dek: key.toString('hex'), chunk_size: CHUNK,
+  } }))
+  let queued = false, jobs = 0, cancellations = 0, unavailable = false
+  let manifestReads = 0
+  let rendition = { profile: '720p', status: 'queued', task_id: '', progress: 0, phase: '', error: '' }
+  await page.route('**/file/renditions?*', route => { manifestReads++; return route.fulfill(unavailable
+    ? { status: 503, json: { error: 'unavailable' } }
+    : { json: { source_height: 720, renditions: queued ? [rendition] : [] } }) })
+  await page.route('**/file/transcode', route => {
+    expect(route.request().postDataJSON().profile).toBe('720p')
+    queued = true
+    rendition = { ...rendition, status: 'queued', task_id: `quality-job-${++jobs}`, progress: 0, phase: '', error: '' }
+    return route.fulfill({ json: { task_id: rendition.task_id, status: 'queued', profile: '720p' } })
+  })
+  await page.route('**/task/quality-job-*', route => {
+    cancellations++
+    rendition = { ...rendition, status: 'cancelled' }
+    return route.fulfill({ json: { ok: true } })
+  })
+  await prepare(page)
+  await page.goto('/preview?path=/fixture.mp4')
+  await expect(page.locator('video.preview-media')).toBeVisible()
+  await page.getByTestId('quality-menu').click()
+  await page.locator('.n-dropdown-menu').getByText('720P', { exact: true }).click()
+  await page.locator('.domus-confirm-dialog').getByRole('button', { name: 'Start transcode', exact: true }).click()
+  const panel = page.getByTestId('transcode-status')
+  await expect(panel).toContainText('Queued')
+  await page.waitForLoadState('networkidle')
+  const queuedReads = manifestReads
+  await page.waitForTimeout(2500)
+  expect(manifestReads, 'queued playback must wait for notifications rather than poll').toBe(queuedReads)
+  rendition = { ...rendition, status: 'running', phase: 'probing' }
+  changed()
+  await expect(panel).toContainText('Analyzing media')
+  rendition = { ...rendition, phase: 'transcoding', progress: 0.37 }
+  changed()
+  await expect(panel).toContainText('37%')
+  unavailable = true
+  changed()
+  await expect(panel).toContainText('Progress updates are unavailable')
+  await expect(panel).toContainText('37%')
+  unavailable = false
+  changed()
+  await expect(panel).not.toContainText('Progress updates are unavailable')
+  rendition = { ...rendition, status: 'failed', phase: 'failed', error: 'transcode_encoding_failed' }
+  changed()
+  await expect(panel).toContainText('Video encoding failed')
+  await panel.getByRole('button', { name: 'Retry', exact: true }).click()
+  await page.locator('.domus-confirm-dialog').getByRole('button', { name: 'Start transcode', exact: true }).click()
+  await expect(panel).toContainText('Queued')
+  expect(jobs).toBe(2)
+  await panel.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await expect(panel).toHaveCount(0)
+  expect(cancellations).toBe(1)
+  await expect(page.getByTestId('quality-menu')).toContainText('Original')
+})
 
 test('natural playback reclamation without inspector network recording', async () => {
   test.skip(process.env.DOMUS_E2E_PLAYBACK_MEMORY !== '1', 'Optional memory diagnostic')

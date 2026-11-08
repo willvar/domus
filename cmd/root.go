@@ -573,14 +573,11 @@ func runServer(cfg *config.Config, configPath string) {
 	audit := model.NewAuditWorker(db)
 	audit.Start()
 
-	// Initialize WebSocket hub (needed for task update callback)
+	// Task updates from independent processes arrive through the local RPC relay.
 	hub := ws.NewHub()
 
 	// Build repository layer
-	onTaskUpdate := model.TaskUpdateFunc(func(userID, taskID, taskType, name, status, clientInstanceID string, progress float64, phase string) {
-		hub.PushTaskUpdate(userID, taskID, taskType, name, status, clientInstanceID, progress, phase)
-	})
-	repos := model.NewRepos(db, onTaskUpdate)
+	repos := model.NewRepos(db, nil)
 
 	// Wire session KEK population
 	repos.Sessions.SetPopulateKEK(func(s *model.Session) {
@@ -698,6 +695,7 @@ func runServer(cfg *config.Config, configPath string) {
 	if err := h.StartDOFSEventRelay(dofsEventContext); err != nil {
 		logger.Fatal("Failed to start DOFS event relay: %v", err)
 	}
+	h.StartEventRelay(dofsEventContext)
 	h.StartDOFSReclaimer(dofsEventContext)
 
 	mux := http.NewServeMux()

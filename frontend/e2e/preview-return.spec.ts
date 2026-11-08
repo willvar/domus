@@ -12,6 +12,8 @@ let thumbnailRequests = 0
 let thumbnailGate: Promise<void> | undefined
 let heldThumbnails = 0
 let thumbnailQuery = ''
+const requestedThumbnails = new Set<string>()
+let cancelledThumbnailRequests = 0
 
 test.beforeAll(async () => {
   server = createServer(async (request, response) => {
@@ -26,10 +28,13 @@ test.beforeAll(async () => {
     }
     if (request.url?.startsWith('/thumbnail/')) {
       thumbnailRequests++
+      requestedThumbnails.add(new URL(request.url, objectOrigin).pathname)
+      response.on('close', () => { if (!response.writableEnded) cancelledThumbnailRequests++ })
       thumbnailQuery = new URL(request.url, objectOrigin).search
       const gate = thumbnailGate
       thumbnailGate = undefined
       if (gate) { heldThumbnails++; await gate }
+      if (request.url.startsWith('/thumbnail/failure')) { response.writeHead(503).end(); return }
     }
     const range = /^bytes=(\d+)-(\d+)$/.exec(request.headers.range || '')
     const start = range ? Number(range[1]) : 0
@@ -49,6 +54,7 @@ test.afterAll(async () => {
 })
 
 async function prepare(page: Page) {
+  requestedThumbnails.clear()
   await page.addInitScript(() => {
     localStorage.setItem('domus_locale', 'en')
     localStorage.setItem('domus_show_thumbnails', '1')
@@ -249,8 +255,8 @@ async function prepareMutations(page: Page) {
 }
 
 async function watchMutationList(page: Page, exclude: string[] = []) {
-  const thumbnails = page.locator('.file-item').filter({ has: page.locator('img.file-thumbnail') })
-  if (await thumbnails.count() > 78) await thumbnails.nth(78).scrollIntoViewIfNeeded()
+  if (await page.locator('.file-item').count() > 78) await page.locator('.file-item').nth(78).scrollIntoViewIfNeeded()
+  if (await page.locator('[data-thumbnail-available="true"]').count()) await thumbnailsReady(page)
   return page.locator('.file-surface').evaluate((surface, exclude) => {
     const nodes = [...surface.querySelectorAll<HTMLElement>('.file-item')].filter(node => node.querySelector('img.file-thumbnail') && !exclude.includes(node.dataset.path || ''))
     const images = nodes.flatMap(node => [...node.querySelectorAll('img.file-thumbnail')])
@@ -385,47 +391,44 @@ test('refresh policy distinguishes initial navigation from empty-directory updat
   })).toEqual({ mode: false, loading: false, results: 0 })
 })
 
-test('directory updates refresh signed thumbnail sources without cancelling an in-flight read', async ({ page }) => {
+test('directory signing updates preserve completed thumbnail blobs without another object read', async ({ page }) => {
   const fixture = await prepare(page)
   const url = await page.locator('img.file-thumbnail').first().getAttribute('src')
-  const heldBefore = heldThumbnails
-  let release!: () => void
-  thumbnailGate = new Promise<void>(resolve => { release = resolve })
-  try {
-    await page.evaluate(url => {
-      ;(window as any).__thumbnailRead = fetch(url!).then(async response => ({ status: response.status, size: (await response.arrayBuffer()).byteLength })).catch(() => ({ status: 0, size: 0 }))
-    }, url)
-    await expect.poll(() => heldThumbnails).toBe(heldBefore + 1)
-    fixture.directoryChanged()
-    await expect.poll(() => page.evaluate(async () => {
-      const moduleURL = '/src/stores/fileSystem.ts'
-      return (await import(moduleURL)).useFileSystemStore().files[0]._thumbSource
-    })).toContain('signature=1')
-  } finally {
-    release()
-  }
-  expect(await page.evaluate(() => (window as any).__thumbnailRead)).toMatchObject({ status: 200 })
-  expect(await page.locator('img.file-thumbnail').first().getAttribute('src')).toBe(url)
-  expect(await page.evaluate(async url => (await fetch(url!)).status, url)).toBe(200)
-  expect(thumbnailQuery).toBe('?signature=1')
-  await page.evaluate(async url => {
-    const moduleURL = '/src/composables/useServiceWorker.ts'
-    const sw = (await import(moduleURL)).useServiceWorker()
-    sw.unregisterDecrypt(url!)
-    await sw.flush()
-  }, url)
+  const before = thumbnailRequests
   fixture.directoryChanged()
   await expect.poll(() => page.evaluate(async () => {
     const moduleURL = '/src/stores/fileSystem.ts'
-    return (await import(moduleURL)).useFileSystemStore().files[0]._thumbSource
-  })).toContain('signature=2')
-  expect(await page.evaluate(async url => (await fetch(url!)).status, url)).toBe(200)
+    return (await import(moduleURL)).useFileSystemStore().files[0].thumbnail_url
+  })).toContain('signature=1')
+  await page.waitForLoadState('networkidle')
   expect(await page.locator('img.file-thumbnail').first().getAttribute('src')).toBe(url)
+  expect(await page.evaluate(async url => (await fetch(url!)).status, url)).toBe(200)
+  expect(thumbnailRequests).toBe(before)
+})
+
+test('thumbnail completion is pushed without periodic directory reads', async ({ page }) => {
+  const fixture = await prepare(page)
+  const first = fixture.files[0]
+  const source = first.thumbnail_url
+  first.thumbnail_url = ''
+  fixture.directoryChanged()
+  const item = page.locator('.file-item').first()
+  await expect(item.locator('[data-thumbnail-state="pending"]')).toBeVisible()
+  await expect(item.locator('img.file-thumbnail')).toHaveCount(0)
+  await page.waitForLoadState('networkidle')
+  const requests = fixture.directoryRequests()
+  await page.waitForTimeout(5500)
+  expect(fixture.directoryRequests(), 'missing thumbnails must not trigger periodic directory reads').toBe(requests)
+  first.thumbnail_url = source
+  fixture.directoryChanged()
+  await expect(item.locator('[data-thumbnail-state="ready"]')).toBeVisible()
+  expect(requestedThumbnails.has('/thumbnail/119')).toBe(false)
 })
 
 test('changed thumbnail generations update only the changed image', async ({ page }) => {
   const fixture = await prepare(page)
   const sources = await page.locator('img.file-thumbnail').evaluateAll(images => images.map(image => image.getAttribute('src')))
+  const readsBefore = thumbnailRequests
   await rememberList(page)
   fixture.files[0].generation++
   fixture.files[0].thumbnail_url = `${objectOrigin}/thumbnail/replaced`
@@ -434,13 +437,33 @@ test('changed thumbnail generations update only the changed image', async ({ pag
   await page.waitForLoadState('networkidle')
   const updated = await page.locator('img.file-thumbnail').evaluateAll(images => images.map(image => image.getAttribute('src')))
   expect(updated.slice(1)).toEqual(sources.slice(1))
-  expect(await page.evaluate(() => (window as any).__previewReturn.loads)).toBe(1)
+  expect(await page.evaluate(() => (window as any).__previewReturn.loads)).toBe(0)
+  expect(thumbnailRequests).toBeGreaterThan(readsBefore)
   fixture.files[0].thumbnail_url += '?versionId=next'
   fixture.directoryChanged()
   await expect.poll(() => page.locator('img.file-thumbnail').first().getAttribute('src')).not.toBe(updated[0])
   await page.waitForLoadState('networkidle')
   expect(await page.locator('img.file-thumbnail').evaluateAll(images => images.slice(1).map(image => image.getAttribute('src')))).toEqual(sources.slice(1))
-  expect(await page.evaluate(() => (window as any).__previewReturn.loads)).toBe(2)
+  expect(await page.evaluate(() => (window as any).__previewReturn.loads)).toBe(0)
+})
+
+test('preview return recovers a missed directory hint without rereading cached thumbnails', async ({ page }) => {
+  const fixture = await prepare(page)
+  await page.locator('.file-item').nth(1).dblclick()
+  await expect(page).toHaveURL(/\/preview\?/)
+  await expect(page.locator('.preview-image')).toBeVisible()
+  const directories = fixture.directoryRequests()
+  const thumbnails = thumbnailRequests
+  fixture.files.push({
+    ...fixture.files[0], inode: count + 1, name: 'zz-late.txt', path: '/album/zz-late.txt',
+    content_type: 'text/plain', thumbnail_url: '', thumbnail_dek: '',
+  })
+  // The saved state changes without delivering its lightweight hint.
+  await page.locator('.back-button').click()
+  await expect(page.locator('.file-item[data-path="/album/zz-late.txt"]')).toHaveCount(1)
+  await page.waitForLoadState('networkidle')
+  expect(fixture.directoryRequests()).toBe(directories + 1)
+  expect(thumbnailRequests).toBe(thumbnails)
 })
 
 test('background updates target all matching tabs and ignore late responses after navigation', async ({ page }) => {
@@ -487,18 +510,28 @@ test('background updates target all matching tabs and ignore late responses afte
 })
 
 async function thumbnailsReady(page: Page) {
-  await expect(page.locator('img.file-thumbnail')).toHaveCount(count)
-  await expect.poll(() => page.locator('img.file-thumbnail').evaluateAll(images => images.every(image => (image as HTMLImageElement).complete && (image as HTMLImageElement).naturalWidth > 0))).toBeTruthy()
+  await expect.poll(() => page.locator('.file-surface').evaluate(surface => {
+    const bounds = surface.getBoundingClientRect()
+    const visible = [...surface.querySelectorAll<HTMLElement>('[data-thumbnail-available="true"]')].filter(element => {
+      const rect = element.getBoundingClientRect()
+      return rect.bottom > bounds.top && rect.top < bounds.bottom && rect.right > bounds.left && rect.left < bounds.right
+    })
+    return visible.length > 0 && visible.every(element => {
+      const image = element.querySelector('img')
+      return image?.complete && image.naturalWidth > 0
+    })
+  })).toBeTruthy()
 }
 
 async function rememberList(page: Page) {
+  await thumbnailsReady(page)
   return page.locator('.file-surface').evaluate(surface => {
     const images = [...surface.querySelectorAll<HTMLImageElement>('img.file-thumbnail')]
     const probe = (window as any).__previewReturn = {
-      surface: new WeakRef(surface), images: new WeakSet(images), loads: 0,
+      surface: new WeakRef(surface), images: new WeakSet(images), imageCount: images.length, loads: 0,
     }
     document.addEventListener('load', event => {
-      if (event.target instanceof HTMLImageElement && event.target.classList.contains('file-thumbnail')) probe.loads++
+      if (event.target instanceof HTMLImageElement && probe.images.has(event.target)) probe.loads++
     }, true)
     return surface.scrollTop
   })
@@ -688,9 +721,31 @@ for (const mode of ['desktop-icons', 'desktop-list', 'mobile-icons']) {
       expect(await page.locator('.file-surface').evaluate(surface => {
         const probe = (window as any).__previewReturn
         return { same: surface === probe.surface.deref(), retained: [...surface.querySelectorAll('img.file-thumbnail')].filter(image => probe.images.has(image)).length, loads: probe.loads }
-      })).toEqual({ same: true, retained: count, loads: 0 })
+      })).toEqual({ same: true, retained: await page.evaluate(() => (window as any).__previewReturn.imageCount), loads: 0 })
       expect(thumbnailRequests).toBe(upstream)
       expect(fixture.directoryRequests()).toBe(directories)
+    })
+
+    test('only visible thumbnails load; scrolling and the display switch control reads', async ({ page }) => {
+      await prepare(page)
+      if (mode.endsWith('-list')) { await page.locator('button[title="Details"]').click(); await thumbnailsReady(page) }
+      await page.waitForLoadState('networkidle')
+      expect(requestedThumbnails.size).toBeGreaterThan(0)
+      expect(requestedThumbnails.size).toBeLessThan(count)
+      expect(requestedThumbnails.has('/thumbnail/119')).toBe(false)
+      await page.locator('.file-item').nth(119).scrollIntoViewIfNeeded()
+      await thumbnailsReady(page)
+      expect(requestedThumbnails.has('/thumbnail/119')).toBe(true)
+      await page.locator(mobile ? '.mobile-account' : '.sidebar-account').click()
+      await page.getByRole('switch', { name: 'Show thumbnails' }).click()
+      await page.waitForLoadState('networkidle')
+      const before = thumbnailRequests
+      await page.keyboard.press('Escape')
+      await expect(page.getByRole('switch', { name: 'Show thumbnails' })).not.toBeVisible()
+      await page.locator('.file-item').first().scrollIntoViewIfNeeded()
+      await page.waitForTimeout(400)
+      await expect(page.locator('img.file-thumbnail')).toHaveCount(0)
+      expect(thumbnailRequests).toBe(before)
     })
 
     test('preview return retains scroll, image nodes and loaded thumbnails', async ({ page }) => {
@@ -711,6 +766,8 @@ for (const mode of ['desktop-icons', 'desktop-list', 'mobile-icons']) {
         const upstream = thumbnailRequests, directories = counters.directoryRequests(), audits = counters.audits()
         if (back === 'button') await page.locator('.back-button').click(); else await page.goBack()
         await expect(page).toHaveURL(/\/files\?path=/)
+        await expect.poll(counters.directoryRequests).toBe(directories + 1)
+        await page.waitForLoadState('networkidle')
         await thumbnailsReady(page)
         expect(await page.locator('.file-surface').evaluate(surface => surface.scrollTop)).toBe(scrollTop)
         expect(await page.locator('.file-surface').evaluate(surface => {
@@ -720,9 +777,9 @@ for (const mode of ['desktop-icons', 'desktop-list', 'mobile-icons']) {
             reusedImages: [...surface.querySelectorAll('img.file-thumbnail')].filter(image => probe.images.has(image)).length,
             loads: probe.loads,
           }
-        })).toEqual({ sameSurface: true, reusedImages: count, loads: 0 })
+        })).toEqual({ sameSurface: true, reusedImages: await page.evaluate(() => (window as any).__previewReturn.imageCount), loads: 0 })
         expect(thumbnailRequests).toBe(upstream)
-        expect(counters.directoryRequests()).toBe(directories)
+        expect(counters.directoryRequests()).toBe(directories + 1)
         await expect.poll(counters.audits).toBe(audits + 1)
         expect(await page.evaluate(async url => (await fetch(url!)).status, previewURL)).toBe(404)
         expect(await shortcut(page), 'file-list shortcuts must resume on return').toBeTruthy()
@@ -760,11 +817,12 @@ for (const mode of ['desktop-icons', 'desktop-list', 'mobile-icons']) {
         expires_in: 3600, parts: [{ part_number: 1, presigned_url: `${objectOrigin}/upload/${uploads}?partNumber=1&uploadId=list-update-${uploads}` }],
       } }))
       await page.locator('.file-item').nth(78).scrollIntoViewIfNeeded()
+      await thumbnailsReady(page)
       const top = await page.locator('.file-surface').evaluate(surface => {
         const nodes = [...surface.querySelectorAll('.file-item')]
         const images = [...surface.querySelectorAll('img.file-thumbnail')]
         const probe = (window as any).__directoryUpdate = {
-          nodes: new WeakSet(nodes), images: new WeakSet(images), removed: 0, loads: 0, loadingStates: 0,
+          nodes: new WeakSet(nodes), images: new WeakSet(images), imageCount: images.length, removed: 0, loads: 0, loadingStates: 0,
         }
         new MutationObserver(records => {
           for (const record of records) {
@@ -798,7 +856,7 @@ for (const mode of ['desktop-icons', 'desktop-list', 'mobile-icons']) {
             oldImages: [...surface.querySelectorAll('img.file-thumbnail')].filter(node => probe.images.has(node)).length,
             removed: probe.removed, loads: probe.loads, loadingStates: probe.loadingStates,
           }
-        })).toEqual({ oldNodes: count, oldImages: count, removed: 0, loads: 0, loadingStates: 0 })
+        })).toEqual({ oldNodes: count, oldImages: await page.evaluate(() => (window as any).__directoryUpdate.imageCount), removed: 0, loads: 0, loadingStates: 0 })
         expect(await page.locator('.file-surface').evaluate(surface => surface.scrollTop)).toBe(top)
         await expect(page.locator('.file-item.selected')).toHaveAttribute('data-path', '/album/image-078.webp')
         expect(thumbnailRequests).toBe(upstream)
@@ -927,6 +985,64 @@ for (const mode of ['desktop-icons', 'desktop-list', 'mobile-icons']) {
     })
   })
 }
+
+test('leaving the viewport cancels a pending thumbnail and failed images keep their file icon', async ({ page }) => {
+  const fixture = await prepare(page)
+  let release!: () => void
+  const held = heldThumbnails, cancelled = cancelledThumbnailRequests
+  thumbnailGate = new Promise<void>(resolve => { release = resolve })
+  try {
+    await page.locator('.file-item').last().scrollIntoViewIfNeeded()
+    await expect.poll(() => heldThumbnails).toBeGreaterThan(held)
+    await page.locator('.file-item').first().scrollIntoViewIfNeeded()
+    await expect.poll(() => cancelledThumbnailRequests).toBeGreaterThan(cancelled)
+  } finally { release() }
+  fixture.files[0].thumbnail_url = `${objectOrigin}/thumbnail/failure`
+  fixture.directoryChanged()
+  const item = page.locator('.file-item').first()
+  await expect(item.locator('[data-thumbnail-state="failed"]')).toBeVisible()
+  await expect(item.locator('img.file-thumbnail')).toHaveCount(0)
+  await expect(item.locator('.thumbnail-surface svg')).toBeVisible()
+  const reads = thumbnailRequests
+  await page.waitForTimeout(500)
+  expect(thumbnailRequests).toBe(reads)
+  fixture.files[0].thumbnail_url = `${objectOrigin}/thumbnail/recovered`
+  fixture.directoryChanged()
+  await thumbnailsReady(page)
+})
+
+test('renaming preserves extensions by default and extensionless files still preview by MIME', async ({ page }) => {
+  const fixture = await prepareMutations(page)
+  const original = page.locator('.file-item[data-path="/album/image-000.webp"]')
+  await original.click({ button: 'right' })
+  await page.locator('.action-menu').getByRole('menuitem', { name: 'Rename', exact: true }).click()
+  let prompt = page.locator('.domus-prompt-dialog')
+  await expect(prompt.locator('input')).toHaveValue('image-000')
+  await prompt.locator('input').fill('renamed')
+  await prompt.getByRole('button', { name: 'OK', exact: true }).click()
+  await expect(prompt).toHaveCount(0)
+  const renamed = page.locator('.file-item[data-path="/album/renamed.webp"]')
+  await renamed.click({ button: 'right' })
+  await page.locator('.action-menu').getByRole('menuitem', { name: 'Rename', exact: true }).click()
+  prompt = page.locator('.domus-prompt-dialog')
+  await prompt.getByRole('checkbox').check()
+  await prompt.locator('input').fill('extensionless')
+  await prompt.getByRole('button', { name: 'OK', exact: true }).click()
+  const confirm = page.locator('.domus-confirm-dialog')
+  await expect(confirm).toContainText('extension')
+  await confirm.getByRole('button', { name: 'OK', exact: true }).click()
+  const file = page.locator('.file-item[data-path="/album/extensionless"]')
+  await expect(file).toHaveCount(1)
+  expect(fixture.files.find(file => file.path === '/album/extensionless')?.content_type).toBe('image/webp')
+  await file.dblclick()
+  await expect.poll(() => page.locator('.preview-image').evaluate((image: HTMLImageElement) => image.naturalWidth)).toBe(320)
+  expect(await page.evaluate(async () => {
+    const moduleURL = '/src/utils/fileKind.ts'
+    const kinds = await import(moduleURL)
+    return { png: await kinds.uploadContentType(new File([new Uint8Array([137,80,78,71,13,10,26,10])], 'unknown')),
+      hidden: kinds.splitExtension('.gitignore'), compound: kinds.splitExtension('archive.tar.gz') }
+  })).toEqual({ png: 'image/png', hidden: { stem: '.gitignore', suffix: '' }, compound: { stem: 'archive', suffix: '.tar.gz' } })
+})
 
 test('preview reloads stay isolated and leaving the workspace releases the cached list', async ({ page }) => {
   const counters = await prepare(page)

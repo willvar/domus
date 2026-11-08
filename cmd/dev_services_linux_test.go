@@ -36,7 +36,7 @@ func TestDevServiceHelper(t *testing.T) {
 		}
 	}
 	args := os.Args[separator:]
-	name := map[string]string{"start": "Web", "dofs": "DOFS", "worker": "worker"}[args[0]]
+	name := map[string]string{"start": "Web", "dofs": "DOFS", "worker": "worker", "frontend": "Vite"}[args[0]]
 	cfg, err := config.Load(getFlagValue(args, "-c"))
 	if err != nil {
 		t.Fatal(err)
@@ -62,7 +62,7 @@ func TestDevServiceHelper(t *testing.T) {
 	if os.Getenv("DOMUS_DEV_TEST_FAIL") == name {
 		os.Exit(23)
 	}
-	if name == "worker" {
+	if name == "worker" || name == "Vite" {
 		<-ctx.Done()
 		record("stop")
 		return
@@ -107,15 +107,18 @@ func TestDevServiceHelper(t *testing.T) {
 
 func TestRunDevServices(t *testing.T) {
 	cases := []struct {
-		name, hold, failure, wantError string
-		withWorker, cancelWhileWaiting bool
+		name, hold, failure, wantError               string
+		withWorker, withFrontend, cancelWhileWaiting bool
 	}{
 		{name: "web-only"},
 		{name: "full-stack", withWorker: true},
-		{name: "Web must serve HTTP before DOFS", withWorker: true, hold: "Web"},
-		{name: "DOFS must serve health before worker", withWorker: true, hold: "DOFS"},
+		{name: "web-and-frontend", withFrontend: true},
+		{name: "full-stack-with-frontend", withWorker: true, withFrontend: true},
+		{name: "Web must serve HTTP before DOFS or Vite", withWorker: true, withFrontend: true, hold: "Web"},
+		{name: "DOFS must serve health before worker or Vite", withWorker: true, withFrontend: true, hold: "DOFS"},
 		{name: "DOFS failure stops Web", withWorker: true, failure: "DOFS", wantError: "DOFS exited:"},
 		{name: "worker failure stops dependencies", withWorker: true, failure: "worker", wantError: "worker exited:"},
+		{name: "Vite failure stops dependencies", withWorker: true, withFrontend: true, failure: "Vite", wantError: "Vite exited:"},
 		{name: "Web exit aborts DOFS readiness", withWorker: true, hold: "DOFS", failure: "Web-during-DOFS", wantError: "Web exited:"},
 		{name: "cancel during DOFS readiness", withWorker: true, hold: "DOFS", cancelWhileWaiting: true},
 	}
@@ -157,13 +160,18 @@ func TestRunDevServices(t *testing.T) {
 			if err := config.Save(path, cfg); err != nil {
 				t.Fatal(err)
 			}
+			t.Setenv("DOMUS_DEV_TEST_CONFIG", path)
+			t.Setenv("PATH", root+string(os.PathListSeparator)+os.Getenv("PATH"))
+			if err := os.WriteFile(filepath.Join(root, "npm"), []byte("#!/bin/sh\nexec \"$DOMUS_DEV_TEST_BINARY\" -test.run='^TestDevServiceHelper$' -- frontend -c \"$DOMUS_DEV_TEST_CONFIG\"\n"), 0700); err != nil {
+				t.Fatal(err)
+			}
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			done := make(chan error, 1)
 			finished := make(chan struct{})
 			go func() {
 				defer close(finished)
-				done <- runDevServices(ctx, executable, path, cfg, tc.withWorker)
+				done <- runDevServices(ctx, executable, path, cfg, devOptions{withWorker: tc.withWorker, withFrontend: tc.withFrontend})
 			}()
 			t.Cleanup(func() { cancel(); <-finished })
 			readEvents := func() string {
@@ -191,6 +199,9 @@ func TestRunDevServices(t *testing.T) {
 				if strings.Contains(readEvents(), next+":start") {
 					t.Fatalf("%s started before %s readiness", next, tc.hold)
 				}
+				if strings.Contains(readEvents(), "Vite:start") {
+					t.Fatalf("Vite started before %s readiness", tc.hold)
+				}
 				if tc.cancelWhileWaiting {
 					cancel()
 				} else if tc.failure == "" {
@@ -205,6 +216,9 @@ func TestRunDevServices(t *testing.T) {
 					last = "worker:start"
 				}
 				waitEvent(last)
+				if tc.withFrontend {
+					waitEvent("Vite:start")
+				}
 				cancel()
 			}
 			err = <-done
@@ -224,6 +238,18 @@ func TestRunDevServices(t *testing.T) {
 			}
 			if !tc.withWorker && strings.Contains(events, "DOFS:start") {
 				t.Fatal("web-only dev unexpectedly started DOFS")
+			}
+			if !tc.withFrontend && strings.Contains(events, "Vite:start") {
+				t.Fatal("backend-only dev unexpectedly started Vite")
+			}
+			if tc.withFrontend && tc.failure == "" && !tc.cancelWhileWaiting {
+				ready := "Web:ready"
+				if tc.withWorker {
+					ready = "DOFS:ready"
+				}
+				if strings.Index(events, "Vite:start") < strings.Index(events, ready) || !strings.Contains(events, "Vite:stop") {
+					t.Fatal("Vite did not start after readiness or was not cleaned up")
+				}
 			}
 			if tc.withWorker && tc.failure == "" && !tc.cancelWhileWaiting {
 				order := []string{"Web:ready", "DOFS:start", "DOFS:ready", "worker:start", "worker:stop", "DOFS:stop", "Web:stop"}
@@ -250,7 +276,7 @@ func TestMakeDevDelegatesWorkerStartup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(string(output), "go run .") != 1 || !strings.Contains(string(output), "--with-worker") {
-		t.Fatal("make dev must delegate all backend services to one supervisor")
+	if strings.Count(string(output), "go run .") != 1 || !strings.Contains(string(output), "--with-worker --with-frontend") || strings.Contains(string(output), "npm --prefix") {
+		t.Fatal("make dev must delegate backend and Vite startup to one supervisor")
 	}
 }

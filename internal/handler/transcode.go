@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"domus/internal/fileview"
 	"domus/internal/httpx"
 	"domus/internal/middleware"
+	"domus/internal/model"
 	"domus/internal/worker"
 )
 
@@ -47,12 +49,16 @@ func (h *Handler) handleTranscodeRequest(w http.ResponseWriter, r *http.Request)
 	if !strings.HasPrefix(record.ContentType, "video/") {
 		return httpx.JSON(w, 400, map[string]any{"error": "not_a_video"})
 	}
-	renditions, err := h.FileSystem.ListRenditions(session.UserID, uint64(record.ID))
+	return h.queueTranscode(w, r, session.UserID, record, profile.ID)
+}
+
+func (h *Handler) queueTranscode(w http.ResponseWriter, r *http.Request, userID string, record *model.FileRecord, profile string) error {
+	renditions, err := h.FileSystem.ListRenditions(userID, uint64(record.ID))
 	if err != nil {
 		return httpx.JSON(w, 500, map[string]any{"error": "list_renditions_failed"})
 	}
 	for _, rendition := range renditions {
-		if rendition.Profile != profile.ID {
+		if rendition.Profile != profile {
 			continue
 		}
 		switch rendition.Status {
@@ -62,22 +68,26 @@ func (h *Handler) handleTranscodeRequest(w http.ResponseWriter, r *http.Request)
 			return httpx.JSON(w, 409, map[string]any{"error": "rendition_in_progress"})
 		}
 	}
-	if _, err := h.FileSystem.CreateRendition(session.UserID, record, profile.ID); err != nil {
+	if _, err := h.FileSystem.CreateRendition(userID, record, profile); err != nil {
+		if errors.Is(err, dofs.ErrConflict) {
+			return httpx.JSON(w, 409, map[string]any{"error": "rendition_in_progress"})
+		}
 		return httpx.JSON(w, 500, map[string]any{"error": "create_rendition_failed"})
 	}
 	taskID := uuid.NewString()
-	if err := h.Repos.Tasks.CreateQueued(session.UserID, taskID, "transcode", record.Name,
-		record.ID, record.Path, profile.ID); err != nil {
-		_ = h.FileSystem.DeleteRendition(session.UserID, uint64(record.ID), profile.ID)
+	if err := h.FileSystem.SetRenditionTask(userID, uint64(record.ID), profile, taskID); err != nil {
+		_ = h.FileSystem.DeleteRendition(userID, uint64(record.ID), profile)
 		return httpx.JSON(w, 500, map[string]any{"error": "create_task_failed"})
 	}
-	if err := h.FileSystem.SetRenditionTask(session.UserID, uint64(record.ID), profile.ID, taskID); err != nil {
-		_ = h.FileSystem.DeleteRendition(session.UserID, uint64(record.ID), profile.ID)
-		_ = h.Repos.Tasks.Delete(taskID)
+	// Publish the queue row last: the worker must never claim a task before
+	// its rendition association exists.
+	if err := h.Repos.Tasks.CreateQueued(userID, taskID, "transcode", record.Name,
+		record.ID, record.Path, profile); err != nil {
+		_ = h.FileSystem.DeleteRendition(userID, uint64(record.ID), profile)
 		return httpx.JSON(w, 500, map[string]any{"error": "create_task_failed"})
 	}
-	h.notifyParentDir(session.UserID, record.Path)
-	return httpx.JSON(w, http.StatusOK, map[string]any{"task_id": taskID, "profile": profile.ID, "status": "queued"})
+	h.notifyParentDir(userID, record.Path)
+	return httpx.JSON(w, http.StatusOK, map[string]any{"task_id": taskID, "profile": profile, "status": "queued"})
 }
 
 // handleListRenditions returns the quality menu projection of one file: each
@@ -119,6 +129,7 @@ func (h *Handler) handleListRenditions(w http.ResponseWriter, r *http.Request) e
 		}
 		if task, taskErr := h.Repos.Tasks.Get(rendition.TaskID); taskErr == nil {
 			item["progress"] = task.Progress
+			item["phase"] = task.Phase
 		}
 		if kek != nil && (rendition.Status == "ready" || rendition.Status == "running") {
 			total := 0.0
@@ -138,9 +149,10 @@ func (h *Handler) handleListRenditions(w http.ResponseWriter, r *http.Request) e
 	// Source geometry drives the menu: profiles at or above the source height
 	// offer no benefit (transcodes never upscale), so they are not offered.
 	return httpx.JSON(w, http.StatusOK, map[string]any{
-		"source_width":  record.MediaWidth,
-		"source_height": record.MediaHeight,
-		"renditions":    out,
+		"source_width":    record.MediaWidth,
+		"source_height":   record.MediaHeight,
+		"source_duration": record.MediaDuration,
+		"renditions":      out,
 	})
 }
 

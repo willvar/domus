@@ -12,6 +12,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"domus/internal/model"
+	"domus/internal/notify"
 )
 
 // renditions manage server-transcoded playback derivatives. Rows reference
@@ -26,16 +27,21 @@ func (r *Repo) CreateRendition(userID string, source *model.FileRecord, profile 
 		UserID: userID, SourceInode: uint64(source.ID), Profile: profile,
 		SourceGeneration: source.Generation, Status: "queued", Segments: "[]",
 	}
-	if err := r.db.Clauses(clause.OnConflict{
+	result := r.db.Clauses(clause.OnConflict{
 		Columns: []clause.Column{{Name: "user_id"}, {Name: "source_inode"}, {Name: "profile"}},
 		DoUpdates: clause.Assignments(map[string]any{
 			"source_generation": row.SourceGeneration, "status": "queued", "task_id": "",
 			"init_inode": 0, "codecs": "", "media_width": 0, "media_height": 0,
 			"segments": "[]", "published_duration": 0, "error": "",
-			"updated_at": row.UpdatedAt,
+			"updated_at": time.Now(),
 		}),
-	}).Create(&row).Error; err != nil {
-		return nil, err
+		Where: clause.Where{Exprs: []clause.Expression{clause.IN{Column: clause.Column{Table: "domus_file_renditions", Name: "status"}, Values: []any{"failed", "cancelled"}}}},
+	}).Create(&row)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	if result.RowsAffected == 0 {
+		return nil, dofs.ErrConflict
 	}
 	return r.GetRendition(userID, uint64(source.ID), profile)
 }
@@ -117,16 +123,17 @@ func (r *Repo) renditionArtifact(userID string, inode uint64, duration float64) 
 }
 
 func (r *Repo) SetRenditionInit(userID string, sourceInode uint64, profile, codecs string, width, height int, initInode uint64) error {
-	return r.db.Model(&renditionRecord{}).
+	err := r.db.Model(&renditionRecord{}).
 		Where("user_id = ? AND source_inode = ? AND profile = ?", userID, sourceInode, profile).
 		Updates(map[string]any{
 			"init_inode": initInode, "codecs": codecs, "media_width": width, "media_height": height,
 			"updated_at": time.Now(),
 		}).Error
+	return r.renditionChanged(userID, sourceInode, err)
 }
 
 func (r *Repo) AppendRenditionSegment(userID string, sourceInode uint64, profile string, segmentInode uint64, duration float64) error {
-	return r.db.Transaction(func(tx *gorm.DB) error {
+	err := r.db.Transaction(func(tx *gorm.DB) error {
 		var row renditionRecord
 		if err := tx.Where("user_id = ? AND source_inode = ? AND profile = ?", userID, sourceInode, profile).
 			First(&row).Error; err != nil {
@@ -148,12 +155,14 @@ func (r *Repo) AppendRenditionSegment(userID string, sourceInode uint64, profile
 				"updated_at": time.Now(),
 			}).Error
 	})
+	return r.renditionChanged(userID, sourceInode, err)
 }
 
 func (r *Repo) UpdateRenditionStatus(userID string, sourceInode uint64, profile, status, taskError string) error {
-	return r.db.Model(&renditionRecord{}).
+	err := r.db.Model(&renditionRecord{}).
 		Where("user_id = ? AND source_inode = ? AND profile = ?", userID, sourceInode, profile).
 		Updates(map[string]any{"status": status, "error": taskError, "updated_at": time.Now()}).Error
+	return r.renditionChanged(userID, sourceInode, err)
 }
 
 // FailRendition marks a rendition failed and discards any partially published
@@ -165,12 +174,13 @@ func (r *Repo) FailRendition(userID string, sourceInode uint64, profile, taskErr
 		return err
 	}
 	r.removeRenditionArtifacts(userID, row)
-	return r.db.Model(&renditionRecord{}).
+	err := r.db.Model(&renditionRecord{}).
 		Where("user_id = ? AND source_inode = ? AND profile = ?", userID, sourceInode, profile).
 		Updates(map[string]any{
 			"status": "failed", "error": taskError, "segments": "[]", "published_duration": 0,
 			"init_inode": 0, "updated_at": time.Now(),
 		}).Error
+	return r.renditionChanged(userID, sourceInode, err)
 }
 
 // ResetRenditionsForTasks reclaims rendition rows left behind by interrupted
@@ -188,19 +198,32 @@ func (r *Repo) ResetRenditionsForTasks(userID string, taskIDs []string) error {
 	for _, row := range rows {
 		r.removeRenditionArtifacts(userID, row)
 	}
-	return r.db.Model(&renditionRecord{}).
+	err := r.db.Model(&renditionRecord{}).
 		Where("user_id = ? AND task_id IN ? AND status IN ?", userID, taskIDs,
 			[]string{"queued", "running", "cancelling"}).
 		Updates(map[string]any{
 			"status": "queued", "segments": "[]", "published_duration": 0, "init_inode": 0,
 			"updated_at": time.Now(),
 		}).Error
+	if err == nil {
+		for _, row := range rows {
+			_ = r.renditionChanged(userID, row.SourceInode, nil)
+		}
+	}
+	return err
 }
 
 func (r *Repo) SetRenditionTask(userID string, sourceInode uint64, profile, taskID string) error {
-	return r.db.Model(&renditionRecord{}).
+	result := r.db.Model(&renditionRecord{}).
 		Where("user_id = ? AND source_inode = ? AND profile = ?", userID, sourceInode, profile).
-		Updates(map[string]any{"task_id": taskID, "updated_at": time.Now()}).Error
+		Updates(map[string]any{"task_id": taskID, "updated_at": time.Now()})
+	if result.Error != nil {
+		return result.Error
+	}
+	if result.RowsAffected != 1 {
+		return gorm.ErrRecordNotFound
+	}
+	return nil
 }
 
 // SetRenditionCancelling flags a running rendition for cancellation by the
@@ -229,12 +252,13 @@ func (r *Repo) ResetRendition(userID string, sourceInode uint64, profile string)
 		return err
 	}
 	r.removeRenditionArtifacts(userID, row)
-	return r.db.Model(&renditionRecord{}).
+	err := r.db.Model(&renditionRecord{}).
 		Where("user_id = ? AND source_inode = ? AND profile = ?", userID, sourceInode, profile).
 		Updates(map[string]any{
 			"status": "queued", "segments": "[]", "published_duration": 0, "init_inode": 0,
 			"updated_at": time.Now(),
 		}).Error
+	return r.renditionChanged(userID, sourceInode, err)
 }
 
 // DeleteRendition removes the rendition row and deletes every derived DOFS
@@ -260,8 +284,16 @@ func (r *Repo) DeleteRendition(userID string, sourceInode uint64, profile string
 		}
 		r.deleteRenditionNode(userID, inode)
 	}
-	return r.db.Where("user_id = ? AND source_inode = ? AND profile = ?", userID, sourceInode, profile).
+	err := r.db.Where("user_id = ? AND source_inode = ? AND profile = ?", userID, sourceInode, profile).
 		Delete(&renditionRecord{}).Error
+	return r.renditionChanged(userID, sourceInode, err)
+}
+
+func (r *Repo) renditionChanged(userID string, sourceInode uint64, err error) error {
+	if err == nil {
+		notify.Publish(notify.Event{Kind: "rendition", UserID: userID, Inode: int64(sourceInode)})
+	}
+	return err
 }
 
 // DeleteRenditionsBySource tears down every rendition of a source inode. Used

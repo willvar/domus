@@ -27,26 +27,29 @@ type ObjectInfo struct {
 // FileInfo is the browser-facing file listing projection assembled from DOFS
 // metadata. It is not populated by listing object-storage paths.
 type FileInfo struct {
-	Inode         int64     `json:"inode"`
-	Generation    int64     `json:"generation,omitempty"`
-	Name          string    `json:"name"`
-	Path          string    `json:"path"`
-	IsDir         bool      `json:"is_dir"`
-	Size          int64     `json:"size"`
-	CreatedAt     time.Time `json:"created_at"`
-	LastModified  time.Time `json:"last_modified"`
-	ContentType   string    `json:"content_type,omitempty"`
-	ThumbnailURL  string    `json:"thumbnail_url,omitempty"`
-	ThumbnailDEK  string    `json:"thumbnail_dek,omitempty"`
-	MediaWidth    int       `json:"media_width,omitempty"`
-	MediaHeight   int       `json:"media_height,omitempty"`
-	MediaDuration float64   `json:"media_duration,omitempty"`
-	MediaCodecs   string    `json:"media_codecs,omitempty"`
-	MediaMeta     string    `json:"media_meta,omitempty"`
-	Status        string    `json:"status,omitempty"`
-	TaskID        string    `json:"task_id,omitempty"`
-	TaskProgress  float64   `json:"task_progress,omitempty"`
-	TaskPhase     string    `json:"task_phase,omitempty"`
+	Inode             int64     `json:"inode"`
+	Generation        int64     `json:"generation,omitempty"`
+	Name              string    `json:"name"`
+	Path              string    `json:"path"`
+	IsDir             bool      `json:"is_dir"`
+	Size              int64     `json:"size"`
+	CreatedAt         time.Time `json:"created_at"`
+	LastModified      time.Time `json:"last_modified"`
+	ContentType       string    `json:"content_type,omitempty"`
+	ThumbnailURL      string    `json:"thumbnail_url,omitempty"`
+	ThumbnailDEK      string    `json:"thumbnail_dek,omitempty"`
+	ThumbnailStatus   string    `json:"thumbnail_status,omitempty"`
+	ThumbnailError    string    `json:"thumbnail_error,omitempty"`
+	ThumbnailAttempts int       `json:"thumbnail_attempts,omitempty"`
+	MediaWidth        int       `json:"media_width,omitempty"`
+	MediaHeight       int       `json:"media_height,omitempty"`
+	MediaDuration     float64   `json:"media_duration,omitempty"`
+	MediaCodecs       string    `json:"media_codecs,omitempty"`
+	MediaMeta         string    `json:"media_meta,omitempty"`
+	Status            string    `json:"status,omitempty"`
+	TaskID            string    `json:"task_id,omitempty"`
+	TaskProgress      float64   `json:"task_progress,omitempty"`
+	TaskPhase         string    `json:"task_phase,omitempty"`
 }
 
 // CompletePart represents a completed multipart upload part.

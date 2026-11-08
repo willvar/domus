@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -129,6 +130,24 @@ func workerCommand(configPath string, args []string) {
 		runPass()
 		return
 	}
+	// One thumbnail/probe lane and one serial transcode lane share the same
+	// bounded service. A long encode must not block newly uploaded previews.
+	runner.skipTranscodes = true
+	transcodesDone := make(chan struct{})
+	go func() {
+		defer close(transcodesDone)
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			runner.transcodePass(ctx)
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+	defer func() { stop(); <-transcodesDone }()
 	logger.Info("worker: starting, interval %s", interval)
 	runPass()
 	ticker := time.NewTicker(interval)
@@ -145,13 +164,34 @@ func workerCommand(configPath string, args []string) {
 }
 
 type workerRunner struct {
-	cfg        *config.Config
-	repos      *model.Repos
-	files      *fileview.Repo
-	control    dofs.ControlClient
-	workDir    string
-	userFilter string
-	limit      int
+	cfg            *config.Config
+	repos          *model.Repos
+	files          *fileview.Repo
+	control        dofs.ControlClient
+	workDir        string
+	userFilter     string
+	limit          int
+	skipTranscodes bool
+}
+
+func (w *workerRunner) transcodePass(ctx context.Context) {
+	users, err := w.repos.Users.List()
+	if err != nil {
+		return
+	}
+	for _, user := range users {
+		if ctx.Err() != nil {
+			return
+		}
+		if w.userFilter != "" && user.ID != w.userFilter && user.Username != w.userFilter {
+			continue
+		}
+		status, err := w.control.Ensure(ctx, dofs.MountUserSelector{UserID: user.ID})
+		if err != nil || status.State != "mounted" {
+			continue
+		}
+		w.processUserTranscodes(ctx, user.ID, user.Username, filepath.Join(w.cfg.DOFS.MountRoot, user.ID))
+	}
 }
 
 type workerProbeBatch struct {
@@ -195,9 +235,11 @@ func (w *workerRunner) processUser(ctx context.Context, userID, username string,
 	}
 	mountPoint := filepath.Join(w.cfg.DOFS.MountRoot, userID)
 
-	transcodeDone, transcodeFailed := w.processUserTranscodes(ctx, userID, username, mountPoint)
-	processed += transcodeDone
-	failed += transcodeFailed
+	if !w.skipTranscodes {
+		transcodeDone, transcodeFailed := w.processUserTranscodes(ctx, userID, username, mountPoint)
+		processed += transcodeDone
+		failed += transcodeFailed
+	}
 
 	var thumbnailCandidates, codecCandidates, metaCandidates []model.FileRecord
 	if err := w.collectCandidates(ctx, userID, "/", &thumbnailCandidates, &codecCandidates, &metaCandidates); err != nil {
@@ -212,6 +254,8 @@ func (w *workerRunner) processUser(ctx context.Context, userID, username string,
 			break
 		}
 		if err := w.processFile(ctx, userID, mountPoint, record); err != nil {
+			retry := time.Now().Add(time.Duration(record.ThumbnailAttempts+1) * 30 * time.Second)
+			_ = w.files.SetThumbnailState(record, "failed", "thumbnail_generation_failed", record.ThumbnailAttempts+1, &retry)
 			failed++
 			logger.Info("worker: thumbnail for %s failed: %v", record.Path, err)
 			continue
@@ -296,7 +340,8 @@ func (w *workerRunner) collectCandidates(ctx context.Context, userID, parentPath
 		// One walk serves all sweeps: thumbnails for image/video files that
 		// lack one, codec strings for video files, and ffprobe metadata
 		// summaries for any media file (video or audio) that lacks one.
-		if child.ThumbnailKey == "" && isThumbnailMedia(child.ContentType) {
+		if (child.ThumbnailKey == "" || child.ThumbnailStatus == "pending" || child.ThumbnailStatus == "failed" || child.ThumbnailStatus == "running") && isThumbnailMedia(child.ContentType) &&
+			child.ThumbnailAttempts < 3 && (child.ThumbnailRetryAt == nil || !child.ThumbnailRetryAt.After(time.Now())) {
 			*thumbnailOut = append(*thumbnailOut, child)
 		}
 		if child.MediaCodecs == "" && strings.HasPrefix(child.ContentType, "video/") {
@@ -316,6 +361,10 @@ func isProbeableMedia(contentType string) bool {
 }
 
 func (w *workerRunner) processFile(ctx context.Context, userID, mountPoint string, record model.FileRecord) error {
+	leaseUntil := time.Now().Add(3 * time.Minute)
+	if err := w.files.SetThumbnailState(record, "running", "", record.ThumbnailAttempts+1, &leaseUntil); err != nil {
+		return err
+	}
 	sourcePath := filepath.Join(mountPoint, filepath.FromSlash(strings.TrimPrefix(record.Path, "/")))
 	if _, err := os.Stat(sourcePath); err != nil {
 		return fmt.Errorf("source is not mounted: %w", err)
@@ -328,6 +377,8 @@ func (w *workerRunner) processFile(ctx context.Context, userID, mountPoint strin
 	options := worker.ThumbnailOptions{
 		FFmpegPath:   w.cfg.Worker.FFmpegPath,
 		FFprobePath:  w.cfg.Worker.FFprobePath,
+		PDFToPPMPath: w.cfg.Worker.PDFToPPMPath,
+		ContentType:  record.ContentType,
 		MaxDimension: w.cfg.Worker.ThumbMaxDimension,
 	}
 	info, err := worker.GenerateThumbnail(ctx, options, sourcePath, scratchPath)
@@ -340,23 +391,30 @@ func (w *workerRunner) processFile(ctx context.Context, userID, mountPoint strin
 		return fmt.Errorf("read generated thumbnail: %w", err)
 	}
 	thumbnailMountPath := filepath.Join(mountPoint, ".domus", "thumbnails", name)
+	if err := os.MkdirAll(filepath.Dir(thumbnailMountPath), 0700); err != nil {
+		return err
+	}
 	if err := os.WriteFile(thumbnailMountPath, thumbnailData, 0600); err != nil {
 		return fmt.Errorf("publish thumbnail into namespace: %w", err)
 	}
 	cleanupThumbnail := func() { _ = os.Remove(thumbnailMountPath) }
+	if err := verifyArtifact(thumbnailMountPath, thumbnailData); err != nil {
+		cleanupThumbnail()
+		return err
+	}
 
 	namespacePath := "/.domus/thumbnails/" + name
 	var thumbnailRecord *model.FileRecord
 	for attempt := 0; attempt < 10; attempt++ {
 		thumbnailRecord, err = w.files.Get(userID, namespacePath)
-		if err == nil {
+		if err == nil && thumbnailRecord.Size == int64(len(thumbnailData)) {
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
-	if err != nil {
+	if err != nil || thumbnailRecord == nil || thumbnailRecord.Size != int64(len(thumbnailData)) {
 		cleanupThumbnail()
-		return fmt.Errorf("resolve published thumbnail: %w", err)
+		return fmt.Errorf("published thumbnail is unavailable or incomplete")
 	}
 
 	applied, err := w.files.UpdateThumbnailIfGeneration(
@@ -372,11 +430,16 @@ func (w *workerRunner) processFile(ctx context.Context, userID, mountPoint strin
 		cleanupThumbnail()
 		return nil
 	}
+	if applied && record.ThumbnailKey != "" && record.ThumbnailKey != thumbnailRecord.StorageKey() {
+		if previous, err := w.files.GetByStorageKey(userID, record.ThumbnailKey); err == nil && strings.HasPrefix(previous.Path, "/.domus/thumbnails/") {
+			_ = w.files.Delete(userID, previous.Path)
+		}
+	}
 	return nil
 }
 
 func isThumbnailMedia(contentType string) bool {
-	return strings.HasPrefix(contentType, "image/") || strings.HasPrefix(contentType, "video/")
+	return strings.HasPrefix(contentType, "image/") || strings.HasPrefix(contentType, "video/") || contentType == "application/pdf"
 }
 
 // ---------------------------------------------------------------------------
@@ -432,6 +495,9 @@ func (w *workerRunner) processUserTranscodes(ctx context.Context, userID, userna
 		if ctx.Err() != nil {
 			return processed, failed
 		}
+		if w.limit > 0 && processed+failed >= w.limit {
+			return processed, failed
+		}
 		task, err := w.repos.Tasks.ClaimNextTranscode(userID)
 		if err != nil {
 			return processed, failed
@@ -464,6 +530,9 @@ func (w *workerRunner) processTranscode(ctx context.Context, userID, mountPoint 
 	if err != nil {
 		return w.failTranscode(userID, task, task.SourceInode, "rendition row is missing")
 	}
+	if rendition.TaskID != task.TaskID {
+		return w.failTranscode(userID, task, task.SourceInode, "rendition task was replaced")
+	}
 	record, err := w.files.GetByID(userID, task.SourceInode)
 	if err != nil {
 		return w.failTranscode(userID, task, task.SourceInode, "source file is unavailable")
@@ -473,18 +542,18 @@ func (w *workerRunner) processTranscode(ctx context.Context, userID, mountPoint 
 	}
 
 	// A previous run of this task may have left partial artifacts behind.
-	_ = w.files.DeleteRendition(userID, uint64(task.SourceInode), profile.ID)
-	if _, err := w.files.CreateRendition(userID, record, profile.ID); err != nil {
+	if err := w.files.ResetRendition(userID, uint64(task.SourceInode), profile.ID); err != nil {
 		return w.failTranscode(userID, task, task.SourceInode, "rendition row could not be reset")
 	}
 	_ = w.files.UpdateRenditionStatus(userID, uint64(task.SourceInode), profile.ID, "running", "")
-	_ = w.repos.Tasks.UpdateProgress(task.TaskID, 0, "transcoding")
+	_ = w.repos.Tasks.UpdateProgress(task.TaskID, 0, "probing")
 
 	sourcePath := filepath.Join(mountPoint, filepath.FromSlash(strings.TrimPrefix(record.Path, "/")))
 	info, err := worker.Probe(ctx, w.cfg.Worker.FFprobePath, sourcePath)
 	if err != nil {
 		return w.failTranscode(userID, task, task.SourceInode, "probe failed: "+err.Error())
 	}
+	_ = w.files.UpdateMediaGeometry(*record, info.Width, info.Height, info.Duration)
 
 	scratchDir := filepath.Join(w.workDir, "transcode-"+task.TaskID)
 	defer func() { _ = os.RemoveAll(scratchDir) }()
@@ -496,6 +565,7 @@ func (w *workerRunner) processTranscode(ctx context.Context, userID, mountPoint 
 	if err != nil {
 		return w.failTranscode(userID, task, task.SourceInode, err.Error())
 	}
+	_ = w.repos.Tasks.UpdateProgress(task.TaskID, 0, "transcoding")
 
 	publisher := &transcodePublisher{
 		runner: w, userID: userID, mountPoint: mountPoint,
@@ -518,7 +588,8 @@ func (w *workerRunner) processTranscode(ctx context.Context, userID, mountPoint 
 		case <-ticker.C:
 		}
 		status, statusErr := w.files.RenditionStatus(userID, uint64(task.SourceInode), profile.ID)
-		if statusErr == nil && status == "cancelling" {
+		current, taskErr := w.repos.Tasks.Get(task.TaskID)
+		if statusErr == nil && status == "cancelling" || taskErr == nil && current.Status == "cancelling" {
 			run.Cancel()
 		}
 		if !publisher.initPublished {
@@ -535,20 +606,31 @@ func (w *workerRunner) processTranscode(ctx context.Context, userID, mountPoint 
 	}
 	// The process has exited: publish the init segment (if it appeared after
 	// the last tick) and any final playlist entries.
+	finalProgress := 0.0
+	if info.Duration > 0 {
+		finalProgress = publisher.totalDuration / info.Duration
+		if finalProgress > 0.99 {
+			finalProgress = 0.99
+		}
+	}
+	_ = w.repos.Tasks.UpdateProgress(task.TaskID, finalProgress, "finalizing")
 	if !publisher.initPublished {
 		publisher.publishInit(ctx)
 	}
-	if _, publishErr := publisher.publishPending(ctx); publishErr != nil {
+	if count, publishErr := publisher.publishPending(ctx); publishErr != nil {
 		return w.failTranscode(userID, task, task.SourceInode, publishErr.Error())
+	} else {
+		published += count
 	}
 	waitErr := run.Wait()
 	status, _ := w.files.RenditionStatus(userID, uint64(task.SourceInode), profile.ID)
-	if status == "cancelling" {
+	current, taskErr := w.repos.Tasks.Get(task.TaskID)
+	if status == "cancelling" || taskErr == nil && current.Status == "cancelling" {
 		_ = w.files.DeleteRendition(userID, uint64(task.SourceInode), profile.ID)
 		return w.repos.Tasks.UpdateStatus(task.TaskID, "cancelled")
 	}
 	if waitErr != nil {
-		return w.failTranscode(userID, task, task.SourceInode, "ffmpeg failed"+worker.CommandStderr(waitErr))
+		return w.failTranscode(userID, task, task.SourceInode, "ffmpeg failed: "+waitErr.Error())
 	}
 	if published == 0 {
 		return w.failTranscode(userID, task, task.SourceInode, "transcode produced no segments")
@@ -562,9 +644,23 @@ func (w *workerRunner) processTranscode(ctx context.Context, userID, mountPoint 
 
 // failTranscode marks the task and its rendition failed.
 func (w *workerRunner) failTranscode(userID string, task *model.Task, sourceInode int64, message string) error {
-	_ = w.repos.Tasks.UpdateStatus(task.TaskID, "failed")
+	code := "transcode_failed"
+	for prefix, value := range map[string]string{
+		"probe failed:": "transcode_probe_failed", "source file is unavailable": "transcode_source_unavailable",
+		"source file changed": "transcode_source_changed", "rendition row": "transcode_record_missing", "rendition task": "transcode_record_missing",
+		"ffmpeg failed": "transcode_encoding_failed", "transcode produced no segments": "transcode_no_segments", "transcode never published": "transcode_no_init",
+		"publish rendition": "transcode_publish_failed", "read segment": "transcode_publish_failed",
+	} {
+		if strings.HasPrefix(message, prefix) {
+			code = value
+			break
+		}
+	}
+	_ = w.repos.Tasks.Fail(task.TaskID, code)
 	if sourceInode > 0 {
-		_ = w.files.FailRendition(userID, uint64(sourceInode), task.Profile, message)
+		if rendition, err := w.files.GetRendition(userID, uint64(sourceInode), task.Profile); err == nil && rendition.TaskID == task.TaskID {
+			_ = w.files.FailRendition(userID, uint64(sourceInode), task.Profile, code)
+		}
 	}
 	return fmt.Errorf("%s", message)
 }
@@ -586,13 +682,13 @@ type transcodePublisher struct {
 }
 
 // verifyArtifact reads the file back and confirms it carries the full payload.
-func verifyArtifact(path string, want int) error {
+func verifyArtifact(path string, want []byte) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	if len(data) != want {
-		return fmt.Errorf("artifact writeback lost content: wrote %d bytes, read back %d", want, len(data))
+	if !bytes.Equal(data, want) {
+		return fmt.Errorf("artifact writeback changed content: wrote %d bytes, read back %d", len(want), len(data))
 	}
 	return nil
 }
@@ -676,7 +772,7 @@ func (p *transcodePublisher) writeArtifact(ctx context.Context, name string, dat
 		if err == nil {
 			// Read back to make sure the content survived the FUSE writeback;
 			// a lost write leaves a zero-length or truncated object behind.
-			err = verifyArtifact(mountPath, len(data))
+			err = verifyArtifact(mountPath, data)
 		}
 		if err == nil || attempt >= 5 {
 			break

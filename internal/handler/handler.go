@@ -27,17 +27,18 @@ import (
 
 // Handler holds all dependencies for HTTP handlers.
 type Handler struct {
-	OAuth      *oauth.Server
-	Config     *config.Config
-	Repos      *model.Repos
-	Store      store.ControlStore
-	Email      service.EmailSender
-	Audit      *model.AuditWorker
-	Challenges *auth.ChallengeManager
-	Mid        *middleware.Middleware
-	Hub        *ws.Hub
-	DOFS       *dofsbridge.Runtime
-	FileSystem *fileview.Repo
+	OAuth           *oauth.Server
+	Config          *config.Config
+	Repos           *model.Repos
+	Store           store.ControlStore
+	Email           service.EmailSender
+	Audit           *model.AuditWorker
+	Challenges      *auth.ChallengeManager
+	Mid             *middleware.Middleware
+	Hub             *ws.Hub
+	DOFS            *dofsbridge.Runtime
+	FileSystem      *fileview.Repo
+	relayDOFSChange func(string)
 }
 
 // RegisterRoutes registers the API on the standard HTTP mux.
@@ -108,6 +109,7 @@ func (h *Handler) RegisterRoutes(app *http.ServeMux) {
 	register("POST", "/file/upload/cancel", h.handleUploadCancel, true, false)
 	register("POST", "/file/upload/cleanup", h.handleUploadCleanup, true, false)
 	register("POST", "/file/transcode", h.handleTranscodeRequest, true, false)
+	register("POST", "/file/thumbnail", h.handleRetryThumbnail, true, false)
 	register("GET", "/file/renditions", h.handleListRenditions, true, false)
 	register("POST", "/trash/", h.handleCreateTrashEntry, true, false)
 	register("GET", "/trash/", h.handleListTrash, true, false)
@@ -122,6 +124,7 @@ func (h *Handler) RegisterRoutes(app *http.ServeMux) {
 	register("GET", "/task/", h.handleListTasks, true, false)
 	register("DELETE", "/task/done", h.handleClearDoneTasks, true, false)
 	register("DELETE", "/task/{id}", h.handleCancelTask, true, false)
+	register("POST", "/task/{id}/retry", h.handleRetryTask, true, false)
 	register("GET", "/ws", h.handleWebSocket, true, false)
 	app.Handle("/dav", httpx.Handler(h.handleDAV))
 	app.Handle("/dav/", httpx.Handler(h.handleDAV))

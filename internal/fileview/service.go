@@ -103,9 +103,10 @@ func (r *Repo) copyMetadata(userID string, source, destination dofs.Node) error 
 	sourceMetadata.Generation = destination.Generation
 	// A thumbnail has its own encrypted inode and lifecycle. Sharing that inode
 	// between two source files would let deleting either copy reclaim the
-	// other's thumbnail, so a copy starts without a thumbnail. The browser can
-	// attach a fresh one on a later upload/update.
+	// other's thumbnail, so a copy starts without a thumbnail. The worker can
+	// generate a fresh one for the independent source inode.
 	sourceMetadata.Thumbnail = 0
+	sourceMetadata.ThumbnailStatus, sourceMetadata.ThumbnailError, sourceMetadata.ThumbnailAttempts, sourceMetadata.ThumbnailRetryAt = "", "", 0, nil
 	sourceMetadata.CreatedAt = now
 	sourceMetadata.UpdatedAt = now
 	return r.db.Clauses(clause.OnConflict{

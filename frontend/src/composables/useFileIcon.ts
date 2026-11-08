@@ -1,5 +1,6 @@
 import type { FunctionalComponent, SVGAttributes } from 'vue'
 import type { IconType } from '../types'
+import { mimeViewer } from '../utils/fileKind'
 
 import { IconFolder, IconFileOutline as IconFile, IconFileDocumentOutline as IconText, IconCodeTags as IconCode, IconFileImageOutline as IconImage, IconFileVideoOutline as IconVideo, IconFileMusicOutline as IconAudio, IconZipBoxOutline as IconArchive, IconFilePdfBox as IconPdf, IconFileTableOutline as IconSpreadsheet, IconFileWordOutline as IconDocument, IconFilePresentationBox as IconPresentation, IconCodeJson as IconConfig, IconApplicationCogOutline as IconExec, IconLanguageHtml5 as IconWeb, IconDatabaseOutline as IconDatabase, IconLanguageMarkdownOutline as IconMarkdown, IconLanguagePython as IconPython, IconLanguageJavascript as IconJs, IconLanguageCss3 as IconCss, IconConsole as IconShell, IconDatabaseSearchOutline as IconSql, IconLanguageCpp as IconCpp } from '../barrels/icons'
 
@@ -86,10 +87,12 @@ const EXT_MAP: Record<string, IconType> = {
   ipynb: 'code',
 }
 
-export function getFileIcon(fileName: string, isDir: boolean): FunctionalComponent<SVGAttributes> {
+export function getFileIcon(fileName: string, isDir: boolean, contentType = ''): FunctionalComponent<SVGAttributes> {
   if (isDir) return ICONS.folder
+  const kind = mimeViewer(contentType)
+  if (kind && kind !== 'text') return ICONS[({ csv: 'spreadsheet', notebook: 'code', font: 'file' } as Record<string, IconType>)[kind] || kind as IconType] || ICONS.file
   const ext: string = fileName.split('.').pop()?.toLowerCase() || ''
-  const iconType: IconType = EXT_MAP[ext] || 'file'
+  const iconType: IconType = EXT_MAP[ext] || (kind === 'text' || contentType.startsWith('text/') ? 'text' : 'file')
   return ICONS[iconType] || ICONS.file
 }
 

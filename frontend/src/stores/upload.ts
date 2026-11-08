@@ -9,10 +9,8 @@ import { useActivityStore } from './activity'
 import { useFileSystemStore } from './fileSystem'
 import { UploadClient } from '../uploads/client'
 import { ResourcePool } from '../uploads/resources'
-import {
-  generateDEK,
-  generateThumbnail,
-} from '../composables/useCryptoUpload'
+import { generateDEK } from '../composables/useCryptoUpload'
+import { uploadContentType } from '../utils/fileKind'
 import type {
   UploadSession,
   ConflictInfo,
@@ -39,9 +37,7 @@ export const useUploadStore = defineStore('upload', () => {
 
   const uploader = new UploadClient()
   const initCapacity = new ResourcePool([0, 1, 2, 3])
-  const thumbnailCapacity = new ResourcePool([true])
   const controls = new Map<string, AbortController>()
-  const thumbnailControls = new Map<string, AbortController>()
 
   // Keep failures visible with the original response error and File for retry.
   ws.on('task.update', (data: TaskUpdateEvent) => {
@@ -274,7 +270,7 @@ export const useUploadStore = defineStore('upload', () => {
         path: targetPath,
         file_name: file.name,
         file_size: file.size,
-        content_type: file.type || '',
+        content_type: await uploadContentType(file),
         client_instance_id: clientInstanceId,
         dek: dek.hex,
       }
@@ -310,40 +306,7 @@ export const useUploadStore = defineStore('upload', () => {
 
       if (upload.status === 'cancelled' || !workerResult) return
 
-      // 3. Upload thumbnail as a separate encrypted file
-      await waitUntilResumed(upload, signal)
-      upload.phase = 'thumbnail'
-      let thumbnail: { width: number; height: number; duration?: number } | null = null
-      let thumbnailUploadId: string | null = null
-      for (;;) {
-        await waitUntilResumed(upload, signal)
-        const stage = new AbortController()
-        const abort = () => stage.abort(signal.reason)
-        signal.addEventListener('abort', abort, { once: true })
-        thumbnailControls.set(upload.id, stage)
-        let lease: boolean | undefined
-        try {
-          lease = await thumbnailCapacity.acquire(stage.signal)
-          stage.signal.throwIfAborted()
-          const generated = await generateThumbnail(file, stage.signal)
-          stage.signal.throwIfAborted()
-          if (generated) {
-            upload.phase = 'thumbnail'
-            await syncTask(upload, { phase: 'thumbnail', force: true })
-            thumbnailUploadId = await uploadThumbnail(upload, generated, stage.signal)
-            thumbnail = { width: generated.width, height: generated.height, duration: generated.duration }
-          }
-          break
-        } catch (error) {
-          signal.throwIfAborted()
-          if (!stage.signal.aborted) throw error
-          thumbnail = null
-        } finally {
-          if (lease !== undefined) thumbnailCapacity.release(lease)
-          signal.removeEventListener('abort', abort)
-          thumbnailControls.delete(upload.id)
-        }
-      }
+      // Thumbnails are server-owned derivatives, never part of publication.
       signal.throwIfAborted()
 
       // 4. Complete. Once publication starts, await its authoritative result.
@@ -355,13 +318,6 @@ export const useUploadStore = defineStore('upload', () => {
         content_hash: workerResult.contentHash,
         encrypted_size: upload.encryptedSize,
       }
-      if (thumbnail) {
-        completePayload.media_width = thumbnail.width
-        completePayload.media_height = thumbnail.height
-        if (thumbnail.duration) completePayload.media_duration = thumbnail.duration
-      }
-      if (thumbnailUploadId) completePayload.thumbnail_upload_id = thumbnailUploadId
-
       signal.throwIfAborted()
       await api.post('/file/upload', completePayload, { timeout: 120000 })
       completed = true
@@ -482,67 +438,6 @@ export const useUploadStore = defineStore('upload', () => {
     }, signal).then(contentHash => contentHash === null ? null : { contentHash })
   }
 
-  // ── Thumbnail upload (as a separate encrypted file) ──────────────────
-
-  async function uploadThumbnail(
-    parentUpload: UploadSession,
-    thumb: { blob: Blob; width: number; height: number; duration?: number },
-    signal: AbortSignal,
-  ): Promise<string | null> {
-    let thumbnailID = ''
-    try {
-      signal.throwIfAborted()
-      const thumbDek = await generateDEK()
-
-      // Init a mini upload for the thumbnail
-      const initRes = await api.post<InitResponse>('/file/upload', {
-        path: '/.user/thumbnails/',
-        file_name: `thumb_${parentUpload.uploadId}.webp`,
-        file_size: thumb.blob.size,
-        content_type: 'image/webp',
-        internal: true,
-        dek: thumbDek.hex,
-        conflict_strategy: 'replace',
-      })
-      const thumbInit = initRes.data
-      thumbnailID = thumbInit.upload_id
-      signal.throwIfAborted()
-      // Thumbnails use the same encryption, disk leases and retry path.
-      const contentHash = await uploader.upload({
-        id: `thumbnail:${thumbInit.upload_id}`,
-        file: new File([thumb.blob], 'thumbnail.webp', { type: 'image/webp' }),
-        dekRaw: hexKey(thumbInit.dek || thumbDek.hex).buffer as ArrayBuffer,
-        partSize: thumbInit.part_size, totalParts: thumbInit.total_parts,
-      }, {
-        async url(part, requestSignal) {
-          const res = await api.get<PresignResponse>('/file/upload/presign', {
-            params: { upload_id: thumbInit.upload_id, start: part, count: 1 }, signal: requestSignal,
-          })
-          const url = res.data.parts[0]?.presigned_url
-          if (!url) throw new Error('Thumbnail upload URL was not issued')
-          return url
-        },
-        progress() {}, phase() {},
-      }, signal)
-      signal.throwIfAborted()
-      if (!contentHash) throw new Error('Thumbnail upload cancelled')
-
-      // Complete thumbnail upload
-      await api.post('/file/upload', {
-        upload_id: thumbInit.upload_id,
-        encrypted_size: encryptedFileSize(thumb.blob.size),
-        content_hash: contentHash,
-      }, { signal })
-
-      return thumbInit.upload_id
-    } catch (e) {
-      if (thumbnailID) await api.post('/file/upload/cancel', { upload_id: thumbnailID, reason: 'thumbnail_failed' }).catch(() => {})
-      signal.throwIfAborted()
-      console.warn('Thumbnail upload failed:', e)
-      return null
-    }
-  }
-
   // ── Pause / Resume / Cancel ──────────────────────────────────────────
 
   function pauseUpload(id: string): void {
@@ -551,7 +446,6 @@ export const useUploadStore = defineStore('upload', () => {
       upload.status = 'paused'
       upload.phase = 'paused'
       uploader.pause(id)
-      thumbnailControls.get(id)?.abort(new DOMException('Upload paused', 'AbortError'))
     }
   }
 

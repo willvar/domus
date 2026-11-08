@@ -118,7 +118,20 @@ type TranscodeRun struct {
 	cancel       context.CancelFunc
 	done         chan struct{}
 	waitErr      error
-	stderr       bytes.Buffer
+	stderr       boundedStderr
+}
+
+type boundedStderr struct{ bytes.Buffer }
+
+func (b *boundedStderr) Write(p []byte) (int, error) {
+	n := len(p)
+	if remaining := 16*1024 - b.Len(); remaining > 0 {
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+		_, _ = b.Buffer.Write(p)
+	}
+	return n, nil
 }
 
 // StartTranscode launches ffmpeg. The returned run owns the process; Wait
@@ -175,18 +188,19 @@ func StartTranscode(ctx context.Context, options TranscodeOptions, source, scrat
 		}, tail...)
 	}
 	command := exec.CommandContext(runCtx, options.FFmpegPath, arguments...)
-	if err := command.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("worker: ffmpeg transcode %s: %w", source, err)
-	}
 	run := &TranscodeRun{
 		command: command, scratchDir: scratchDir, cancel: cancel,
 		playlistPath: filepath.Join(scratchDir, "index.m3u8"),
 		done:         make(chan struct{}),
 	}
 	command.Stderr = &run.stderr
+	if err := command.Start(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("worker: ffmpeg transcode %s: %w", source, err)
+	}
 	go func() {
 		run.waitErr = run.command.Wait()
+		cancel()
 		close(run.done)
 	}()
 	return run, nil
@@ -196,6 +210,9 @@ func StartTranscode(ctx context.Context, options TranscodeOptions, source, scrat
 // web tier) is reported as an unclean exit like any ffmpeg failure.
 func (run *TranscodeRun) Wait() error {
 	<-run.done
+	if run.waitErr != nil {
+		return fmt.Errorf("%w: %s", run.waitErr, strings.TrimSpace(run.stderr.String()))
+	}
 	return run.waitErr
 }
 

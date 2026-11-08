@@ -10,6 +10,7 @@ import (
 
 var fileControlFields = map[string]map[string]struct{}{
 	"/file/mkdir":            fieldSet("path"),
+	"/file/thumbnail":        fieldSet("path"),
 	"/file/rename":           fieldSet("old_path", "new_path", "is_dir"),
 	"/file/copy":             fieldSet("src_path", "dst_path", "is_dir"),
 	"/file/move":             fieldSet("src_path", "dst_path", "is_dir"),

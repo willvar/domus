@@ -1064,11 +1064,50 @@ func (r *memTaskRepo) ListRecent(userID string) ([]Task, error) {
 			out = append(out, c)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.After(out[j].CreatedAt) })
+	sort.Slice(out, func(i, j int) bool {
+		active := func(status string) bool {
+			return status == "queued" || status == "running" || status == "pending" || status == "paused" || status == "cancelling"
+		}
+		a, b := active(out[i].Status), active(out[j].Status)
+		if a != b {
+			return a
+		}
+		if (out[i].Type == "transcode") != (out[j].Type == "transcode") {
+			return out[i].Type == "transcode"
+		}
+		return out[i].UpdatedAt.After(out[j].UpdatedAt)
+	})
 	if len(out) > 50 {
 		out = out[:50]
 	}
 	return out, nil
+}
+
+func (r *memTaskRepo) Fail(taskID, code string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.data[taskID]
+	if !ok {
+		return gorm.ErrRecordNotFound
+	}
+	if t.Status != "completed" && t.Status != "cancelled" {
+		t.Status, t.Phase, t.Error, t.UpdatedAt = "failed", "failed", code, time.Now()
+	}
+	return nil
+}
+
+func (r *memTaskRepo) CancelQueued(taskID string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	t, ok := r.data[taskID]
+	if !ok {
+		return false, gorm.ErrRecordNotFound
+	}
+	if t.Status != "queued" {
+		return false, nil
+	}
+	t.Status, t.Phase, t.UpdatedAt = "cancelled", "cancelled", time.Now()
+	return true, nil
 }
 
 func (r *memTaskRepo) DeleteCompleted(userID string) error {

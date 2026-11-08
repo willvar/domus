@@ -18,6 +18,8 @@ withDefaults(defineProps<{
 
 const emit = defineEmits<{
   cancelUpload: [id: string]
+  cancelTask: [id: string]
+  retryTask: [id: string]
 }>()
 
 const { t } = useI18n()
@@ -41,9 +43,17 @@ function phaseLabel(phase?: string): string {
     failed: t('tasks.status_failed'),
     aborted: t('tasks.status_aborted'),
     cancelled: t('tasks.status_cancelled'),
+    probing: t('tasks.phase_probing'),
+    transcoding: t('tasks.phase_transcoding'),
+    cancelling: t('tasks.status_cancelling'),
   }
   if (!phase) return t('files.phase_waiting')
   return labels[phase] || t('tasks.phase_processing')
+}
+
+function taskError(code?: string): string {
+  const key = /^transcode_[a-z_]+$/.test(code || '') ? `error.${code}` : 'error.transcode_failed'
+  return t(key) === key ? t('error.transcode_failed') : t(key)
 }
 </script>
 
@@ -78,9 +88,11 @@ function phaseLabel(phase?: string): string {
           </NButton>
         </article>
         <article v-for="item in serverTasks" :key="item.task_id">
-          <div><strong>{{ item.name || item.type }}</strong><span>{{ phaseLabel(item.phase || item.status) }}</span></div>
+          <div><strong>{{ item.name || item.type }}<template v-if="item.profile"> · {{ item.profile.toUpperCase() }}</template></strong><span :class="{ 'error-text': item.status === 'failed' }">{{ item.status === 'failed' ? taskError(item.error) : phaseLabel(['completed', 'cancelled', 'cancelling'].includes(item.status) ? item.status : item.phase || item.status) }}</span></div>
           <span>{{ Math.round((item.progress || 0) * 100) }}%</span>
           <NProgress class="progress" type="line" :percentage="(item.progress || 0) * 100" :show-indicator="false" />
+          <NButton v-if="item.type === 'transcode' && ['failed','cancelled'].includes(item.status)" text size="tiny" @click="emit('retryTask',item.task_id)">{{ t('tasks.retry') }}</NButton>
+          <NButton v-else-if="item.type === 'transcode' && ['queued','running','pending'].includes(item.status)" text size="tiny" type="error" @click="emit('cancelTask',item.task_id)">{{ t('upload.cancel') }}</NButton>
         </article>
         <article v-if="pendingCount" class="pending-row">
           <div><strong>{{ t('pending.title') }}</strong><span>{{ t('pending.status_queued') }}</span></div>

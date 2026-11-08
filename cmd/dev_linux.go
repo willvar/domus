@@ -25,8 +25,11 @@ import (
 )
 
 type devOptions struct {
-	runtimeRoot string
-	withWorker  bool
+	runtimeRoot  string
+	withWorker   bool
+	withFrontend bool
+	frontendHost string
+	frontendPort int
 }
 
 type devChild struct {
@@ -42,10 +45,13 @@ func devCommand(defaultConfigPath string, args []string) {
 	flags := flag.NewFlagSet("dev", flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
 	configPath := defaultConfigPath
-	options := devOptions{runtimeRoot: "tmp/dev"}
+	options := devOptions{runtimeRoot: "tmp/dev", frontendHost: "0.0.0.0", frontendPort: 8089}
 	flags.StringVar(&configPath, "c", configPath, "配置文件路径")
 	flags.StringVar(&options.runtimeRoot, "runtime-root", options.runtimeRoot, "本地运行状态目录")
 	flags.BoolVar(&options.withWorker, "with-worker", false, "同时启动 DOFS FUSE 服务和派生 worker")
+	flags.BoolVar(&options.withFrontend, "with-frontend", false, "后端就绪后启动 Vite 开发服务器")
+	flags.StringVar(&options.frontendHost, "frontend-host", options.frontendHost, "Vite 监听地址")
+	flags.IntVar(&options.frontendPort, "frontend-port", options.frontendPort, "Vite 监听端口")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return
@@ -135,7 +141,7 @@ func runDev(configPath string, options devOptions) error {
 	}
 	serviceContext, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
-	err = runDevServices(serviceContext, executable, generatedConfig, cfg, options.withWorker)
+	err = runDevServices(serviceContext, executable, generatedConfig, cfg, options)
 	if serviceContext.Err() != nil {
 		return nil
 	}
@@ -144,20 +150,20 @@ func runDev(configPath string, options devOptions) error {
 
 // Configuration is published before entering this supervisor. The optional
 // services use this invocation's config, not an old file-existence signal.
-func runDevServices(parent context.Context, executable, generatedConfig string, cfg *config.Config, withWorker bool) error {
+func runDevServices(parent context.Context, executable, generatedConfig string, cfg *config.Config, options devOptions) error {
 	ctx, cancel := context.WithCancelCause(parent)
 	defer cancel(nil)
-	children := make([]*devChild, 0, 3)
+	children := make([]*devChild, 0, 4)
 	defer func() {
 		for index := len(children) - 1; index >= 0; index-- {
 			stopDevChild(children[index], 2*time.Minute)
 		}
 	}()
-	start := func(name string, args ...string) (*devChild, error) {
+	start := func(name, program string, args ...string) (*devChild, error) {
 		if ctx.Err() != nil {
 			return nil, context.Cause(ctx)
 		}
-		child, err := startDevChild(name, executable, args...)
+		child, err := startDevChild(name, program, args...)
 		if err != nil {
 			return nil, err
 		}
@@ -169,7 +175,7 @@ func runDevServices(parent context.Context, executable, generatedConfig string, 
 		return child, nil
 	}
 
-	webChild, err := start("Web", "start", "-c", generatedConfig)
+	webChild, err := start("Web", executable, "start", "-c", generatedConfig)
 	if err != nil {
 		return err
 	}
@@ -193,8 +199,8 @@ func runDevServices(parent context.Context, executable, generatedConfig string, 
 		return err
 	}
 
-	if withWorker {
-		dofsChild, err := start("DOFS", "dofs", "serve", "-c", generatedConfig)
+	if options.withWorker {
+		dofsChild, err := start("DOFS", executable, "dofs", "serve", "-c", generatedConfig)
 		if err != nil {
 			return err
 		}
@@ -205,7 +211,15 @@ func runDevServices(parent context.Context, executable, generatedConfig string, 
 		}); err != nil {
 			return err
 		}
-		if _, err := start("worker", "worker", "-c", generatedConfig, "--interval", "5"); err != nil {
+		if _, err := start("worker", executable, "worker", "-c", generatedConfig, "--interval", "5"); err != nil {
+			return err
+		}
+	}
+	if options.withFrontend {
+		// Do not expose the proxy before this invocation's backend is ready.
+		// Reuse its supervisor instead of adding sleeps or silencing errors.
+		if _, err := start("Vite", "npm", "--prefix", "frontend", "run", "dev", "--",
+			"--host", options.frontendHost, "--port", strconv.Itoa(options.frontendPort), "--strictPort"); err != nil {
 			return err
 		}
 	}
@@ -408,7 +422,7 @@ func stopDevChild(child *devChild, timeout time.Duration) {
 	default:
 	}
 	if child.cmd.Process != nil {
-		_ = child.cmd.Process.Signal(syscall.SIGTERM)
+		_ = syscall.Kill(-child.cmd.Process.Pid, syscall.SIGTERM)
 	}
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
@@ -416,7 +430,7 @@ func stopDevChild(child *devChild, timeout time.Duration) {
 	case <-child.done:
 	case <-timer.C:
 		if child.cmd.Process != nil {
-			_ = child.cmd.Process.Kill()
+			_ = syscall.Kill(-child.cmd.Process.Pid, syscall.SIGKILL)
 		}
 		<-child.done
 	}

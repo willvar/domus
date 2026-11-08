@@ -92,10 +92,13 @@ make s3-reset                                    # 停本地 S3 并删除数据�
 `tmp/dev` 里的旧条目会失效，删掉重建即可。loopback 端点自动使用明文 HTTP；生产
 非 loopback 端点始终要求 HTTPS。
 
-`make dev` 通过 `domus dev --with-worker` 统一管理 Web、dofs serve 和 worker。
+`make dev` 通过 `domus dev --with-worker --with-frontend` 统一管理 Web、dofs serve、worker 和 Vite。
+本机需要 FUSE、`ffmpeg`、`ffprobe`，以及 PDF 首页渲染使用的 `pdftoppm`（Arch 的
+`poppler` / Debian 的 `poppler-utils`）。浏览器不再承担缩略图生成。
 运行时配置先以 0600 权限原子写入，再启动 Web；Web 就绪后启动 dofs serve，控制
 Socket 可用后才启动 worker（每 5 秒扫一次队列）。不以旧的 `tmp/dev/config.yaml`
-是否存在判断本次启动是否就绪。任一服务退出会停止其他子进程，`Ctrl-C` 一并退出。
+是否存在判断本次启动是否就绪。Vite 最后启动，避免浏览器重连抢在后端监听之前产生
+启动期 `ECONNREFUSED`；实际代理故障仍正常报错。任一服务退出会停止其他子进程，`Ctrl-C` 一并退出。
 直接运行 `domus dev` 仍只启动 Web，保持浏览器测试的可选 FUSE 边界。需要单独驱动时：
 
 ```bash
@@ -106,14 +109,36 @@ go build -o tmp/dev/domus-bin .
 ```
 
 worker 生成的缩略图会写回 `/.domus/thumbnails/` 并在产品库中按 inode/generation
-绑定，浏览器开启“显示缩略图”后刷新即可解密显示。视频转码产物写回
+绑定。开启“显示缩略图”后，只读取可见项；后台完成后主动通知目录更新，不定时检查
+缺失缩略图，也不提前读取整目录的缩略图正文。读取失败显示文件图标，详情面板可请求重新生成。视频转码产物写回
 `/.domus/renditions/…`：画质清单由 `GET /file/renditions` 提供，播放器画质菜单支持
 “边转边播”（生成中的档位按分片增量缓冲，完成后为完整 VOD）。生产部署用 systemd
 承载同样的进程组合（`domus-dofs.service` 加 worker 单元）。
 
 worker 在各用户的缩略图处理之后才使用剩余 `--limit` 预算探测媒体元数据和源编码，
-避免不支持的编码阻塞其他用户的缩略图。原画转封装必须声明完整的音视频编码；浏览器
+常驻模式另有一条串行转码通道，避免长时间编码阻塞新上传文件的缩略图；整个进程仍受
+同一个服务资源边界约束。原画转封装必须声明完整的音视频编码；浏览器
 不支持、任务失败或取消时退回原文件播放，失败的画质档位可手动重新排队。
+
+### 本机状态通知
+
+Web 内运行一个 Go 标准库 `net/rpc` 接收器，使用 `dofs.control_socket` 同目录下的
+`events.sock`（0600）。Web、worker 和 Domus DOFS 进程应使用同一配置、同一服务用户；
+不新增公开网络端口或独立消息服务。
+
+worker 保存任务进度、缩略图关联或分段清单后发送轻量提示，Web 读取当前状态并复用
+`task.update`、`dir.changed` 和 `rendition.changed` 推送。DOFS 在统一 `MetadataStore`
+写入接口成功返回后发送提示，Web 才按游标读取该 namespace 的现有事件日志；不再每
+500ms 扫描。SQLite 与 PostgreSQL 使用同一接线，没有数据库触发器或数据库文件监听。
+
+前端只在首次打开、恢复连接、重新激活视图、用户操作或收到通知时读取状态；没有
+缩略图、任务列表或播放器状态的定时轮询兜底。通知仅带用户、inode/版本或任务编号，
+不传文件正文、密钥或签名 URL。发送有短超时，失败记日志但不回滚已保存结果，不做
+持久化消息队列、确认重发或逐条消息重放。漏提示时可手动刷新或重新进入视图。
+
+状态通知不控制 worker 的任务发现扫描、租约续期、上传心跳或回收调度。
+本机通知覆盖通过 Domus 集成发起的操作（包括外部程序写 Domus FUSE 挂载）；直接绕过
+该集成写元数据库或使用独立消费者，不会凭空产生本机提示。跨主机通知不在此通道范围内。
 
 ## 验证
 
@@ -124,10 +149,13 @@ cd frontend && npm run check && npm run build
 make test-e2e
 ```
 
-E2E 使用真实 PostgreSQL、OSS 和浏览器，覆盖加密直传/读回、文件生命周期、浏览器
-生成 PDF 缩略图、默认关闭的缩略图显示开关、多租户隔离、响应式界面和重启持久化；
+E2E 使用真实 PostgreSQL、OSS 和浏览器，覆盖加密直传/读回、文件生命周期、服务器
+生成 PDF 缩略图、默认关闭的显示开关、多租户隔离、响应式界面和重启持久化；
 浏览器套件结束后还会创建并永久删除一个隔离密文 fixture，以 OSS Stat 验证物理回收。
 默认读取 `tmp/dev/root-bootstrap-password`；也可设置 `DOMUS_E2E_PASSWORD`。
+完整浏览器测试的后端 supervisor 默认带起 DOFS/worker，以覆盖服务器缩略图。
+仅运行不依赖派生文件的 HTTP 用例时，可用 `DOMUS_E2E_WITH_WORKER=0` 关闭；纯前端
+mock 用例沿用 `DOMUS_E2E_FRONTEND_ONLY=1`，不启动后端或 FUSE。
 
 ```bash
 E2E_REUSE_SERVERS=1 make test-e2e
@@ -173,7 +201,8 @@ OAuth SQL 测试使用真实 PostgreSQL 的独立随机 schema，覆盖并发消
 Fosite 当前要求 Ristretto 的泛型 `v1.0.0`；该版本因上游改用 `/v2` 路径而被撤回，
 `v0.2.0` 不兼容，因此沿用协议库的要求，不另维护缓存或依赖分叉。
 
-图片、视频和 PDF 的缩略图在上传浏览器中生成。缩略图有独立 DEK、独立 DOFS inode
+图片、视频和 PDF 的缩略图统一由服务器 worker 通过私有 DOFS 挂载生成，PDF 仅渲染
+第一页。上传完成不等待派生任务。缩略图有独立 DEK、独立 DOFS inode
 和独立密文对象，源文件元数据以 `source inode + generation -> thumbnail inode` 关联：
 
 - 重命名/移动保留关系；
@@ -181,10 +210,13 @@ Fosite 当前要求 Ristretto 的泛型 `v1.0.0`；该版本因上游改用 `/v2
 - 复制不共享源缩略图；
 - 永久删除源文件会回收缩略图。
 
-“显示缩略图”是设备本地偏好，默认关闭。关闭只禁止列表/详情加载和渲染缩略图，
-不禁止上传时生成；这样已有缩略图可随时开启显示，同时默认不产生额外 OSS GET 流量。
+“显示缩略图”是设备本地偏好，默认关闭，不控制服务器生成。开启时通过
+IntersectionObserver 只读取可见项，最多四个并发读取；离开视口取消未完成请求，
+已读取内容在当前缓存视图中复用。关闭时不产生缩略图对象的额外 OSS GET。
+生成失败按源 generation 有限重试，最多三次；详情面板的重新生成操作可显式重置尝试。
+MIME 用于图标和安全查看器选择，后缀仅在 MIME 未明确类型时补充判断；重命名不转换内容。
 
-HTTP 负责 query/command，WebSocket 只负责目录订阅、`task.update` 与 `task.report`。
+HTTP 负责 query/command，WebSocket 负责目录订阅、变化提示、`task.update` 与 `task.report`。
 不得恢复 `session.*` 或 `workspace.event`。
 
 文件路径始终是当前认证用户的 namespace 相对绝对路径：`/` 对应 DOFS 根 inode，用户

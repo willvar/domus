@@ -93,6 +93,7 @@ type ServerConfig struct {
 type WorkerConfig struct {
 	FFmpegPath        string `yaml:"ffmpeg_path"`
 	FFprobePath       string `yaml:"ffprobe_path"`
+	PDFToPPMPath      string `yaml:"pdftoppm_path"`
 	ThumbMaxDimension int    `yaml:"thumb_max_dimension"`
 	WorkDir           string `yaml:"work_dir"`
 	IntervalSeconds   int    `yaml:"interval_seconds"`
@@ -451,6 +452,7 @@ func Load(path string) (*Config, error) {
 		Worker: WorkerConfig{
 			FFmpegPath:        "ffmpeg",
 			FFprobePath:       "ffprobe",
+			PDFToPPMPath:      "pdftoppm",
 			ThumbMaxDimension: 480,
 		},
 		Log: logger.Config{Level: "info"},

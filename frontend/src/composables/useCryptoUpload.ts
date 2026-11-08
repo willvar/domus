@@ -1,8 +1,7 @@
 /**
  * useCryptoUpload — client-side encryption utilities for direct OSS upload.
  *
- * Provides: streaming SHA-256 hash, DEK generation, thumbnail generation,
- * text extraction, and blob encryption.
+ * Provides streaming SHA-256, DEK generation, and blob encryption.
  *
  * Encryption wire format is identical to the server-side Go implementation
  * (internal/auth/crypto.go) and compatible with sw.js decryption:
@@ -13,7 +12,6 @@
  */
 
 import { createSHA256 } from 'hash-wasm'
-import pdfWorkerURL from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import { decryptBlob as decryptWireBlob, encryptBlob as encryptWireBlob, keyFromHex, keyToHex } from '@willvar/escrow-vue'
 
 const CRYPTO_VERSION = 0x01
@@ -66,189 +64,6 @@ export async function generateDEK(): Promise<DEKBundle> {
 /** Wire-format codec delegated to @willvar/escrow-vue (DOFS v1). */
 export function encryptBlob(dekRaw: Uint8Array, data: ArrayBuffer): Promise<Uint8Array> {
   return encryptWireBlob(dekRaw, data)
-}
-
-// ── Thumbnail generation (canvas API) ───────────────────────────────────────
-
-export interface ThumbnailResult {
-  blob: Blob
-  width: number
-  height: number
-  duration?: number
-}
-
-const THUMB_MAX_DIMENSION = 480
-const PDF_THUMB_MAX_BYTES = 64 * 1024 * 1024
-const VIDEO_EXTENSIONS = new Set(['mp4', 'webm', 'mov', 'm4v'])
-
-function isVideoFile(file: File): boolean {
-  if (file.type.startsWith('video/')) return true
-  const dot = file.name.lastIndexOf('.')
-  if (dot <= 0) return false
-  return VIDEO_EXTENSIONS.has(file.name.substring(dot + 1).toLowerCase())
-}
-
-function isPDFFile(file: File): boolean {
-  return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf')
-}
-
-function thumbnailScale(width: number, height: number): number {
-  if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-    throw new Error('Invalid media dimensions')
-  }
-  return Math.min(1, THUMB_MAX_DIMENSION / width, THUMB_MAX_DIMENSION / height)
-}
-
-let thumbnailQueue: Promise<unknown> = Promise.resolve()
-
-const THUMB_TIMEOUT_MS = 15000
-
-export function generateThumbnail(file: File, signal?: AbortSignal): Promise<ThumbnailResult | null> {
-  const run = async (): Promise<ThumbnailResult | null> => {
-    signal?.throwIfAborted()
-    const control = new AbortController()
-    const abort = () => control.abort(signal?.reason)
-    signal?.addEventListener('abort', abort, { once: true })
-    const timer = setTimeout(() => control.abort(new Error('Thumbnail timed out')), THUMB_TIMEOUT_MS)
-    try { return await generateThumbnailNow(file, control.signal) }
-    finally { clearTimeout(timer); signal?.removeEventListener('abort', abort) }
-  }
-  // A timed-out decoder must actually finish cleanup before the next starts.
-  const result = thumbnailQueue.then(run, run)
-  thumbnailQueue = result.catch(() => {})
-  return result
-}
-
-async function generateThumbnailNow(file: File, signal: AbortSignal): Promise<ThumbnailResult | null> {
-  try {
-    if (file.type.startsWith('image/')) {
-      return await generateImageThumbnail(file, signal)
-    }
-    if (isVideoFile(file)) {
-      return await generateVideoThumbnail(file, signal)
-    }
-    if (isPDFFile(file) && file.size <= PDF_THUMB_MAX_BYTES) {
-      return await generatePDFThumbnail(file, signal)
-    }
-  } catch (error) {
-    // A malformed or browser-unsupported media file must never prevent the
-    // original encrypted upload. The file list falls back to its type icon.
-    console.warn('Browser thumbnail generation failed:', error)
-  }
-  return null
-}
-
-function mediaEvent(target: EventTarget, name: string, signal: AbortSignal, start: () => void): Promise<void> {
-  signal.throwIfAborted()
-  return new Promise((resolve, reject) => {
-    const cleanup = () => {
-      target.removeEventListener(name, done)
-      target.removeEventListener('error', failed)
-      signal.removeEventListener('abort', aborted)
-    }
-    const done = () => { cleanup(); resolve() }
-    const failed = () => { cleanup(); reject(new Error('Media thumbnail decode failed')) }
-    const aborted = () => { cleanup(); reject(signal.reason) }
-    target.addEventListener(name, done, { once: true })
-    target.addEventListener('error', failed, { once: true })
-    signal.addEventListener('abort', aborted, { once: true })
-    try { start() } catch (error) { cleanup(); reject(error) }
-  })
-}
-
-async function generateImageThumbnail(file: File, signal: AbortSignal): Promise<ThumbnailResult> {
-  const img = new Image()
-  const url = URL.createObjectURL(file)
-  const canvas = document.createElement('canvas')
-  try {
-    await mediaEvent(img, 'load', signal, () => { img.src = url })
-    const scale = thumbnailScale(img.naturalWidth, img.naturalHeight)
-    const w = Math.round(img.naturalWidth * scale)
-    const h = Math.round(img.naturalHeight * scale)
-    canvas.width = w
-    canvas.height = h
-    canvas.getContext('2d')!.drawImage(img, 0, 0, w, h)
-    const blob = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob failed'))), 'image/webp', 0.8)
-    })
-    return { blob, width: img.naturalWidth, height: img.naturalHeight }
-  } finally {
-    img.removeAttribute('src')
-    canvas.width = canvas.height = 0
-    URL.revokeObjectURL(url)
-  }
-}
-
-async function generateVideoThumbnail(file: File, signal: AbortSignal): Promise<ThumbnailResult> {
-  const video = document.createElement('video')
-  const url = URL.createObjectURL(file)
-  const canvas = document.createElement('canvas')
-  try {
-    video.muted = true
-    video.preload = 'metadata'
-    await mediaEvent(video, 'loadedmetadata', signal, () => { video.src = url })
-    // Seek to 1s or half duration, whichever is smaller. Some iOS codecs never
-    // fire `seeked` — bail out instead of hanging the pipeline forever.
-    await mediaEvent(video, 'seeked', signal, () => { video.currentTime = Math.min(1, video.duration / 2) })
-
-    const scale = thumbnailScale(video.videoWidth, video.videoHeight)
-    const w = Math.round(video.videoWidth * scale)
-    const h = Math.round(video.videoHeight * scale)
-    canvas.width = w
-    canvas.height = h
-    canvas.getContext('2d')!.drawImage(video, 0, 0, w, h)
-    const blob = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob failed'))), 'image/webp', 0.8)
-    })
-    return { blob, width: video.videoWidth, height: video.videoHeight, duration: video.duration }
-  } finally {
-    video.pause()
-    video.removeAttribute('src')
-    video.load()
-    canvas.width = canvas.height = 0
-    URL.revokeObjectURL(url)
-  }
-}
-
-async function generatePDFThumbnail(file: File, signal: AbortSignal): Promise<ThumbnailResult> {
-  const pdfjs = await import('pdfjs-dist')
-  signal.throwIfAborted()
-  pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerURL
-  const data = new Uint8Array(await file.arrayBuffer())
-  signal.throwIfAborted()
-  const loadingTask = pdfjs.getDocument({
-    data,
-  })
-  let destroying: Promise<void> | undefined
-  const destroy = () => (destroying ??= loadingTask.destroy())
-  const abort = () => { void destroy().catch(() => {}) }
-  signal.addEventListener('abort', abort, { once: true })
-  const canvas = window.document.createElement('canvas')
-  try {
-    const pdfDocument = await loadingTask.promise
-    const page = await pdfDocument.getPage(1)
-    const naturalViewport = page.getViewport({ scale: 1 })
-    const scale = thumbnailScale(naturalViewport.width, naturalViewport.height)
-    const viewport = page.getViewport({ scale })
-    canvas.width = Math.max(1, Math.round(viewport.width))
-    canvas.height = Math.max(1, Math.round(viewport.height))
-    const context = canvas.getContext('2d')
-    if (!context) throw new Error('Canvas 2D context unavailable')
-    await page.render({ canvas, canvasContext: context, viewport }).promise
-    signal.throwIfAborted()
-    const blob = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((value) => (value ? resolve(value) : reject(new Error('toBlob failed'))), 'image/webp', 0.8)
-    })
-    return {
-      blob,
-      width: Math.round(naturalViewport.width),
-      height: Math.round(naturalViewport.height),
-    }
-  } finally {
-    signal.removeEventListener('abort', abort)
-    canvas.width = canvas.height = 0
-    await destroy()
-  }
 }
 
 // ── Decrypt blob (reverse of encryptBlob) ───────────────────────────────────

@@ -10,6 +10,7 @@ import {
   NDrawerContent,
   NDropdown,
   NInput,
+  NProgress,
   NResult,
   NSpin,
 } from 'naive-ui'
@@ -39,6 +40,7 @@ import { RENDITION_PROFILES, useRenditions } from '../composables/useRenditions'
 import type { PlaybackStats } from '../composables/useRenditions'
 import api from '../composables/useApi'
 import { useFileSystemStore } from '../stores/fileSystem'
+import { useTasksStore } from '../stores/tasks'
 import { useAppMessage } from '../ui/feedback'
 import { reloadPreviewComponent } from '../composables/usePreviewReload'
 import type { FileListItem, ViewerType } from '../types'
@@ -56,6 +58,7 @@ const ARCHIVE_PREVIEW_LIMIT = 128 * 1024 * 1024
 const route = useRoute()
 const router = useRouter()
 const fs = useFileSystemStore()
+const tasks = useTasksStore()
 const { t, te } = useI18n()
 const { isMobile } = useDevice()
 const message = useAppMessage()
@@ -112,7 +115,7 @@ let scrollSyncOrigin: 'source' | 'preview' | null = null
 let scrollSyncReleaseFrame = 0
 
 const name = computed(() => file.value?.name || (typeof route.query.name === 'string' ? route.query.name : t('files.preview')))
-const viewerType = computed<ViewerType | null>(() => fs.getViewerType(name.value))
+const viewerType = computed<ViewerType | null>(() => fs.getViewerType(name.value, file.value?.content_type))
 const previewKind = computed(() => viewerType.value || 'unsupported')
 const inTrash = computed(() => isTrashLocation(file.value?.path || ''))
 const isVideoFile = computed(() => viewerType.value === 'video')
@@ -133,13 +136,35 @@ const qualityOptions = computed(() => {
   const cap = quality.sourceHeight.value
   for (const profile of RENDITION_PROFILES) {
     if (cap > 0 && parseInt(profile, 10) > cap) continue
-    options.push({ label: qualityLabelOf(profile), key: profile })
+    const item = quality.renditions.value.find(item => item.profile === profile)
+    const status = item?.status === 'queued' ? t('quality.pending') : item?.status === 'failed' ? t('quality.failed_short') : item?.status === 'running' ? `${t('quality.generating')} ${Math.round((item.progress || 0)*100)}%` : ''
+    options.push({ label: qualityLabelOf(profile) + (status ? ` · ${status}` : ''), key: profile })
   }
   return options
 })
 const qualityLabel = computed(() => quality.activeQuality.value === 'original'
   ? t('quality.original')
   : quality.activeQuality.value.toUpperCase())
+const transcode = computed(() => quality.selectedRendition.value)
+const transcodePending = computed(() => transcode.value && ['queued','running','cancelling'].includes(transcode.value.status))
+const transcodePhase = computed(() => {
+  const item = transcode.value
+  if (item?.status === 'queued') return t('quality.pending')
+  if (item?.status === 'cancelling') return t('tasks.status_cancelling')
+  if (item?.phase === 'probing') return t('tasks.phase_probing')
+  if (item?.phase === 'finalizing') return t('files.phase_finishing')
+  return t('tasks.phase_transcoding')
+})
+const transcodeError = computed(() => {
+  const code = quality.lastFailure.value?.code || 'transcode_failed'
+  const key = /^transcode_[a-z_]+$/.test(code) ? `error.${code}` : 'error.transcode_failed'
+  return t(key) === key ? t('error.transcode_failed') : t(key)
+})
+async function cancelTranscode(): Promise<void> {
+  qualitySelection++
+  switchingQuality.value = false
+  try { await quality.cancelSelected(); await tasks.fetchTasks() } catch (error: any) { message.error(te(error)) }
+}
 
 // File metadata ("元数据"): best-effort extras per preview kind, parsed
 // client-side from the decrypted bytes the SW serves via decryptUrl, plus the
@@ -336,7 +361,8 @@ function toggleStats(): void {
   }
 }
 const truncated = computed(() => sourceTruncated.value || viewTruncated.value)
-const isHtmlFile = computed(() => /\.html?$/i.test(name.value))
+const isHtmlFile = computed(() => viewerType.value === 'text' &&
+  (file.value?.content_type?.split(';')[0]?.trim().toLowerCase() === 'text/html' || /\.html?$/i.test(name.value)))
 const editableText = computed(() => ['text', 'markdown', 'csv'].includes(viewerType.value || ''))
 const canEdit = computed(() => editableText.value && !inTrash.value)
 const editorLanguage = computed(() => {
@@ -365,6 +391,7 @@ const parentPath = computed(() => {
 })
 
 onMounted(async () => {
+  tasks.startSync()
   window.addEventListener('beforeunload', preventDirtyUnload)
   const path = typeof route.query.path === 'string' ? route.query.path : ''
   if (!path) {
@@ -419,6 +446,7 @@ function handleHistoryRestored(): void {
 }
 
 onBeforeUnmount(() => {
+  tasks.stopSync()
   window.removeEventListener('beforeunload', preventDirtyUnload)
   qualitySelection++
   quality.detach()
@@ -809,7 +837,7 @@ async function onQualitySelect(key: string | number): Promise<void> {
   try {
     await quality.selectQuality(profile)
   } catch {
-    if (selection === qualitySelection) message.error(t('quality.failed'))
+    if (selection === qualitySelection && !quality.lastFailure.value) message.error(t('quality.failed'))
   } finally {
     if (selection === qualitySelection) switchingQuality.value = false
   }
@@ -989,6 +1017,23 @@ async function onQualitySelect(key: string | number): Promise<void> {
             <NSpin size="large" />
             <strong>{{ t('quality.preparing', { profile: qualityLabelOf(quality.activeQuality.value) }) }}</strong>
           </div>
+          <section v-if="transcodePending || quality.lastFailure.value || quality.statusUnavailable.value" class="video-task" data-testid="transcode-status" aria-live="polite">
+            <template v-if="quality.lastFailure.value">
+              <strong>{{ qualityLabelOf(quality.lastFailure.value.profile) }} · {{ t('quality.failed_short') }}</strong>
+              <span>{{ transcodeError }}</span>
+              <NButton size="small" @click="onQualitySelect(quality.lastFailure.value!.profile)">{{ t('tasks.retry') }}</NButton>
+            </template>
+            <template v-else-if="transcodePending">
+              <strong>{{ qualityLabel }} · {{ transcodePhase }}</strong>
+              <template v-if="(transcode?.progress || 0) > 0">
+                <span>{{ Math.round((transcode?.progress || 0)*100) }}%</span>
+                <NProgress type="line" :percentage="Math.round((transcode?.progress || 0)*100)" :show-indicator="false" />
+              </template>
+              <span v-if="transcode?.init">{{ t('quality.playable_while_generating') }}</span>
+              <NButton v-if="transcode?.task_id && transcode.status !== 'cancelling'" size="small" @click="cancelTranscode">{{ t('upload.cancel') }}</NButton>
+            </template>
+            <span v-if="quality.statusUnavailable.value">{{ t('quality.status_unavailable') }}</span>
+          </section>
           <NDropdown
             trigger="manual"
             :show="statsMenu"
@@ -1203,6 +1248,8 @@ async function onQualitySelect(key: string | number): Promise<void> {
   line-height: 1.8;
   user-select: text;
 }
+.video-task { position: fixed; top: 84px; right: 12px; z-index: 10; display: grid; gap: 8px; width: min(340px, calc(100vw - 24px)); padding: 14px; border-radius: 12px; background: rgb(21 26 36 / 90%); color: #fff; font-size: 13px; }
+.video-task .n-button { justify-self: start; }
 .preview-pdf, .preview-html { display: block; width: 100%; height: 100%; min-width: 0; min-height: 0; border: 0; border-radius: 12px; background: var(--domus-surface); box-shadow: 0 18px 58px rgb(30 38 58 / 15%); }
 .preview-state { display: flex; min-height: 280px; align-items: center; justify-content: center; flex-direction: column; gap: 9px; color: var(--muted); text-align: center; }
 .preview-state > svg { width: 38px; height: 38px; color: var(--muted); }

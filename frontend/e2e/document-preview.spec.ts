@@ -44,10 +44,12 @@ function pdf() {
 
 test.beforeAll(async () => {
   fixture('fixture.pdf', pdf(), 'application/pdf')
+  fixture('pdf-renamed.html', pdf(), 'application/pdf')
   const html = `<!doctype html><html><head><style>h1 { color: rgb(20, 100, 180); }</style></head><body>
     <h1>Rendered before editing</h1><script>document.body.dataset.scriptRan = 'yes'; parent.document.body.dataset.scriptRan = 'yes';</script></body></html>`
   fixture('fixture.html', html, 'text/html')
   fixture('fixture.htm', html, 'text/html')
+  fixture('html-without-extension', html, 'text/html')
   fixture('fixture.md', `# Wide Markdown\n\nA rendered document, not source code.\n\n\`\`\`text\n${'wide-code-'.repeat(400)}\n\`\`\`\n\n| First | Second |\n| --- | --- |\n| ${'W'.repeat(2000)} | Value |\n`, 'text/markdown')
   for (const name of ['fixture.log', 'fixture.txt', 'fixture.json', 'fixture.yaml', 'fixture.ts', 'fixture.css']) {
     fixture(name, 'Document preview fixture\n'+ 'long source line '.repeat(400), 'text/plain')
@@ -108,6 +110,16 @@ async function openPreview(page: Page, name: string) {
   await page.locator('.file-item').filter({ has: page.locator('.file-name').getByText(name, { exact: true }) }).dblclick()
 }
 
+test('MIME selects PDF despite a misleading suffix and HTML without a suffix', async ({ page }) => {
+  await openPreview(page, 'pdf-renamed.html')
+  await expect(page.locator('iframe.preview-pdf')).toBeVisible()
+  await expect(page.locator('.preview-canvas')).not.toHaveClass(/preview-canvas--html/)
+  await openPreview(page, 'html-without-extension')
+  const html = page.locator('iframe.preview-html')
+  await expect(html.contentFrame().getByRole('heading', { name: 'Rendered before editing' })).toBeVisible()
+  await expect(html).toHaveAttribute('sandbox', '')
+})
+
 test('PDF fills widescreen and resized viewports without covering the mobile bar', async ({ page }) => {
   await page.setViewportSize({ width: 2560, height: 1080 })
   await openPreview(page, 'fixture.pdf')
@@ -140,6 +152,7 @@ for (const name of ['fixture.log', 'fixture.txt', 'fixture.json', 'fixture.yaml'
     await openPreview(page, name)
     const document = page.locator('.text-preview, .table-preview, .notebook-preview')
     await expect(document).toBeVisible()
+    if (name.endsWith('.ipynb')) await expect(page.locator('.notebook-preview')).toBeVisible()
     expect((await document.boundingBox())!.width).toBe(2536)
     expect(await page.locator('.preview-canvas').evaluate(element => element.scrollWidth <= element.clientWidth)).toBeTruthy()
     if (!name.endsWith('.ipynb')) {

@@ -1,10 +1,11 @@
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import api from './useApi'
 import { useI18n } from './useI18n'
 import { useAuthStore } from '../stores/auth'
 import { useServiceWorker } from './useServiceWorker'
+import { useWebSocket } from './useWebSocket'
 import { useAppMessage } from '../ui/feedback'
-import type { RenditionArtifact, RenditionSummary, RenditionsResponse } from '../types'
+import type { RenditionArtifact, RenditionSummary, RenditionsResponse, TaskUpdateEvent } from '../types'
 
 
 /** Fixed playback-quality menu order, mirroring the worker profiles. */
@@ -44,6 +45,9 @@ export function useRenditions(options: {
   const renditions = ref<RenditionSummary[]>([])
   const sourceHeight = ref(0)
   const activeQuality = ref<string>('original')
+  const lastFailure = ref<{ profile: string; code: string } | null>(null)
+  const statusUnavailable = ref(false)
+  const selectedRendition = computed(() => findRendition(activeQuality.value))
 
   let video: HTMLVideoElement | null = null
   let filePath = ''
@@ -60,7 +64,10 @@ export function useRenditions(options: {
   let ended = false
   let restoreTime = 0
   let pendingSeek: number | null = null
-  let pollTimer: ReturnType<typeof setInterval> | null = null
+  const ws = useWebSocket()
+  let watching = false
+  let updating: Promise<void> | null = null
+  let updateAgain = false
   let pumpTimer: ReturnType<typeof setTimeout> | null = null
   let attachGeneration = 0
   let selectionGeneration = 0
@@ -128,6 +135,7 @@ export function useRenditions(options: {
     const payload = response.data
     renditions.value = Array.isArray(payload?.renditions) ? payload.renditions : []
     sourceHeight.value = payload?.source_height || 0
+    statusUnavailable.value = false
     return true
   }
 
@@ -199,18 +207,45 @@ export function useRenditions(options: {
     return null
   }
 
-  function stopPolling(): void {
-    if (pollTimer) {
-      clearInterval(pollTimer)
-      pollTimer = null
-    }
+  function requestUpdate(): Promise<void> {
+    if (!video || !filePath || document.visibilityState === 'hidden') return Promise.resolve()
+    if (updating) { updateAgain = true; return updating }
+    updating = (async () => {
+      do {
+        updateAgain = false
+        await syncSelected()
+      } while (updateAgain && video && filePath)
+    })().finally(() => { updating = null })
+    return updating
   }
 
-  function startPolling(): void {
-    if (pollTimer) return
-    pollTimer = setInterval(() => {
-      void pollTick()
-    }, 2000)
+  function onRenditionChanged(data: { path: string }): void {
+    if (data.path === filePath) void requestUpdate()
+  }
+
+  function onTaskChanged(data: TaskUpdateEvent): void {
+    if (data.type === 'transcode' && (data.source_path === filePath ||
+      renditions.value.some(item => item.task_id === data.task_id))) void requestUpdate()
+  }
+
+  function resync(): void { void requestUpdate() }
+
+  function startWatching(): void {
+    if (watching) return
+    watching = true
+    ws.on('rendition.changed', onRenditionChanged)
+    ws.on('task.update', onTaskChanged)
+    ws.onReconnect(resync)
+    document.addEventListener('visibilitychange', resync)
+  }
+
+  function stopWatching(): void {
+    if (!watching) return
+    watching = false
+    ws.off('rendition.changed', onRenditionChanged)
+    ws.off('task.update', onTaskChanged)
+    ws.offReconnect(resync)
+    document.removeEventListener('visibilitychange', resync)
   }
 
   function teardownMedia(): void {
@@ -219,7 +254,6 @@ export function useRenditions(options: {
     artifactRequests.clear()
     for (const cleanup of mediaCleanup.splice(0)) cleanup()
     attachedProfile = null
-    stopPolling()
     if (video) {
       video.removeEventListener('seeking', onSeeking)
       video.pause()
@@ -556,15 +590,13 @@ export function useRenditions(options: {
     }
   }
 
-  /** Attaches the MSE pipeline for one rendition, or polls until decodable. */
+  /** Attaches one rendition, or waits for a playable-manifest notification. */
   async function playRendition(profile: string): Promise<void> {
     const rendition = findRendition(profile)
     if (!video || !rendition) return
     if (!rendition.init) {
-      // Nothing decodable yet: keep the original playing and poll until the
-      // init segment appears, then attach automatically.
+      // Keep the original playing until a notification exposes an init segment.
       activeQuality.value = profile
-      startPolling()
       return
     }
     const mime = resolveMime(rendition)
@@ -623,7 +655,6 @@ export function useRenditions(options: {
       try { mediaSource.duration = current.duration } catch { /* will follow the appends */ }
     }
     pump()
-    if (!finalized) startPolling()
     settleOnCanPlay(profile, wasPlaying)
   }
 
@@ -652,17 +683,15 @@ export function useRenditions(options: {
     })
   }
 
-  async function pollTick(): Promise<void> {
-    if (!video) {
-      stopPolling()
-      return
-    }
+  async function syncSelected(): Promise<void> {
+    if (!video) return
     const selection = selectionGeneration
     const attachment = attachGeneration
     try {
       if (!await refresh()) return
     } catch (reason) {
       console.warn('rendition refresh failed:', reason)
+      if (selection === selectionGeneration && attachment === attachGeneration && video) statusUnavailable.value = true
       return
     }
     if (selection !== selectionGeneration || attachment !== attachGeneration || !video) return
@@ -671,15 +700,15 @@ export function useRenditions(options: {
     const rendition = findRendition(activeQuality.value)
     if (!rendition) {
       if (readyWaiters.has(activeQuality.value) || attachedProfile === activeQuality.value) {
+        lastFailure.value = { profile: activeQuality.value, code: 'transcode_record_missing' }
         settleWaiters(activeQuality.value, new Error('rendition vanished'))
         await playOriginal()
       }
-      stopPolling()
       return
     }
     if (rendition.status === 'failed' || rendition.status === 'cancelled') {
+      if (rendition.status === 'failed') lastFailure.value = { profile: rendition.profile, code: rendition.error || 'transcode_failed' }
       settleWaiters(activeQuality.value, new Error(rendition.error || 'rendition failed'))
-      stopPolling()
       // Recover to the raw original unless the raw original IS the current
       // source. A mounted MSE source (segmented original included) must be
       // torn down — a partial one would freeze on the last appended segment;
@@ -707,7 +736,6 @@ export function useRenditions(options: {
     if (updated.status === 'ready') {
       segments = published
       finalized = true
-      stopPolling()
       pump()
       finalizeStream()
     }
@@ -716,6 +744,7 @@ export function useRenditions(options: {
   /** Remembers only explicit player selections, never automatic fallbacks. */
   async function selectQuality(profile: string, opts: { silent?: boolean } = {}): Promise<void> {
     if (!video || (profile !== 'original' && !RENDITION_PROFILES.some(value => value === profile))) return
+    lastFailure.value = null
     try {
       const key = qualityStorageKey()
       if (key) localStorage.setItem(key, profile)
@@ -727,7 +756,6 @@ export function useRenditions(options: {
 
     const selection = ++selectionGeneration
     settleAllWaiters(new Error('playback selection superseded'))
-    stopPolling()
     // Keep a fully attached source on its own segments while the new init
     // is pending; an unfinished attachment cannot keep playing.
     if (mediaSource && (!sourceBuffer || (failed && attachedProfile === profile) ||
@@ -765,14 +793,14 @@ export function useRenditions(options: {
         }
       }
       if (selection !== selectionGeneration) return
-      // POST creates its row synchronously: missing on the next poll means
-      // cancellation/replacement, not eventual queue visibility.
-      startPolling()
+      // Read the queue response's current state once. Later updates are pushed.
+      await requestUpdate()
       if (profile !== 'original' && !opts.silent) notify.info(t('quality.queued'))
     }
     void queue().catch(async (reason: unknown) => {
       if (selection !== selectionGeneration) return
       settleWaiters(profile, reason instanceof Error ? reason : new Error('rendition queue failed'))
+      lastFailure.value = { profile, code: 'transcode_failed' }
       if (profile === 'original') notify.error(t('quality.failed'))
       await playOriginal()
     })
@@ -787,6 +815,9 @@ export function useRenditions(options: {
     const selection = selectionGeneration
     video = target
     filePath = path
+    lastFailure.value = null
+    statusUnavailable.value = false
+    startWatching()
     attachGeneration++
     // Choose the manifest source first; do not start a redundant raw 8 GiB
     // fetch immediately before attaching an already available rendition.
@@ -860,11 +891,21 @@ export function useRenditions(options: {
   function detach(): void {
     selectionGeneration++
     settleAllWaiters(new Error('playback detached'))
+    stopWatching()
     teardownMedia()
     playbackIntent = null
     video = null
     filePath = ''
   }
 
-  return { renditions, sourceHeight, activeQuality, attach, detach, selectQuality, refresh, getStats }
+  async function cancelSelected(): Promise<void> {
+    const task = selectedRendition.value?.task_id
+    if (!task) return
+    await api.delete('/task/' + encodeURIComponent(task))
+    settleAllWaiters(new Error('transcode cancelled'))
+    await playOriginal()
+    await refresh()
+  }
+
+  return { renditions, sourceHeight, activeQuality, selectedRendition, lastFailure, statusUnavailable, cancelSelected, attach, detach, selectQuality, refresh, getStats }
 }

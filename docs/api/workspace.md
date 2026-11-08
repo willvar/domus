@@ -5,5 +5,5 @@
 `GET/PUT/DELETE /workspace/` 曾保存浏览器桌面窗口和标签页状态。Domus 现在只有统一的
 响应式文件管理界面，不再存在桌面窗口系统，因此这些路由不再注册并返回 `404`。
 
-旧 Docker Workspace 执行面也已退役；当前缩略图由上传浏览器生成，不存在同名的内部
-服务或公开 HTTP API。
+旧 Docker Workspace 执行面也已退役；当前缩略图由固定用途的服务器 worker 经私有
+DOFS 挂载生成，不存在同名的容器执行服务或公开命令执行 API。

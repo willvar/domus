@@ -15,6 +15,7 @@ SupplementaryGroups=domus-runtime
 UMask=0077
 RuntimeDirectory=domus
 RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 StateDirectory=domus
 StateDirectoryMode=0700
 ExecStart=/usr/local/bin/domus dofs serve -c /etc/domus/config.yaml

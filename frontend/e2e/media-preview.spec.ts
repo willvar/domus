@@ -55,7 +55,7 @@ async function listFiles(page: Page, path: string): Promise<FileInfo[]> {
   return Array.isArray(body.files) ? body.files : []
 }
 
-test('浏览器上传 PDF 时生成加密缩略图，显示开关默认关闭且不影响原件预览', async ({ page }) => {
+test('上传 PDF 后由服务器异步生成加密缩略图，显示开关默认关闭且不影响原件预览', async ({ page }) => {
   const credentials = e2eCredentials()
   const suffix = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
   const marker = `Domus PDF preview E2E ${suffix}`
@@ -79,7 +79,10 @@ test('浏览器上传 PDF 时生成加密缩略图，显示开关默认关闭且
     let sawPublication!: () => void
     const publicationSeen = new Promise<void>(resolve => { sawPublication = resolve })
     await page.route('**/file/upload', async route => {
-      if (route.request().postDataJSON().thumbnail_upload_id) {
+      const body = route.request().postDataJSON()
+      expect(body.thumbnail_upload_id).toBeUndefined()
+      expect(body.internal).not.toBe(true)
+      if (body.upload_id) {
         sawPublication()
         await publicationGate
       }
@@ -101,7 +104,7 @@ test('浏览器上传 PDF 时生成加密缩略图，显示开关默认关闭且
       await upload
       await page.unroute('**/file/upload')
     }
-    expect(returnedBeforePublication, 'thumbnail completion must not satisfy the source upload waiter').toBe(false)
+    expect(returnedBeforePublication, 'the source upload waiter must wait for publication').toBe(false)
 
     const fileItem = page.locator('.file-item').filter({ has: page.locator('.file-name').getByText(fileName, { exact: true }) })
     await expect(fileItem).toBeVisible({ timeout: 30_000 })
@@ -111,14 +114,14 @@ test('浏览器上传 PDF 时生成加密缩略图，显示开关默认关闭且
         const source = (await listFiles(page, rootPath)).find(file => file.name === fileName)
         return Boolean(source?.status === 'ready' && source.thumbnail_url && source.thumbnail_dek)
       }, {
-        timeout: 30_000,
+        timeout: 60_000,
         message: `thumbnail metadata for ${fileName} was not published`,
       })
       .toBe(true)
 
     const firstSource = (await listFiles(page, rootPath)).find(file => file.name === fileName)
     currentThumbnailURL = firstSource?.thumbnail_url || ''
-    expect(currentThumbnailURL, 'source did not expose its browser-generated thumbnail descriptor').not.toBe('')
+    expect(currentThumbnailURL, 'source did not expose its server-generated thumbnail descriptor').not.toBe('')
 
     const taskResponse = await page.request.get(`${apiBaseURL}/task/`)
     expect(taskResponse.ok()).toBeTruthy()
@@ -142,12 +145,12 @@ test('浏览器上传 PDF 时生成加密缩略图，显示开关默认关闭且
     await expect
       .poll(() => thumbnail.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth > 0 && image.naturalHeight > 0), {
         timeout: 30_000,
-        message: 'decrypted browser-generated thumbnail did not render',
+        message: 'decrypted server-generated thumbnail did not render',
       })
       .toBe(true)
 
     const thumbnailURL = await thumbnail.getAttribute('src')
-    expect(thumbnailURL).toMatch(/^\/__decrypt__\//)
+    expect(thumbnailURL).toMatch(/^blob:/)
     await expect
       .poll(() => page.evaluate(async (url) => {
         const response = await fetch(url)

@@ -423,16 +423,18 @@ func (m *MockSessionRepo) SetPopulateKEK(fn func(*Session)) {
 // --- MockTaskRepo ---
 
 type MockTaskRepo struct {
-	CreateFn          func(userID, taskID, taskType, name string) error
-	CreateQueuedFn    func(userID, taskID, taskType, name string, sourceInode int64, sourcePath, profile string) error
-	GetFn             func(taskID string) (*Task, error)
-	UpdateProgressFn  func(taskID string, progress float64, phase string) error
-	UpdateStatusFn    func(taskID, status string) error
-	ClaimNextTranscodeFn func(userID string) (*Task, error)
+	CreateFn                 func(userID, taskID, taskType, name string) error
+	CreateQueuedFn           func(userID, taskID, taskType, name string, sourceInode int64, sourcePath, profile string) error
+	GetFn                    func(taskID string) (*Task, error)
+	UpdateProgressFn         func(taskID string, progress float64, phase string) error
+	UpdateStatusFn           func(taskID, status string) error
+	FailFn                   func(taskID, code string) error
+	CancelQueuedFn           func(taskID string) (bool, error)
+	ClaimNextTranscodeFn     func(userID string) (*Task, error)
 	RequeueStaleTranscodesFn func() ([]Task, error)
-	ListRecentFn      func(userID string) ([]Task, error)
-	DeleteCompletedFn func(userID string) error
-	DeleteFn          func(taskID string) error
+	ListRecentFn             func(userID string) ([]Task, error)
+	DeleteCompletedFn        func(userID string) error
+	DeleteFn                 func(taskID string) error
 }
 
 func (m *MockTaskRepo) Create(userID, taskID, taskType, name string) error {
@@ -482,6 +484,20 @@ func (m *MockTaskRepo) ListRecent(userID string) ([]Task, error) {
 		return m.ListRecentFn(userID)
 	}
 	return []Task{}, nil
+}
+
+func (m *MockTaskRepo) Fail(taskID, code string) error {
+	if m.FailFn != nil {
+		return m.FailFn(taskID, code)
+	}
+	return m.UpdateStatus(taskID, "failed")
+}
+
+func (m *MockTaskRepo) CancelQueued(taskID string) (bool, error) {
+	if m.CancelQueuedFn != nil {
+		return m.CancelQueuedFn(taskID)
+	}
+	return true, m.UpdateStatus(taskID, "cancelled")
 }
 func (m *MockTaskRepo) DeleteCompleted(userID string) error {
 	if m.DeleteCompletedFn != nil {

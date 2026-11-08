@@ -21,14 +21,18 @@ type FileRecord struct {
 	ObjectKey  string `json:"-"`
 	Generation int64  `json:"-"`
 
-	ThumbnailKey        string  `json:"-"`
-	ThumbnailWrappedDEK string  `json:"-"`
-	MediaWidth          int     `json:"-"`
-	MediaHeight         int     `json:"-"`
-	MediaDuration       float64 `json:"-"`
-	MediaCodecs         string  `json:"-"`
-	MediaMeta           string  `json:"-"`
-	WrappedDEK          string  `json:"-"`
+	ThumbnailKey        string     `json:"-"`
+	ThumbnailWrappedDEK string     `json:"-"`
+	ThumbnailStatus     string     `json:"-"`
+	ThumbnailError      string     `json:"-"`
+	ThumbnailAttempts   int        `json:"-"`
+	ThumbnailRetryAt    *time.Time `json:"-"`
+	MediaWidth          int        `json:"-"`
+	MediaHeight         int        `json:"-"`
+	MediaDuration       float64    `json:"-"`
+	MediaCodecs         string     `json:"-"`
+	MediaMeta           string     `json:"-"`
+	WrappedDEK          string     `json:"-"`
 
 	Status           string    `json:"status"`
 	UploadID         string    `json:"-"`

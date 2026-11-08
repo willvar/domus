@@ -10,6 +10,7 @@ import type {
 } from '../types'
 import { useI18n } from './useI18n'
 import { useAppDialog } from '../ui/feedback'
+import { splitExtension } from '../utils/fileKind'
 
 function linkedContent(content: string): () => VNodeChild {
   return () => {
@@ -88,6 +89,45 @@ export function showPrompt(title: string, placeholder: string = ''): Promise<str
       onClose: cancel,
       onMaskClick: cancel,
       onEsc: cancel,
+    })
+  })
+}
+
+/** Renames preserve a visible suffix unless the user explicitly edits it. */
+export function showRenamePrompt(name: string, isDir: boolean): Promise<string | null> {
+  const { t } = useI18n()
+  const dialog = useAppDialog()
+  const { stem, suffix } = isDir ? { stem: name, suffix: '' } : splitExtension(name)
+  const value = ref(stem)
+  const fullName = ref(false)
+  const result = () => {
+    const next = value.value.trim()
+    if (!next) return null
+    return !fullName.value && suffix && !next.toLowerCase().endsWith(suffix.toLowerCase()) ? next + suffix : next
+  }
+  return new Promise(resolve => {
+    let settled = false
+    const finish = (next: string | null) => { if (!settled) { settled = true; resolve(next) } }
+    const instance = dialog.create({
+      class: 'domus-dialog domus-prompt-dialog', title: t('menu.rename'), showIcon: false,
+      positiveText: t('dialog.ok'), negativeText: t('dialog.cancel'),
+      content: () => h('div', [
+        h(NInput, { value: value.value, autofocus: true, clearable: true,
+          'onUpdate:value': (next: string) => { value.value = next },
+          onKeydown: (event: KeyboardEvent) => {
+            if (event.key === 'Enter' && !event.isComposing && result()) { event.preventDefault(); finish(result()); instance.destroy() }
+          },
+        }),
+        suffix ? h('div', { style: 'margin-top:12px' }, [
+          h('p', { style: 'overflow-wrap:anywhere' }, t('dialog.rename_result', { name: result() || name })),
+          h(NCheckbox, { checked: fullName.value, 'onUpdate:checked': (checked: boolean) => {
+            value.value = checked ? (result() || name) : splitExtension(value.value).stem
+            fullName.value = checked
+          } }, { default: () => t('dialog.rename_full_name') }),
+        ]) : null,
+      ]),
+      onPositiveClick: () => { if (!result()) return false; finish(result()) },
+      onNegativeClick: () => finish(null), onClose: () => finish(null), onMaskClick: () => finish(null), onEsc: () => finish(null),
     })
   })
 }

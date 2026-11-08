@@ -13,6 +13,7 @@ import (
 	"gorm.io/gorm/clause"
 
 	"domus/internal/model"
+	"domus/internal/notify"
 )
 
 func (r *Repo) controller(ctx context.Context, userID string) (*dofs.Backend, error) {
@@ -62,12 +63,14 @@ func (r *Repo) upsertMetadata(userID string, inode uint64, generation int64, upd
 	values := map[string]any{
 		"user_id": userID, "inode": inode, "generation": generation,
 		"content_type": "", "content_hash": "", "thumbnail": uint64(0),
+		"thumbnail_status": "", "thumbnail_error": "", "thumbnail_attempts": 0, "thumbnail_retry_at": (*time.Time)(nil),
 		"media_width": 0, "media_height": 0, "media_duration": float64(0),
 		"media_codecs": "", "media_meta": "", "created_at": now, "updated_at": now,
 	}
 	assignments := make(clause.Set, 0, 10)
 	for _, name := range []string{
 		"content_type", "content_hash", "thumbnail", "media_width", "media_height",
+		"thumbnail_status", "thumbnail_error", "thumbnail_attempts", "thumbnail_retry_at",
 		"media_duration", "media_codecs", "media_meta",
 	} {
 		incoming := clause.Column{Table: "excluded", Name: name}
@@ -89,7 +92,7 @@ func (r *Repo) upsertMetadata(userID string, inode uint64, generation int64, upd
 			Column: clause.Column{Name: name}, Value: clause.Column{Table: "excluded", Name: name},
 		})
 	}
-	return r.db.Model(&metadataRecord{}).Clauses(clause.OnConflict{
+	result := r.db.Model(&metadataRecord{}).Clauses(clause.OnConflict{
 		Columns:   []clause.Column{{Name: "user_id"}, {Name: "inode"}},
 		DoUpdates: assignments,
 		// A delayed probe must not roll a newer projection back to its generation.
@@ -97,7 +100,11 @@ func (r *Repo) upsertMetadata(userID string, inode uint64, generation int64, upd
 			Column: clause.Column{Table: "domus_file_metadata", Name: "generation"},
 			Value:  clause.Column{Table: "excluded", Name: "generation"},
 		}}},
-	}).Create(values).Error
+	}).Create(values)
+	if result.Error == nil && result.RowsAffected > 0 {
+		notify.Publish(notify.Event{Kind: "file", UserID: userID, Inode: int64(inode), Generation: generation})
+	}
+	return result.Error
 }
 
 func (r *Repo) Upsert(userID, namespacePath, name string, isDir bool, size int64, contentType, contentHash string, options ...model.UpsertFileOpts) error {
@@ -286,6 +293,7 @@ func (r *Repo) UpdateThumbnail(userID, namespacePath, thumbnailKey, thumbnailWra
 	}
 	return r.upsertMetadata(userID, uint64(record.ID), record.Generation, map[string]any{
 		"thumbnail": thumbnail, "media_width": width, "media_height": height, "media_duration": duration,
+		"thumbnail_status": "ready", "thumbnail_error": "", "thumbnail_retry_at": (*time.Time)(nil),
 	})
 }
 
@@ -310,6 +318,14 @@ func (r *Repo) UpdateThumbnailIfGeneration(userID, namespacePath string, fileID,
 	return true, r.upsertMetadata(userID, uint64(record.ID), generation, map[string]any{
 		"thumbnail": thumbnail, "media_width": width,
 		"media_height": height, "media_duration": duration,
+		"thumbnail_status": "ready", "thumbnail_error": "", "thumbnail_retry_at": (*time.Time)(nil),
+	})
+}
+
+// Thumbnail attempts belong to the source generation, never to its filename.
+func (r *Repo) SetThumbnailState(record model.FileRecord, status, code string, attempts int, retryAt *time.Time) error {
+	return r.upsertMetadata(record.UserID, uint64(record.ID), record.Generation, map[string]any{
+		"thumbnail_status": status, "thumbnail_error": code, "thumbnail_attempts": attempts, "thumbnail_retry_at": retryAt,
 	})
 }
 
@@ -319,6 +335,10 @@ func (r *Repo) UpdateContentType(userID, namespacePath, contentType string) erro
 		return err
 	}
 	return r.upsertMetadata(userID, uint64(record.ID), record.Generation, map[string]any{"content_type": contentType})
+}
+
+func (r *Repo) UpdateMediaGeometry(record model.FileRecord, width, height int, duration float64) error {
+	return r.upsertMetadata(record.UserID, uint64(record.ID), record.Generation, map[string]any{"media_width": width, "media_height": height, "media_duration": duration})
 }
 
 // UpdateMediaCodecs records the source media's MSE codec string, probed by

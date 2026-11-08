@@ -4,20 +4,135 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/willvar/dofs"
+	"gorm.io/driver/postgres"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 
 	"domus/config"
 	"domus/internal/auth"
 	"domus/internal/dofsbridge"
 	"domus/internal/model"
+	"domus/internal/notify"
 )
+
+func TestMetadataDriversEmitCommittedChangesThroughRPC(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_DSN")
+	if dsn == "" {
+		t.Skip("set TEST_DATABASE_DSN for both metadata-driver checks")
+	}
+	for _, driver := range []string{"sqlite", "postgres"} {
+		t.Run(driver, func(t *testing.T) {
+			database, err := gorm.Open(postgres.Open(dsn), &gorm.Config{Logger: logger.Default.LogMode(logger.Silent)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			sqlDB, err := database.DB()
+			if err != nil {
+				t.Fatal(err)
+			}
+			sqlDB.SetMaxOpenConns(1)
+			t.Cleanup(func() { sqlDB.Close() })
+			schema := "domus_test_wake_" + uuid.NewString()[:8]
+			if err := database.Exec("CREATE SCHEMA " + schema).Error; err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { database.Exec("DROP SCHEMA " + schema + " CASCADE") })
+			if err := database.Exec("SET search_path TO " + schema + ", public").Error; err != nil {
+				t.Fatal(err)
+			}
+			directory, err := os.MkdirTemp(os.TempDir(), "rpc-store-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.RemoveAll(directory) })
+			ctx, cancel := context.WithCancel(t.Context())
+			t.Cleanup(cancel)
+			controlSocket := filepath.Join(directory, "dofs.sock")
+			events := make(chan notify.Event, 64)
+			listener, err := notify.Listen(ctx, notify.SocketPath(controlSocket), func(event notify.Event) { events <- event })
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { listener.Close(); notify.Configure("") })
+			master := bytes.Repeat([]byte{0x31}, dofs.KeySize)
+			wrapped, err := dofs.WrapKey(master, bytes.Repeat([]byte{0x52}, dofs.KeySize))
+			if err != nil {
+				t.Fatal(err)
+			}
+			repos := model.NewMemRepos(nil)
+			user, err := repos.Users.Create("event-fixture", "password", "user", hex.EncodeToString(wrapped))
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := &config.Config{}
+			cfg.DOFS.Metadata.Driver = driver
+			cfg.DOFS.Metadata.SQLite.Path = filepath.Join(directory, "metadata.sqlite")
+			cfg.DOFS.Metadata.SQLite.BusyTimeoutSeconds = 1
+			cfg.DOFS.Metadata.SQLite.MaxOpenConnections = 2
+			cfg.DOFS.ControlSocket = controlSocket
+			cfg.OSS.ServerEndpoint, cfg.OSS.Bucket, cfg.OSS.Region = "127.0.0.1:1", "fixture", "us-east-1"
+			cfg.OSS.AccessKeyID, cfg.OSS.AccessKeySecret = "fixture-access", "fixture-secret"
+			runtime, err := dofsbridge.Open(ctx, database, cfg, master, repos.Users)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(runtime.Close)
+			if err := runtime.EnsureUser(ctx, user); err != nil {
+				t.Fatal(err)
+			}
+			for len(events) > 0 {
+				<-events
+			}
+			sequence, err := runtime.Metadata.LatestEventSequence(ctx, user.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			node, err := runtime.Metadata.CreateNode(ctx, dofs.CreateNodeRequest{NamespaceID: user.ID, Parent: dofs.RootInode, Name: "folder", Kind: dofs.NodeKindDirectory, Mode: 0700})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := runtime.Metadata.Rename(ctx, dofs.RenameRequest{NamespaceID: user.ID, Inode: node.Inode, NewParent: dofs.RootInode, NewName: "renamed"}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runtime.Metadata.Chmod(ctx, user.ID, node.Inode, 0750); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runtime.Metadata.Remove(ctx, dofs.RemoveRequest{NamespaceID: user.ID, Parent: dofs.RootInode, Name: "renamed", Directory: true}); err != nil {
+				t.Fatal(err)
+			}
+			for i := 0; i < 4; i++ {
+				select {
+				case event := <-events:
+					if event.Kind != "dofs" || event.UserID != user.ID {
+						t.Fatalf("wrong change identity: %#v", event)
+					}
+				case <-time.After(3 * time.Second):
+					t.Fatal("committed metadata change emitted no RPC hint")
+				}
+			}
+			journal, err := runtime.Metadata.ListEvents(ctx, user.ID, sequence, 20)
+			if err != nil || len(journal) != 4 {
+				t.Fatalf("stored changes = %d, error = %v", len(journal), err)
+			}
+			if _, _, err := runtime.Metadata.Rename(ctx, dofs.RenameRequest{NamespaceID: user.ID, Inode: node.Inode, NewParent: dofs.RootInode, NewName: "gone"}); err == nil {
+				t.Fatal("removed inode was renamed")
+			}
+			if len(events) != 0 {
+				t.Fatal("failed write emitted a change hint")
+			}
+		})
+	}
+}
 
 // TestLiveObjectReclamation is opt-in because it writes one short-lived,
 // encrypted fixture to the configured production-compatible object store.

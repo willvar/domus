@@ -208,6 +208,10 @@ func (r *Repo) recordFromNode(ctx context.Context, user *model.User, node dofs.N
 	if err == nil && (node.IsDir() || metadata.Generation == node.Generation) {
 		record.ContentType = metadata.ContentType
 		record.ContentHash = metadata.ContentHash
+		record.ThumbnailStatus = metadata.ThumbnailStatus
+		record.ThumbnailError = metadata.ThumbnailError
+		record.ThumbnailAttempts = metadata.ThumbnailAttempts
+		record.ThumbnailRetryAt = metadata.ThumbnailRetryAt
 		record.MediaWidth = metadata.MediaWidth
 		record.MediaHeight = metadata.MediaHeight
 		record.MediaDuration = metadata.MediaDuration

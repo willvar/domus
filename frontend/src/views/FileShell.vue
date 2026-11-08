@@ -58,7 +58,8 @@ import { getFileIcon } from '../composables/useFileIcon'
 import { useDevice } from '../composables/useDevice'
 import { useI18n } from '../composables/useI18n'
 import { useAppMessage } from '../ui/feedback'
-import { showConfirm, showPrompt } from '../composables/useNativeDialog'
+import { showConfirm, showPrompt, showRenamePrompt } from '../composables/useNativeDialog'
+import { splitExtension, supportsThumbnail } from '../utils/fileKind'
 import api from '../composables/useApi'
 import { registerFileDecrypt, unregisterFileDecrypt } from '../composables/useFileAccess'
 import { mediaMetaItems, parseMediaMeta } from '../utils/mediaMeta'
@@ -79,6 +80,7 @@ import ActivityCenter from '../components/ActivityCenter.vue'
 import AdminView from './AdminView.vue'
 import ApplicationsView from './ApplicationsView.vue'
 import FileHistory from '../components/FileHistory.vue'
+import FileThumbnail from '../components/FileThumbnail.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -88,7 +90,7 @@ const upload = useUploadStore()
 const tasks = useTasksStore()
 const pendingOps = usePendingOpsStore()
 const { height: viewportHeight, isMobile, isTouchInput } = useDevice()
-const { t } = useI18n()
+const { t, te } = useI18n()
 const message = useAppMessage()
 
 const uploadInput = ref<HTMLInputElement | null>(null)
@@ -169,6 +171,7 @@ let rubberBandInitialSelection: string[] = []
 let bodyUserSelectBeforeRubberBand: string | null = null
 let breadcrumbResizeObserver: ResizeObserver | null = null
 let savedScroll: { tabId: string; path: string; top: number } | null = null
+let syncingTasks = false
 
 const rubberBand = reactive({
   tracking: false,
@@ -201,8 +204,8 @@ const directoryFiles = computed(() => fs.sortedFiles)
 const foldersCount = computed(() => directoryFiles.value.filter(file => file.is_dir).length)
 const filesCount = computed(() => directoryFiles.value.length - foldersCount.value)
 const activeTaskIDs = computed(() => new Set(upload.uploads.map(item => item.taskId).filter(Boolean)))
-const serverTasks = computed(() => tasks.activeTasks
-  .filter(task => task.type === 'upload' && !activeTaskIDs.value.has(task.task_id))
+const serverTasks = computed(() => tasks.tasks
+  .filter(task => task.type === 'transcode' || task.type === 'upload' && tasks.activeTasks.includes(task) && !activeTaskIDs.value.has(task.task_id))
   .slice(0, 20))
 const activityCount = computed(() => upload.activeUploads.length + tasks.activeTasks.filter(task => !activeTaskIDs.value.has(task.task_id)).length + pendingOps.pendingCount)
 const mobileActivityDrawerHeight = computed(() => {
@@ -306,8 +309,10 @@ onMounted(() => {
 })
 
 onActivated(() => {
-  // Keep the same list/image nodes. A stopped SW still needs fresh mappings.
-  void fs.ensureThumbnails(fs.sortedFiles)
+  if (!syncingTasks) { tasks.startSync(); syncingTasks = true }
+  // A cached view needs one recovery snapshot for hints missed while away.
+  // Refreshing keeps its existing rows and completed thumbnail blobs mounted.
+  if (savedScroll) void fs.refresh()
   if (fileSurface.value) {
     fileSurface.value.scrollTop = savedScroll?.tabId === fs.activeTabId && savedScroll.path === fs.currentPath
       ? savedScroll.top
@@ -332,6 +337,7 @@ onBeforeRouteLeave(() => {
 })
 
 function suspendShell(): void {
+  if (syncingTasks) { tasks.stopSync(); syncingTasks = false }
   window.removeEventListener('keydown', handleKeyboard)
   if (searchTimer !== null) window.clearTimeout(searchTimer)
   searchTimer = null
@@ -410,7 +416,22 @@ function revealCurrentBreadcrumb(): void {
 function setThumbnailDisplay(value: boolean): void {
   showThumbnails.value = value
   localStorage.setItem('domus_show_thumbnails', showThumbnails.value ? '1' : '0')
-  if (value) void fs.ensureThumbnails(fs.sortedFiles)
+}
+
+async function cancelServerTask(id: string): Promise<void> {
+  try { await tasks.cancelTask(id) } catch (error: any) { message.error(te(error)) }
+}
+async function retryServerTask(id: string): Promise<void> {
+  try { await tasks.retryTask(id) } catch (error: any) { message.error(te(error)) }
+}
+async function retryThumbnail(): Promise<void> {
+  if (!detailsFile.value) return
+  try {
+    await api.post('/file/thumbnail',{ path: detailsFile.value.path })
+    await fs.refreshDirectory(fs.currentPath)
+    detailsFile.value = fs.sortedFiles.find(file => file.path === detailsFile.value?.path) || detailsFile.value
+    message.success(t('files.thumbnail_queued'))
+  } catch (error: any) { message.error(te(error)) }
 }
 
 async function goTo(path: string): Promise<void> {
@@ -854,8 +875,10 @@ function setClipboard(file: FileListItem, mode: 'copy' | 'cut'): void {
 
 async function renameItem(file: FileListItem): Promise<void> {
   actionFile.value = null
-  const name = await showPrompt(t('menu.rename'), file.name)
+  const name = await showRenamePrompt(file.name, file.is_dir)
   if (!name || name === file.name) return
+  if (!file.is_dir && splitExtension(file.name).suffix && splitExtension(file.name).suffix.toLowerCase() !== splitExtension(name).suffix.toLowerCase() &&
+    !await showConfirm(t('menu.rename'), t('dialog.rename_extension_warning'), { icon: 'warning' })) return
   await fs.rename(file.path, name, file.is_dir)
 }
 
@@ -1135,6 +1158,8 @@ function phaseLabel(phase?: string): string {
             <ActivityCenter
               :uploads="upload.uploads"
               :server-tasks="serverTasks"
+              @cancel-task="cancelServerTask"
+              @retry-task="retryServerTask"
               :pending-count="pendingOps.pendingCount"
               :activity-label="activityLabel"
               @cancel-upload="upload.cancelUpload"
@@ -1391,8 +1416,9 @@ function phaseLabel(phase?: string): string {
                 @keydown.enter="openItem(file)"
               >
                 <div class="file-card__preview">
-                  <img v-if="showThumbnails && file.thumbnail_url" :src="file.thumbnail_url" class="file-thumbnail" alt="" draggable="false" @error="fs.ensureThumbnails([file])" />
-                  <component :is="getFileIcon(file.name, file.is_dir)" v-else width="56" height="56" />
+                  <FileThumbnail :file="file" :enabled="showThumbnails">
+                    <component :is="getFileIcon(file.name, file.is_dir, file.content_type)" width="56" height="56" />
+                  </FileThumbnail>
                   <span
                     v-if="fs.selectMode || fs.selectedFiles.includes(file.path)"
                     class="selection-check"
@@ -1451,8 +1477,9 @@ function phaseLabel(phase?: string): string {
                 >
                   <div class="file-row__name" role="cell">
                     <span class="file-row__icon">
-                      <img v-if="showThumbnails && file.thumbnail_url" :src="file.thumbnail_url" class="file-thumbnail" alt="" draggable="false" @error="fs.ensureThumbnails([file])" />
-                      <component :is="getFileIcon(file.name, file.is_dir)" v-else />
+                      <FileThumbnail :file="file" :enabled="showThumbnails">
+                        <component :is="getFileIcon(file.name, file.is_dir, file.content_type)" />
+                      </FileThumbnail>
                     </span>
                     <span>
                       <strong class="file-name">{{ file.name }}</strong>
@@ -1540,6 +1567,8 @@ function phaseLabel(phase?: string): string {
         <ActivityCenter
           :uploads="upload.uploads"
           :server-tasks="serverTasks"
+          @cancel-task="cancelServerTask"
+          @retry-task="retryServerTask"
           :pending-count="pendingOps.pendingCount"
           :activity-label="activityLabel"
           :show-heading="false"
@@ -1558,11 +1587,16 @@ function phaseLabel(phase?: string): string {
     >
       <NDrawerContent v-if="detailsFile" class="inspector" :title="detailsFile.name" closable>
         <div class="inspector__preview">
-          <img v-if="showThumbnails && detailsFile.thumbnail_url" :src="detailsFile.thumbnail_url" alt="" @error="fs.ensureThumbnails([detailsFile])" />
-          <component :is="getFileIcon(detailsFile.name, detailsFile.is_dir)" v-else />
+          <FileThumbnail :file="detailsFile" :enabled="showThumbnails">
+            <component :is="getFileIcon(detailsFile.name, detailsFile.is_dir, detailsFile.content_type)" />
+          </FileThumbnail>
         </div>
         <NDescriptions :column="1" label-placement="top" bordered size="small">
           <NDescriptionsItem :label="t('info.type')">{{ detailsFile.is_dir ? t('info.directory') : (detailsFile.content_type || t('info.file')) }}</NDescriptionsItem>
+          <NDescriptionsItem v-if="supportsThumbnail(detailsFile.content_type)" :label="t('files.thumbnail')">
+            <span>{{ detailsFile.thumbnail_status === 'failed' ? t('files.thumbnail_failed') : detailsFile.thumbnail_url ? t('tasks.status_completed') : t('quality.pending') }}</span>
+            <NButton v-if="!fs.isTrash && !detailsFile._shareId" text size="small" @click="retryThumbnail">{{ t('files.thumbnail_rebuild') }}</NButton>
+          </NDescriptionsItem>
           <NDescriptionsItem :label="t('info.size')">{{ detailsFile.is_dir ? '—' : formatSize(detailsFile.size) }}</NDescriptionsItem>
           <NDescriptionsItem :label="t('info.modified')">{{ displayDate(detailsFile.last_modified) }}</NDescriptionsItem>
           <NDescriptionsItem :label="t('info.created')">{{ displayDate(detailsFile.created_at) }}</NDescriptionsItem>

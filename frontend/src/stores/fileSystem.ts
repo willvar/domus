@@ -13,6 +13,7 @@ import { usePreferences } from '../composables/usePreferences'
 import { useServiceWorker } from '../composables/useServiceWorker'
 import { registerFileDecrypt } from '../composables/useFileAccess'
 import { readMigratedStorage } from '../utils/storageCompat'
+import { mimeViewer, normalizedMime } from '../utils/fileKind'
 import { writeEncryptedFile } from '../composables/useCryptoUpload'
 import {
   TRASH_ROOT_LOCATION,
@@ -205,7 +206,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
         params: { query, limit: 100 },
       })
       const results = res.data.results || []
-      await ensureThumbnails(results, sameQuery ? searchResults.value : [])
       if (epoch === searchEpoch && activeTabId.value === tabId && searchMode.value) searchResults.value = results
     } catch {
       if (epoch === searchEpoch && !sameQuery) searchResults.value = []
@@ -424,10 +424,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   async function fetchFiles(path: string): Promise<FileListItem[]> {
-    const list = await fetchFileEntries(path)
-    const previous = tabs.value.find(tab => tab.path === path)?.files || cache.get(path)?.data || []
-    await ensureThumbnails(list, previous)
-    return list
+    return fetchFileEntries(path)
   }
 
   async function fetchFileEntries(path: string): Promise<FileListItem[]> {
@@ -502,68 +499,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
 
   function notifyDecryptUnavailable(): void {
     message.warning(t('preview.decrypt_unavailable'))
-  }
-
-  /** Re-registers cached thumbnail decrypt mappings when the SW has been
-   *  restarted (its registry is memory-only, old /__decrypt__/ URLs 404).
-   *  Track the boot per record: refreshing one directory must not make another
-   *  directory's cached mappings appear current. Also handles search results. */
-  let thumbnailSync: Promise<void> = Promise.resolve()
-  function ensureThumbnails(list: FileListItem[], previous: FileListItem[] = []): Promise<void> {
-    const next = thumbnailSync.then(() => registerCurrentThumbnails(list, previous))
-    thumbnailSync = next.catch(() => {})
-    return next
-  }
-
-  function thumbnailObjectURL(source: string): string {
-    const url = new URL(source, window.location.href)
-    // Signing can change without changing the object. Keep version selectors
-    // and every other non-authentication parameter part of its identity.
-    for (const key of [...url.searchParams.keys()]) {
-      if (/^(x-amz-|x-oss-|awsaccesskeyid$|ossaccesskeyid$|signature$|expires$|security-token$)/i.test(key)) url.searchParams.delete(key)
-    }
-    return url.href
-  }
-
-  async function registerCurrentThumbnails(list: FileListItem[], previous: FileListItem[]): Promise<void> {
-    const sw = useServiceWorker()
-    const bootId = await sw.getBootId()
-    if (bootId === null) return
-    const updates: Array<{ file: FileListItem; source: string; url: string; previous?: string }> = []
-    const previousByPath = new Map(previous.map(file => [file.path, file]))
-    for (const record of list) {
-      const file = reactive(record)
-      if (!file.thumbnail_url || !file.thumbnail_dek) continue
-      const registered = file.thumbnail_url.startsWith('/__decrypt__/')
-      if (registered && file._thumbBootId === bootId) continue
-      const source = registered ? file._thumbSource : file.thumbnail_url
-      if (!source) continue
-      const candidate = previousByPath.get(file.path)
-      const reuse = candidate?.thumbnail_url?.startsWith('/__decrypt__/') &&
-        candidate._thumbBootId === bootId && candidate.inode === file.inode && candidate.generation === file.generation &&
-        candidate.thumbnail_dek === file.thumbnail_dek && candidate._thumbSource &&
-        thumbnailObjectURL(candidate._thumbSource) === thumbnailObjectURL(source)
-      const decryptUrl = sw.registerDecrypt({
-        url: source,
-        size: null,
-        chunkSize: 0,
-        contentType: 'image/webp',
-        filename: '',
-        dek: file.thumbnail_dek,
-      }, reuse ? candidate?.thumbnail_url : undefined)
-      if (decryptUrl) {
-        updates.push({ file, source, url: decryptUrl, previous: registered ? file.thumbnail_url : undefined })
-      }
-    }
-    // Do not publish the new src until the SW has accepted its mapping. Image
-    // fetches can otherwise beat postMessage and permanently cache a 404.
-    await sw.flush()
-    for (const { file, source, url, previous } of updates) {
-      file._thumbSource = source
-      file._thumbBootId = bootId
-      file.thumbnail_url = url
-      if (previous) sw.unregisterDecrypt(previous)
-    }
   }
 
   function goBack(): void {
@@ -1040,7 +975,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     if (!file) return
 
     const name: string = file._originalName || file.name
-    const viewerType = getViewerType(name)
+    const viewerType = getViewerType(name, file.content_type)
     if (file.is_dir) {
       navigate(file.path)
     } else if (viewerType) {
@@ -1159,8 +1094,12 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     return extToLanguage[ext] || extToLanguage[baseName] || null
   }
 
-  function getViewerType(name: string): ViewerType | null {
+  function getViewerType(name: string, contentType = ''): ViewerType | null {
+    const byMime = mimeViewer(contentType)
     const { ext } = parseFileName(name)
+    // Notebooks commonly use the generic JSON MIME rather than a notebook type.
+    if (notebookExts.has(ext) && normalizedMime(contentType) === 'application/json') return 'notebook'
+    if (byMime) return byMime
     if (isVideoFile(name)) return 'video'
     if (audioExts.has(ext)) return 'audio'
     if (ext === 'md') return 'markdown'
@@ -1171,7 +1110,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     if (isTextFile(name)) return 'text'
     if (isImageFile(name)) return 'image'
     if (isPdfFile(name)) return 'pdf'
-    return null
+    return normalizedMime(contentType) === 'text/plain' ? 'text' : null
   }
 
   function appWindowId(filePath: string): string {
@@ -1185,7 +1124,7 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   async function openViewer(file: FileListItem, { forceType, remote }: { forceType?: ViewerType; remote?: boolean } = {}): Promise<void> {
     const windowId: string = appWindowId(file.path) + (forceType ? `-${forceType}` : '')
     const fileName: string = file._originalName || file.name
-    const viewerType = getViewerType(fileName)
+    const viewerType = getViewerType(fileName, file.content_type)
     if (!viewerType && !forceType) {
       downloadFile(file._shareId ? file : file.path)
       return
@@ -1481,7 +1420,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     if (!tabs.value.includes(tab) || tab.path !== path) return
     const cached = cache.get(path)
     if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
-      await ensureThumbnails(cached.data)
       if (!commitDirectory(tab, path, cached.data)) return
       tab.loading = false
       void refreshDirectory(path)
@@ -1510,20 +1448,12 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
   }
 
   // Re-subscribe directories and reload files after WS (re)connection
-  let initialized: boolean = false
   ws.onReconnect(() => {
-    // Re-subscribe all tabs
-    for (const [, subPath] of tabSubs) {
-      if (subPath) {
-        ws.request('subscribe.directory', { path: subPath }).catch(() => {})
-      }
-    }
-    // On first connect, load files for the initial tab
-    if (!initialized && tabs.value.length > 0) {
-      initialized = true
-      const tab = tabs.value.find(t => t.id === activeTabId.value)
-      if (tab) loadFiles(tab.path)
-    }
+    // Subscribe before taking the recovery snapshot so later changes cannot
+    // fall between an HTTP read and directory subscription registration.
+    const subscriptions = [...tabSubs.values()].filter(Boolean)
+      .map(path => ws.request('subscribe.directory', { path }))
+    void Promise.allSettled(subscriptions).then(refresh)
   })
 
   // Initialize
@@ -1673,7 +1603,6 @@ export const useFileSystemStore = defineStore('fileSystem', () => {
     refresh,
     refreshDirectory,
     invalidateCache,
-    ensureThumbnails,
     selectFile,
     selectAll,
     clearSelection,

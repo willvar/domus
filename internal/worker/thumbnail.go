@@ -1,4 +1,4 @@
-// Package worker implements the optional desktop-side content worker. It
+// Package worker implements the optional server-side content worker. It
 // reads source files from a plain filesystem path (the DOFS FUSE mount) and
 // produces derived artifacts (currently WebP thumbnails) that are written
 // back through the same mount. It never touches encryption keys or object
@@ -18,17 +18,18 @@ import (
 	"time"
 )
 
-// MaxThumbnailBytes mirrors the browser thumbnail limit enforced by the
-// upload completion handler for client-generated thumbnails.
+// MaxThumbnailBytes bounds derived objects, including legacy client uploads.
 const MaxThumbnailBytes = 4 * 1024 * 1024
 
-// DefaultThumbQuality mirrors the browser canvas encoder (0.8).
+// DefaultThumbQuality is the WebP quality used for server thumbnails.
 const DefaultThumbQuality = 80
 
 // ThumbnailOptions controls thumbnail generation.
 type ThumbnailOptions struct {
 	FFmpegPath        string
 	FFprobePath       string
+	PDFToPPMPath      string
+	ContentType       string
 	MaxDimension      int
 	Quality           int
 	ProbeTimeout      time.Duration
@@ -96,13 +97,28 @@ func Probe(ctx context.Context, ffprobePath, source string) (MediaInfo, error) {
 
 // GenerateThumbnail writes a WebP thumbnail of the source file to output.
 // It returns the source media information (original dimensions and duration)
-// so callers can persist the same metadata the browser path records.
+// so callers can persist it alongside the derived object reference.
 func GenerateThumbnail(ctx context.Context, options ThumbnailOptions, source, output string) (MediaInfo, error) {
 	if strings.TrimSpace(options.FFmpegPath) == "" {
 		return MediaInfo{}, errors.New("worker: ffmpeg path is empty")
 	}
 	if options.MaxDimension <= 0 {
 		return MediaInfo{}, errors.New("worker: thumbnail max dimension must be positive")
+	}
+	if options.ContentType == "application/pdf" {
+		tool := options.PDFToPPMPath
+		if tool == "" {
+			tool = "pdftoppm"
+		}
+		renderCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		prefix := output + ".page"
+		defer os.Remove(prefix + ".png")
+		command := exec.CommandContext(renderCtx, tool, "-f", "1", "-singlefile", "-scale-to", strconv.Itoa(options.MaxDimension), "-png", source, prefix)
+		if _, err := command.Output(); err != nil {
+			return MediaInfo{}, fmt.Errorf("worker: render PDF thumbnail: %w%s", err, commandStderr(err))
+		}
+		source = prefix + ".png"
 	}
 	quality := options.Quality
 	if quality <= 0 || quality > 100 {
@@ -121,7 +137,7 @@ func GenerateThumbnail(ctx context.Context, options ThumbnailOptions, source, ou
 	defer cancel()
 
 	arguments := []string{"-nostdin", "-v", "error", "-y"}
-	if info.Duration > 0 {
+	if info.Duration > 0 && (strings.HasPrefix(options.ContentType, "video/") || options.ContentType == "" && info.Duration > 1) {
 		seek := info.Duration / 2
 		if seek > 1 {
 			seek = 1
@@ -139,7 +155,7 @@ func GenerateThumbnail(ctx context.Context, options ThumbnailOptions, source, ou
 		output,
 	)
 	command := exec.CommandContext(generateCtx, options.FFmpegPath, arguments...)
-	if err := command.Run(); err != nil {
+	if _, err := command.Output(); err != nil {
 		return MediaInfo{}, fmt.Errorf("worker: ffmpeg thumbnail %s: %w%s", source, err, commandStderr(err))
 	}
 	stat, err := os.Stat(output)
@@ -151,6 +167,9 @@ func GenerateThumbnail(ctx context.Context, options ThumbnailOptions, source, ou
 	}
 	if stat.Size() > MaxThumbnailBytes {
 		return MediaInfo{}, fmt.Errorf("worker: thumbnail output %s exceeds %d bytes", filepath.Base(output), MaxThumbnailBytes)
+	}
+	if _, err := Probe(generateCtx, options.FFprobePath, output); err != nil {
+		return MediaInfo{}, fmt.Errorf("worker: validate thumbnail: %w", err)
 	}
 	return info, nil
 }

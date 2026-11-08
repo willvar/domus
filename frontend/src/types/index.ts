@@ -65,6 +65,9 @@ export interface FileInfo {
   content_type?: string
   thumbnail_url?: string
   thumbnail_dek?: string
+  thumbnail_status?: string
+  thumbnail_error?: string
+  thumbnail_attempts?: number
   media_codecs?: string
   media_meta?: string
   media_width?: number
@@ -96,10 +99,6 @@ export interface FileListItem extends FileInfo {
   relative_path?: string
   original_path?: string
   deleted_at?: string
-  /** Original OSS thumbnail URL, kept so the decrypt mapping can be re-registered after a Service Worker restart. */
-  _thumbSource?: string
-  /** Service Worker boot that owns this record's thumbnail decrypt mapping. */
-  _thumbBootId?: string
 }
 
 /** Share record. Mirrors model.Share. */
@@ -132,12 +131,15 @@ export interface Task {
   phase: string
   name: string
   client_instance_id?: string
+  profile?: string
+  source_path?: string
+  error?: string
   created_at?: string
   updated_at?: string
 }
 
 /** Valid task statuses. */
-export type TaskStatus = 'running' | 'pending' | 'completed' | 'failed' | 'cancelled'
+export type TaskStatus = 'queued' | 'running' | 'pending' | 'paused' | 'cancelling' | 'completed' | 'failed' | 'cancelled'
 
 /** Audit log entry. Mirrors model.AuditLog. */
 export interface AuditLog {
@@ -482,6 +484,7 @@ export interface WSPushEventMap {
   'dir.changed': { path: string; change_type: string }
   'trash.changed': Record<string, never>
   'task.update': TaskUpdateEvent
+  'rendition.changed': { path: string; inode: number; generation: number }
   'session.expired': void
   'session.output': { session_id: string; data_base64: string }
   'session.exit': { session_id: string; reason?: string }
@@ -496,6 +499,9 @@ export interface TaskUpdateEvent {
   status: string
   progress: number
   phase: string
+  source_path?: string
+  profile?: string
+  error?: string
 }
 
 /** Workspace sync event pushed via workspace.event. */
@@ -618,6 +624,7 @@ export interface RenditionArtifact {
 export interface RenditionsResponse {
   source_width?: number
   source_height?: number
+  source_duration?: number
   renditions: RenditionSummary[]
 }
 
@@ -630,6 +637,7 @@ export interface RenditionSummary {
   width?: number
   height?: number
   progress?: number
+  phase?: string
   error?: string
   duration?: number
   init?: RenditionArtifact

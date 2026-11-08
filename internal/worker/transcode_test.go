@@ -53,6 +53,26 @@ func TestFindTranscodeProfile(t *testing.T) {
 	}
 }
 
+func TestTranscodeFailureCapturesBoundedStderr(t *testing.T) {
+	ffmpeg, ffprobe := requireFFmpeg(t)
+	dir := t.TempDir()
+	source := filepath.Join(dir, "bad.mp4")
+	if err := os.WriteFile(source, []byte("not a video"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	run, err := StartTranscode(t.Context(), TranscodeOptions{FFmpegPath: ffmpeg, FFprobePath: ffprobe, Profile: TranscodeProfile{ID: "480p", Height: 480, CRF: 23, AudioBitrate: 128}}, source, filepath.Join(dir, "output"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := run.Wait(); err == nil || run.stderr.Len() == 0 {
+		t.Fatal("ffmpeg failure lost its diagnostic")
+	}
+	var bounded boundedStderr
+	if n, err := bounded.Write([]byte(strings.Repeat("x", 64*1024))); err != nil || n != 64*1024 || bounded.Len() != 16*1024 {
+		t.Fatal("stderr exceeded its budget")
+	}
+}
+
 // TestStartRemuxTranscode verifies the lossless original profile: the source
 // streams are copied into fMP4 segments without re-encoding and the init
 // segment stays probeable.

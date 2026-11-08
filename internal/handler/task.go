@@ -8,6 +8,7 @@ import (
 	"domus/internal/httpx"
 	"domus/internal/middleware"
 	"domus/internal/model"
+	"domus/internal/worker"
 )
 
 func (h *Handler) handleListTasks(w http.ResponseWriter, r *http.Request) error {
@@ -52,11 +53,20 @@ func (h *Handler) cancelTask(session *model.Session, taskID string) error {
 	if task.Type == "transcode" {
 		switch task.Status {
 		case "queued":
+			cancelled, err := h.Repos.Tasks.CancelQueued(taskID)
+			if err != nil {
+				return err
+			}
+			if !cancelled {
+				return h.cancelTask(session, taskID)
+			}
 			// Nothing published yet: drop the reservation row outright.
 			if h.FileSystem != nil {
-				_ = h.FileSystem.DeleteRendition(task.UserID, uint64(task.SourceInode), task.Profile)
+				if rendition, err := h.FileSystem.GetRendition(task.UserID, uint64(task.SourceInode), task.Profile); err == nil && rendition.TaskID == taskID {
+					_ = h.FileSystem.DeleteRendition(task.UserID, uint64(task.SourceInode), task.Profile)
+				}
 			}
-			return h.Repos.Tasks.UpdateStatus(taskID, "cancelled")
+			return nil
 		case "running":
 			// The worker observes the flag between segment publishes.
 			_ = h.FileSystem.SetRenditionCancelling(task.UserID, task.TaskID)
@@ -108,4 +118,28 @@ func (h *Handler) handleClearDoneTasks(w http.ResponseWriter, r *http.Request) e
 		return httpx.JSON(w, 500, map[string]any{"error": "clear_tasks_failed"})
 	}
 	return httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *Handler) handleRetryTask(w http.ResponseWriter, r *http.Request) error {
+	if h.FileSystem == nil {
+		return httpx.JSON(w, 503, map[string]any{"error": "dofs_unavailable"})
+	}
+	task, err := h.Repos.Tasks.Get(r.PathValue("id"))
+	if err != nil {
+		return httpx.JSON(w, 404, map[string]any{"error": "task_not_found"})
+	}
+	if task.UserID != middleware.Session(r).UserID {
+		return httpx.JSON(w, 403, map[string]any{"error": "access_denied"})
+	}
+	if task.Type != "transcode" || (task.Status != "failed" && task.Status != "cancelled") {
+		return httpx.JSON(w, 409, map[string]any{"error": "task_not_retryable"})
+	}
+	if _, ok := worker.FindTranscodeProfile(task.Profile); !ok {
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_profile"})
+	}
+	record, err := h.FileSystem.GetByID(task.UserID, task.SourceInode)
+	if err != nil || record.IsDir || record.Status != "ready" || !strings.HasPrefix(record.ContentType, "video/") {
+		return httpx.JSON(w, 404, map[string]any{"error": "file_not_found"})
+	}
+	return h.queueTranscode(w, r, task.UserID, record, task.Profile)
 }

@@ -25,6 +25,10 @@ backend_binary="$control_root/domus-e2e-backend"
 backend_pid=""
 restart_requested=0
 generation=0
+backend_args=(dev -c "$config_path" --runtime-root "$runtime_root")
+if [[ "${DOMUS_E2E_WITH_WORKER:-1}" == '1' ]]; then
+  backend_args+=(--with-worker)
+fi
 
 mkdir -p "$control_root"
 go build -o "$backend_binary" .
@@ -71,7 +75,7 @@ trap shutdown EXIT
 while true; do
   # Playwright shuts web servers down by signalling their process group. Keep the
   # Domus Web in its own session so only this supervisor receives that signal.
-  setsid "$backend_binary" dev -c "$config_path" --runtime-root "$runtime_root" &
+  setsid "$backend_binary" "${backend_args[@]}" &
   backend_pid="$!"
 
   backend_ready=0

@@ -19,6 +19,7 @@ import (
 
 	"domus/config"
 	"domus/internal/model"
+	"domus/internal/notify"
 )
 
 // Runtime is the shared Domus integration surface for independent DOFS.
@@ -62,8 +63,9 @@ func Open(ctx context.Context, database *gorm.DB, cfg *config.Config, serverKey 
 		}
 		return nil, fmt.Errorf("open DOFS key provider: %w", err)
 	}
+	notify.Configure(notify.SocketPath(cfg.DOFS.ControlSocket))
 	return &Runtime{
-		Metadata: metadata, Objects: objects, Keys: keys, Users: users,
+		Metadata: &notifyingMetadata{MetadataStore: metadata}, Objects: objects, Keys: keys, Users: users,
 		metadataCloser: metadataCloser,
 	}, nil
 }

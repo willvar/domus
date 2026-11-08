@@ -58,7 +58,9 @@
 ```
 
 上传中的条目还可能包含 `task_id`、`task_progress` 和 `task_phase`；媒体条目可能包含
-`media_width`、`media_height` 和 `media_duration`。
+`media_width`、`media_height` 和 `media_duration`。服务器缩略图状态由 `thumbnail_status`
+（`pending/running/ready/failed`）、`thumbnail_error` 和 `thumbnail_attempts` 表示。
+`content_type` 在重命名时保留，前端可据此预览无后缀的文件；MIME 不是内容安全凭据。
 
 ### `GET /file/search`
 
@@ -390,8 +392,8 @@ OSS 的权威 ETag 完成 multipart，并原子发布 DOFS generation。客户�
 {"ok": true, "generation": 7}
 ```
 
-完成操作可安全重试。缩略图生成或上传失败不会触发服务端补偿任务，原文件仍可正常
-发布并以通用文件图标显示。
+完成操作可安全重试。正文发布不等待缩略图；服务器 worker 随后生成图片、视频及
+PDF 首页缩略图。旧客户端携带缩略图关联字段的协议仍兼容，新的浏览器不再生成子上传。
 
 ### 6. 心跳、取消和清理
 
@@ -431,14 +433,17 @@ Content-Type: application/json
 
 响应为 `{"ok":true,"count":N}`。
 
-## 浏览器缩略图
+## 服务器缩略图
 
-上传浏览器为支持的图片、视频和 PDF 生成 WebP 缩略图。缩略图通过同一加密直传协议
-成为独立隐藏 DOFS 文件，并以源 inode/generation 指向缩略图 inode。重命名、移动保留
+服务器 worker 为支持的图片、视频和 PDF 生成 WebP 缩略图，经私有 DOFS 挂载写入独立
+隐藏文件，并以源 inode/generation 指向缩略图 inode。重命名、移动保留
 绑定；覆盖、永久删除会回收旧缩略图；复制不共享缩略图。
 
 文件界面的“显示缩略图”是设备本地开关，默认关闭。它只控制列表和详情是否请求并
-渲染已有缩略图，不控制上传时生成。
+渲染可见项的缩略图，不控制服务器生成。离开视口取消未完成读取，失败回退类型图标。
+
+`POST /file/thumbnail` 接收 `{"path":"/document.pdf"}`，为当前源 generation 显式请求
+重新生成并重置最多三次的自动尝试计数；不删除或改写原件，返回 `{"ok":true}`。
 
 ## 服务端转码（播放画质）
 
@@ -449,9 +454,13 @@ Content-Type: application/json
 - `POST /file/transcode`：`{"path":"…","profile":"720p"}` 提交转码任务（队列化，
   返回 `{"task_id":…,"profile":…,"status":"queued"}`）。同一 source generation 的
   同档位若已 ready/进行中返回 409（`rendition_ready`/`rendition_in_progress`）。
-- `GET /file/renditions?path=…`：画质清单。每档含 `status`、`progress`；ready/running
+- `GET /file/renditions?path=…`：画质清单。每档含 `status`、`progress`、`phase`、
+  `task_id` 和失败时的脱敏 `error`；ready/running
   的档附带可播放清单（`init`/`segments`，含 presigned URL 与明文 DEK，走浏览器本地
   解密，服务端零正文过路）。
+- 后台通过本机 RPC 向 Web 发送变化提示，再推送 `task.update` 与 `rendition.changed`
+  （源文件 `path`、`inode`、`generation`）。播放器收到相关通知后读取清单，不定时检查；
+  首次打开和恢复连接会获取一次当前快照。
 - 取消走既有 `DELETE /task/:id`：queued 直接取消；running 置 cancelling，worker 在
   分片间检测并中止。
 - 播放器画质菜单（原画 + 档位）按清单驱动；生成中的档位可“边转边播”（fMP4 分片

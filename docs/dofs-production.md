@@ -7,8 +7,10 @@ browser <-> Domus HTTP/WS <-> PostgreSQL / DOFS metadata / OSS
                     browser <-> OSS ciphertext
 ```
 
-不需要 Docker、Workspace Manager、preview worker、FUSE 或 `user_allow_other`。Web
-进程内直接使用 DOFS backend；文件正文由浏览器加密后直传 OSS，缩略图也由浏览器生成。
+基本文件 API 不需要 Docker、Workspace Manager 或 `user_allow_other`；Web 进程内直接
+使用 DOFS backend，正文由浏览器加密后直传 OSS。服务器缩略图和视频转码还需要
+`dofs serve` 与 `worker`，使用私有 FUSE 挂载和派生暂存目录；依赖 `ffmpeg`、`ffprobe`
+以及 PDF 渲染工具 `pdftoppm`。没有 worker 时原件仍可上传读取，但不会生成新缩略图。
 第三方集成可启用同一监听器上的 [OAuth 只读 WebDAV](api/oauth-webdav.md)，无需新增服务；
 该入口的流量是服务端授权解密的原文，必须使用 HTTPS、正确的静态同意页和代理边界。
 
@@ -57,6 +59,13 @@ dofs:
 
 这会复用 `database.*`。多节点仍需在负载均衡、WebSocket 和操作调度层自行设计高可用，
 本配置项只解决 DOFS catalog 的共享与事务锁。
+
+本机变化通知使用 Go `net/rpc`，监听 `dofs.control_socket` 同目录下的 `events.sock`，
+权限为 0600。Web、worker、Domus DOFS 应使用相同服务用户和运行目录，不开放额外 TCP
+端口。通知不依赖 PostgreSQL 的 LISTEN/NOTIFY，也不监听 SQLite 数据库文件。
+该 Socket 只覆盖本机：共享 PostgreSQL catalog 不会自动把提示转发给其他主机的 Web。
+Web 和 DOFS 的 unit 均创建该运行目录并设置 `RuntimeDirectoryPreserve=yes`，使任一
+服务单独停止时不会删除另一服务的 Socket；目录仍随 `/run` 在重启系统时清空。
 
 ## systemd
 

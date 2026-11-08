@@ -58,28 +58,8 @@ build-prod: build
 	@echo "Compressed: $(BUILD_DIR)/domus"
 
 dev: s3-if-local
-	@command -v setsid >/dev/null 2>&1 || { echo "setsid is required for managed development processes" >&2; exit 1; }
-	@bash -eu -o pipefail -c '\
-		backend_pid=""; frontend_pid=""; \
-		cleanup() { \
-			status="$$?"; \
-			trap - EXIT INT TERM; \
-			if [[ -n "$$frontend_pid" ]]; then kill -TERM -- "-$$frontend_pid" 2>/dev/null || true; fi; \
-			if [[ -n "$$backend_pid" ]]; then kill -TERM -- "-$$backend_pid" 2>/dev/null || true; fi; \
-			for pid in "$$frontend_pid" "$$backend_pid"; do \
-				if [[ -n "$$pid" ]]; then wait "$$pid" 2>/dev/null || true; fi; \
-			done; \
-			exit "$$status"; \
-		}; \
-		trap cleanup EXIT; \
-		trap "exit 130" INT; \
-		trap "exit 143" TERM; \
-		setsid go run . dev -c "$(DEV_CONFIG)" --runtime-root "$(DEV_RUNTIME_ROOT)" --with-worker & \
-		backend_pid="$$!"; \
-		setsid env VITE_API_BASE="$(DEV_API_BASE)" npm --prefix frontend run dev -- --host "$(DEV_FRONTEND_HOST)" --port "$(DEV_FRONTEND_PORT)" --strictPort & \
-		frontend_pid="$$!"; \
-		wait -n "$$backend_pid" "$$frontend_pid"\
-	'
+	VITE_API_BASE="$(DEV_API_BASE)" go run . dev -c "$(DEV_CONFIG)" --runtime-root "$(DEV_RUNTIME_ROOT)" \
+		--with-worker --with-frontend --frontend-host "$(DEV_FRONTEND_HOST)" --frontend-port "$(DEV_FRONTEND_PORT)"
 
 dev-web:
 	go run . start -c "$(DEV_CONFIG)"

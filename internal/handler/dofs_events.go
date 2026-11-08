@@ -4,7 +4,7 @@ import (
 	"context"
 	"log"
 	"strings"
-	"time"
+	"sync"
 
 	"github.com/willvar/dofs"
 
@@ -12,15 +12,13 @@ import (
 	"domus/internal/model"
 )
 
-const (
-	dofsEventPollInterval = 500 * time.Millisecond
-	dofsEventBatchSize    = 256
-)
+const dofsEventBatchSize = 256
 
-// StartDOFSEventRelay bridges namespace changes made through FUSE (including
-// external DOFS mount writes) into the browser's directory invalidation
+// StartDOFSEventRelay bridges changes from the Domus integration (including
+// external programs writing its FUSE mount) into directory invalidation
 // channel. API-originated changes may produce a duplicate refresh, which is
-// intentionally harmless and keeps DOFS as the sole event source of truth.
+// intentionally harmless. The existing journal remains authoritative; only
+// an explicit RPC wake reads it, never a periodic metadata scan.
 func (h *Handler) StartDOFSEventRelay(ctx context.Context) error {
 	if h.DOFS == nil || h.FileSystem == nil || h.Hub == nil {
 		return nil
@@ -37,45 +35,25 @@ func (h *Handler) StartDOFSEventRelay(ctx context.Context) error {
 		}
 		cursors[users[index].ID] = sequence
 	}
-	go h.runDOFSEventRelay(ctx, cursors)
-	return nil
-}
-
-func (h *Handler) runDOFSEventRelay(ctx context.Context, cursors map[string]int64) {
-	ticker := time.NewTicker(dofsEventPollInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
+	var mu sync.Mutex
+	h.relayDOFSChange = func(userID string) {
+		mu.Lock()
+		defer mu.Unlock()
+		if ctx.Err() != nil {
 			return
-		case <-ticker.C:
-			users, err := h.Repos.Users.List()
-			if err != nil {
-				log.Printf("[dofs-events] list users: %v", err)
-				continue
-			}
-			alive := make(map[string]struct{}, len(users))
-			for index := range users {
-				user := &users[index]
-				alive[user.ID] = struct{}{}
-				cursor, known := cursors[user.ID]
-				if !known {
-					cursor = 0
-				}
-				next, err := h.relayUserDOFSEvents(ctx, user, cursor)
-				if err != nil {
-					log.Printf("[dofs-events] relay user %s: %v", user.ID, err)
-					continue
-				}
-				cursors[user.ID] = next
-			}
-			for userID := range cursors {
-				if _, exists := alive[userID]; !exists {
-					delete(cursors, userID)
-				}
-			}
+		}
+		user, err := h.Repos.Users.GetByID(userID)
+		if err != nil || user == nil {
+			delete(cursors, userID)
+			return
+		}
+		next, err := h.relayUserDOFSEvents(ctx, user, cursors[userID])
+		cursors[userID] = next
+		if err != nil {
+			log.Print("[dofs-events] change log read failed")
 		}
 	}
+	return nil
 }
 
 func (h *Handler) relayUserDOFSEvents(ctx context.Context, user *model.User, cursor int64) (int64, error) {

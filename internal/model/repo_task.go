@@ -3,6 +3,8 @@ package model
 import (
 	"time"
 
+	"domus/internal/notify"
+
 	"gorm.io/gorm"
 )
 
@@ -16,6 +18,8 @@ type TaskRepo interface {
 	Get(taskID string) (*Task, error)
 	UpdateProgress(taskID string, progress float64, phase string) error
 	UpdateStatus(taskID, status string) error
+	Fail(taskID, code string) error
+	CancelQueued(taskID string) (bool, error)
 	ClaimNextTranscode(userID string) (*Task, error)
 	RequeueStaleTranscodes() ([]Task, error)
 	ListRecent(userID string) ([]Task, error)
@@ -29,17 +33,21 @@ type gormTaskRepo struct {
 }
 
 func (r *gormTaskRepo) Create(userID, taskID, taskType, name string) error {
-	return r.db.Create(&Task{
+	err := r.db.Create(&Task{
 		UserID: userID,
 		TaskID: taskID,
 		Type:   taskType,
 		Status: "running",
 		Name:   name,
 	}).Error
+	if err == nil {
+		r.notifyTask(taskID)
+	}
+	return err
 }
 
 func (r *gormTaskRepo) CreateQueued(userID, taskID, taskType, name string, sourceInode int64, sourcePath, profile string) error {
-	return r.db.Create(&Task{
+	err := r.db.Create(&Task{
 		UserID:      userID,
 		TaskID:      taskID,
 		Type:        taskType,
@@ -49,6 +57,10 @@ func (r *gormTaskRepo) CreateQueued(userID, taskID, taskType, name string, sourc
 		SourcePath:  sourcePath,
 		Profile:     profile,
 	}).Error
+	if err == nil {
+		r.notifyTask(taskID)
+	}
+	return err
 }
 
 // ClaimNextTranscode atomically claims the oldest queued transcode task of a
@@ -56,21 +68,19 @@ func (r *gormTaskRepo) CreateQueued(userID, taskID, taskType, name string, sourc
 // FOR UPDATE SKIP LOCKED keeps multiple worker processes from claiming the
 // same job.
 func (r *gormTaskRepo) ClaimNextTranscode(userID string) (*Task, error) {
-	scope := r.db
-	if userID != "" {
-		scope = scope.Where("user_id = ?", userID)
-	}
 	var claimed Task
-	err := scope.Raw(`UPDATE tasks SET status = 'running', updated_at = now()
+	err := r.db.Raw(`UPDATE tasks SET status = 'running', phase = 'probing', updated_at = now()
 		WHERE id = (SELECT id FROM tasks WHERE type = 'transcode' AND status = 'queued'
+			AND (? = '' OR user_id = ?)
 			ORDER BY created_at ASC LIMIT 1 FOR UPDATE SKIP LOCKED)
-		RETURNING *`).Scan(&claimed).Error
+		RETURNING *`, userID, userID).Scan(&claimed).Error
 	if err != nil {
 		return nil, err
 	}
 	if claimed.TaskID == "" {
 		return nil, gorm.ErrRecordNotFound
 	}
+	notify.Publish(notify.Event{Kind: "task", UserID: claimed.UserID, TaskID: claimed.TaskID})
 	return &claimed, nil
 }
 
@@ -85,6 +95,9 @@ func (r *gormTaskRepo) RequeueStaleTranscodes() ([]Task, error) {
 		RETURNING *`).Scan(&tasks).Error
 	if err != nil {
 		return nil, err
+	}
+	for _, task := range tasks {
+		notify.Publish(notify.Event{Kind: "task", UserID: task.UserID, TaskID: task.TaskID})
 	}
 	return tasks, nil
 }
@@ -103,6 +116,9 @@ func (r *gormTaskRepo) UpdateProgress(taskID string, progress float64, phase str
 		"phase":      phase,
 		"updated_at": time.Now(),
 	}).Error
+	if err == nil {
+		r.notifyTask(taskID)
+	}
 	if err == nil && r.onTaskUpdate != nil {
 		if t, e := r.Get(taskID); e == nil {
 			clientInstanceID := ""
@@ -127,6 +143,9 @@ func (r *gormTaskRepo) UpdateStatus(taskID, status string) error {
 		updates["progress"] = 1.0
 	}
 	err := r.db.Model(&Task{}).Where("task_id = ?", taskID).Updates(updates).Error
+	if err == nil {
+		r.notifyTask(taskID)
+	}
 	if err == nil && r.onTaskUpdate != nil {
 		if t, e := r.Get(taskID); e == nil {
 			clientInstanceID := ""
@@ -145,10 +164,36 @@ func (r *gormTaskRepo) UpdateStatus(taskID, status string) error {
 func (r *gormTaskRepo) ListRecent(userID string) ([]Task, error) {
 	var tasks []Task
 	if err := r.db.Where("user_id = ?", userID).
-		Order("created_at DESC").Limit(50).Find(&tasks).Error; err != nil {
+		Order("CASE WHEN status IN ('queued','running','pending','paused','cancelling') THEN 0 ELSE 1 END").
+		Order("CASE WHEN type = 'transcode' THEN 0 ELSE 1 END").
+		Order("updated_at DESC").Limit(50).Find(&tasks).Error; err != nil {
 		return nil, err
 	}
 	return tasks, nil
+}
+
+func (r *gormTaskRepo) Fail(taskID, code string) error {
+	result := r.db.Model(&Task{}).Where("task_id = ? AND status NOT IN ?", taskID, []string{"cancelled", "completed"}).Updates(map[string]any{
+		"status": "failed", "phase": "failed", "error": code, "updated_at": time.Now(),
+	})
+	if result.Error == nil && result.RowsAffected > 0 {
+		r.notifyTask(taskID)
+	}
+	return result.Error
+}
+
+func (r *gormTaskRepo) CancelQueued(taskID string) (bool, error) {
+	result := r.db.Model(&Task{}).Where("task_id = ? AND status = ?", taskID, "queued").Updates(map[string]any{"status": "cancelled", "phase": "cancelled", "updated_at": time.Now()})
+	if result.Error == nil && result.RowsAffected > 0 {
+		r.notifyTask(taskID)
+	}
+	return result.RowsAffected == 1, result.Error
+}
+
+func (r *gormTaskRepo) notifyTask(taskID string) {
+	if task, err := r.Get(taskID); err == nil {
+		notify.Publish(notify.Event{Kind: "task", UserID: task.UserID, TaskID: taskID})
+	}
 }
 
 func (r *gormTaskRepo) DeleteCompleted(userID string) error {

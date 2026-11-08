@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test'
+import { expect, test, type WebSocketRoute } from '@playwright/test'
 
 test('place options keep inset spacing inside selected and hover backgrounds', async ({ page }, testInfo) => {
   await page.routeWebSocket('**/ws', socket => socket.onMessage(message => {
@@ -45,4 +45,56 @@ test('place options keep inset spacing inside selected and hover backgrounds', a
   await expect(page.locator('.file-sidebar')).toBeHidden()
   await expect(page.locator('.mobile-brand')).toBeVisible()
   await expect(page.getByRole('button', { name: /清空回收站|Empty Trash/, exact: true })).toBeVisible()
+})
+
+test('activity reconciles independent worker progress, retains errors and supports retry and cancellation', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('domus_locale','en'))
+  let socket: WebSocketRoute | undefined
+  await page.routeWebSocket('**/ws', connection => {
+    socket = connection
+    connection.onMessage(message => {
+      const request=JSON.parse(String(message)); if(request.id) connection.send(JSON.stringify({id:request.id,ok:true,data:{}}))
+    })
+  })
+  await page.route('**/user',route=>route.fulfill({json:{username:'task-fixture',role:'user'}}))
+  await page.route('**/file/?*',route=>route.fulfill({json:{files:[]}}))
+  await page.route('**/file/upload/cleanup',route=>route.fulfill({json:{}}))
+  await page.route('**/audit/',route=>route.fulfill({json:{}}))
+  let task = { task_id:'job-1', type:'transcode', name:'sample.mp4', profile:'720p', status:'queued', phase:'', progress:0, error:'' }
+  let taskReads = 0
+  await page.route('**/task/',route=>{ taskReads++; return route.fulfill({json:[task]}) })
+  const changed = () => socket!.send(JSON.stringify({ event:'task.update', data:task }))
+  let retries=0, cancellations=0
+  await page.route('**/task/job-1/retry',route=>{ retries++; task={...task,task_id:'job-2',status:'queued',phase:'',progress:0,error:''}; return route.fulfill({json:{ok:true}}) })
+  await page.route('**/task/job-2',route=>{ cancellations++; task={...task,status:'cancelling'}; return route.fulfill({json:{ok:true}}) })
+  await page.goto('/files')
+  await page.locator('.activity-button').click()
+  const activity=page.locator('.activity-center')
+  await expect(activity).toContainText('sample.mp4')
+  await expect(activity).toContainText('Waiting')
+  await page.waitForLoadState('networkidle')
+  const initialReads = taskReads
+  await page.waitForTimeout(5500)
+  expect(taskReads, 'idle task views must not poll').toBe(initialReads)
+  task={...task,status:'running',phase:'transcoding',progress:0.35}
+  changed()
+  await expect(activity).toContainText('35%',{timeout:10_000})
+  task={...task,status:'failed',phase:'failed',error:'transcode_probe_failed'}
+  changed()
+  await expect(activity).toContainText('Cannot inspect this video',{timeout:10_000})
+  await activity.getByRole('button',{name:'Retry',exact:true}).click()
+  expect(retries).toBe(1)
+  await activity.getByRole('button',{name:'Cancel',exact:true}).click()
+  expect(cancellations).toBe(1)
+  await expect(activity).toContainText('Cancelling')
+  task={...task,status:'cancelled'}
+  changed()
+  await expect(activity).toContainText('Cancelled',{timeout:10_000})
+  // A dropped hint is recovered by a single snapshot after WS reconnection.
+  const beforeReconnect = taskReads
+  task={...task,status:'completed',progress:1}
+  socket!.close()
+  await expect(activity).toContainText('Completed')
+  await page.waitForLoadState('networkidle')
+  expect(taskReads).toBe(beforeReconnect + 1)
 })

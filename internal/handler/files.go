@@ -24,6 +24,7 @@ import (
 
 // fillThumbnail populates presigned URL + plaintext DEK for client-side decryption.
 func (h *Handler) fillThumbnail(fi *store.FileInfo, r *model.FileRecord, kek []byte) {
+	fi.ThumbnailStatus, fi.ThumbnailError, fi.ThumbnailAttempts = r.ThumbnailStatus, r.ThumbnailError, r.ThumbnailAttempts
 	if r.ThumbnailKey == "" || r.ThumbnailWrappedDEK == "" || kek == nil {
 		return
 	}
@@ -145,8 +146,13 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	items := make([]map[string]any, 0, len(results))
+	kek, _ := h.getFileEncryptionKey(session)
 	for _, r := range results {
+		var thumbnail store.FileInfo
+		h.fillThumbnail(&thumbnail, &r.FileRecord, kek)
 		items = append(items, map[string]any{
+			"thumbnail_url": thumbnail.ThumbnailURL, "thumbnail_dek": thumbnail.ThumbnailDEK,
+			"thumbnail_status": thumbnail.ThumbnailStatus, "thumbnail_error": thumbnail.ThumbnailError, "thumbnail_attempts": thumbnail.ThumbnailAttempts,
 			"inode":         r.ID,
 			"generation":    r.Generation,
 			"path":          middleware.ToAppPath(r.Path, session.Username),
@@ -162,6 +168,34 @@ func (h *Handler) handleSearch(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	return httpx.JSON(w, http.StatusOK, map[string]any{"results": items})
+}
+
+func (h *Handler) handleRetryThumbnail(w http.ResponseWriter, r *http.Request) error {
+	if h.FileSystem == nil {
+		return httpx.JSON(w, 503, map[string]any{"error": "dofs_unavailable"})
+	}
+	var body struct {
+		Path string `json:"path"`
+	}
+	if err := httpx.DecodeJSON(r, &body); err != nil {
+		return httpx.JSON(w, 400, map[string]any{"error": "invalid_request"})
+	}
+	path, err := middleware.ResolvePath(r, body.Path)
+	if err != nil {
+		return err
+	}
+	record, err := h.FileSystem.Get(middleware.Session(r).UserID, path)
+	if err != nil {
+		return httpx.JSON(w, 404, map[string]any{"error": "file_not_found"})
+	}
+	if record.IsDir || record.Status != "ready" || !(strings.HasPrefix(record.ContentType, "image/") || strings.HasPrefix(record.ContentType, "video/") || record.ContentType == "application/pdf") {
+		return httpx.JSON(w, 400, map[string]any{"error": "thumbnail_not_supported"})
+	}
+	if err := h.FileSystem.SetThumbnailState(*record, "pending", "", 0, nil); err != nil {
+		return httpx.JSON(w, 500, map[string]any{"error": "operation_failed"})
+	}
+	h.notifyParentDir(record.UserID, record.Path)
+	return httpx.JSON(w, 200, map[string]any{"ok": true})
 }
 
 func (h *Handler) handleMkdir(w http.ResponseWriter, r *http.Request) error {
